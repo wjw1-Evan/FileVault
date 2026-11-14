@@ -294,6 +294,25 @@ public final class RepoManager: @unchecked Sendable {
         return r.stdout
     }
 
+    // MARK: - Per-repo auth mode (v2.1.0)
+
+    public enum AuthMode: String {
+        case auto, pat, ssh
+    }
+
+    public func setAuthMode(path: String, mode: AuthMode) async {
+        _ = try? await runner.run(["config", "filevault.auth", mode.rawValue], cwd: path)
+    }
+
+    public func authMode(path: String) async -> AuthMode {
+        let r = try? await runner.run(["config", "--local", "--get", "filevault.auth"], cwd: path)
+        guard let r, r.succeeded,
+              let mode = AuthMode(rawValue: r.stdout.trimmingCharacters(in: .whitespacesAndNewlines)) else {
+            return .auto
+        }
+        return mode
+    }
+
     // MARK: - Large file protection (FR-12)
 
     public static let defaultLargeFileThreshold: UInt64 = 200 * 1024 * 1024

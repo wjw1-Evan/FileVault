@@ -10,6 +10,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var healthCache: [String: String] = [:]
     var lastHealthFetch = Date.distantPast
     weak var settingsWindow: SettingsWindowController?
+    var dashboardWindow: DashboardWindowController?
     weak var historyWindow: HistoryWindowController?
 
     static let pausedIcon = "⏸"
@@ -175,6 +176,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let commitItem = NSMenuItem(title: "⤴ 立即提交全部", action: #selector(AppDelegate.commitAllNow), keyEquivalent: "")
         commitItem.target = target
         items.append(commitItem)
+        let dashItem = NSMenuItem(title: "打开主面板", action: #selector(AppDelegate.openDashboard), keyEquivalent: "d")
+        dashItem.target = target
+        dashItem.keyEquivalentModifierMask = [.command, .shift]
+        items.append(dashItem)
         let historyItem = NSMenuItem(title: "🕘 历史版本…", action: #selector(AppDelegate.openHistory), keyEquivalent: "")
         historyItem.target = target
         items.append(historyItem)
@@ -289,6 +294,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if svc.pause.isGloballyPaused { return "⏸ 已暂停自动提交" }
         guard svc.detection != nil else { return "⚠ Git 环境未就绪" }
         return "FileVault 正在守护 \(svc.rootsSnapshot().count) 个根目录"
+    }
+
+    @objc func openDashboard() {
+        if dashboardWindow == nil {
+            dashboardWindow = DashboardWindowController(service: service)
+        }
+        dashboardWindow?.showWindow(nil)
+        NSApp.activate(ignoringOtherApps: true)
     }
 
     @objc func openSettings() {

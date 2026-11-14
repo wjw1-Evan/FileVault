@@ -23,6 +23,35 @@ if args.contains("--smoke") {
     exit(ok ? 0 : 1)
 }
 
+// Diagnostic: render the dashboard to a PNG.
+if let idx = args.firstIndex(of: "--render-dashboard"), args.indices.contains(idx + 1) {
+    let outPath = args[idx + 1]
+    let app = NSApplication.shared
+    app.setActivationPolicy(.accessory)
+    Task {
+        let service = FileVaultService()
+        try? await service.start()
+        let controller = DashboardWindowController(service: service)
+        controller.showWindow(nil)
+        controller.window?.makeKeyAndOrderFront(nil)
+        try? await Task.sleep(nanoseconds: 2_000_000_000)
+        RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.3))
+        if let win = controller.window {
+            let img = CGWindowListCreateImage(.null, .optionIncludingWindow, CGWindowID(win.windowNumber), [.bestResolution])
+            if let img {
+                let rep = NSBitmapImageRep(cgImage: img)
+                if let png = rep.representation(using: .png, properties: [:]) {
+                    try? png.write(to: URL(fileURLWithPath: outPath))
+                    print("rendered: " + outPath)
+                }
+            }
+        }
+        exit(0)
+    }
+    app.run()
+    exit(0)
+}
+
 // Diagnostic: render the update progress window to a PNG.
 if let idx = args.firstIndex(of: "--render-update-progress"), args.indices.contains(idx + 1) {
     let outPath = args[idx + 1]

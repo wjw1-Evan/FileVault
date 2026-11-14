@@ -16,7 +16,7 @@ final class GitignoreEditorController: NSWindowController, NSTextViewDelegate {
             styleMask: [.titled, .closable],
             backing: .buffered, defer: false
         )
-        win.title = "忽略规则 — \((repoPath as NSString).lastPathComponent)"
+        win.title = "忽略规则 — " + (repoPath as NSString).lastPathComponent
         super.init(window: win)
         buildUI()
     }
@@ -25,8 +25,16 @@ final class GitignoreEditorController: NSWindowController, NSTextViewDelegate {
     required init?(coder: NSCoder) { fatalError() }
 
     private func buildUI() {
-        let container = NSGridView(numberOfColumns: 1, rows: 0)
-        container.rowSpacing = 8
+        let container = NSStackView()
+        container.orientation = .vertical
+        container.alignment = .leading
+        container.spacing = 8
+        container.edgeInsets = NSEdgeInsets(top: 12, left: FVDesign.margin, bottom: 12, right: FVDesign.margin)
+        container.wantsLayer = true
+        container.layer?.cornerRadius = FVDesign.cornerRadius
+        container.layer?.backgroundColor = NSColor.textBackgroundColor.cgColor
+        container.layer?.borderColor = NSColor.separatorColor.cgColor
+        container.layer?.borderWidth = 1
         let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 500, height: 300))
         scroll.hasVerticalScroller = true
         let tv = NSTextView(frame: scroll.bounds)
@@ -38,12 +46,12 @@ final class GitignoreEditorController: NSWindowController, NSTextViewDelegate {
         tv.string = repos?.gitignore(path: repoPath) ?? ""
         self.textView = tv
         scroll.documentView = tv
-        container.addRow(with: [scroll])
-        let save = NSButton(title: "保存（改动会被自动提交）", target: .none, action: .none)
+        container.addArrangedSubview(scroll)
+        let save = NSButton(title: "保存（改动会被自动提交）", target: nil, action: nil)
         save.bezelStyle = .rounded
         save.target = self
         save.action = #selector(saveAction)
-        container.addRow(with: [save])
+        container.addArrangedSubview(save)
         window?.contentView = container
     }
 

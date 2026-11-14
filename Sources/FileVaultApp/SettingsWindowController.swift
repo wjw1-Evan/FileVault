@@ -16,6 +16,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     var userEditedPaths: Set<String> = []
     /// Per-repo status message line (save result / connectivity / ssh guidance).
     var messageLabels: [String: NSTextField] = [:]
+    var authPopups: [String: NSPopUpButton] = [:]
+    var authUserFields: [String: NSTextField] = [:]
+    var authTokenFields: [String: NSSecureTextField] = [:]
     var contentStack: NSStackView!
     var scrollHost: NSScrollView!
 
@@ -92,6 +95,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         statusDots.removeAll()
         sshLabels.removeAll()
         messageLabels.removeAll()
+        authPopups.removeAll()
+        authUserFields.removeAll()
+        authTokenFields.removeAll()
         userEditedPaths.removeAll()
         rootCards.removeAll()
         contentStack.addArrangedSubview(makeGeneralCard(svc: svc))
@@ -314,6 +320,40 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         field.widthAnchor.constraint(greaterThanOrEqualToConstant: 360).isActive = true
         section.addArrangedSubview(remoteRow)
 
+        // Row 2.5: authentication (v2.1.0 — GitHub / Azure DevOps PAT support).
+        let authRow = NSStackView()
+        authRow.orientation = .horizontal
+        authRow.spacing = 6
+        let authLabel = NSTextField(labelWithString: "身份验证")
+        authLabel.font = .systemFont(ofSize: 12)
+        authRow.addArrangedSubview(authLabel)
+        let authPopup = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 150, height: 24), pullsDown: false)
+        for (title, key) in [("自动（gh 凭证助手）", "auto"), ("用户名 + 访问令牌", "pat"), ("SSH 密钥", "ssh")] {
+            authPopup.addItem(withTitle: title)
+            authPopup.lastItem?.representedObject = key
+        }
+        authPopup.identifier = NSUserInterfaceItemIdentifier(repo.path)
+        authPopup.target = self
+        authPopup.action = #selector(authModeChanged(_:))
+        authPopups[repo.path] = authPopup
+        authRow.addArrangedSubview(authPopup)
+        let userField = NSTextField(string: "")
+        userField.placeholderString = "用户名"
+        userField.identifier = NSUserInterfaceItemIdentifier(repo.path)
+        userField.frame = NSRect(x: 0, y: 0, width: 140, height: 22)
+        userField.translatesAutoresizingMaskIntoConstraints = false
+        userField.widthAnchor.constraint(equalToConstant: 140).isActive = true
+        authUserFields[repo.path] = userField
+        authRow.addArrangedSubview(userField)
+        let tokenField = NSSecureTextField(string: "")
+        tokenField.placeholderString = "访问令牌（PAT，存入钥匙串）"
+        tokenField.identifier = NSUserInterfaceItemIdentifier(repo.path)
+        tokenField.translatesAutoresizingMaskIntoConstraints = false
+        tokenField.widthAnchor.constraint(equalToConstant: 190).isActive = true
+        authTokenFields[repo.path] = tokenField
+        authRow.addArrangedSubview(tokenField)
+        section.addArrangedSubview(authRow)
+
         // Row 3: action buttons + ssh guidance.
         let actionRow = NSStackView()
         actionRow.orientation = .horizontal
@@ -363,6 +403,11 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
             let healthInfo = await svc.repoManager.health(path: repo.path)
             let st = await svc.sync.status(for: repo.path)
             let glyph = Self.repoGlyph(st)
+            let mode = await svc.repoManager.authMode(path: repo.path)
+            var storedUser: String?
+            if let u = url {
+                storedUser = await CredentialStore.fill(runner: svc.repoManager.runner, url: u)?.username
+            }
             await MainActor.run {
                 // Never wipe text the user is typing (async fill vs input race).
                 if self?.userEditedPaths.contains(repo.path) != true {
@@ -373,6 +418,13 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
                 self?.statusDots[repo.path]?.image = NSImage(systemSymbolName: glyph.symbol, accessibilityDescription: "状态")?
                     .withSymbolConfiguration(.init(pointSize: 12, weight: .medium))
                 self?.statusDots[repo.path]?.contentTintColor = glyph.color
+                authPopup.selectItem(at: [RepoManager.AuthMode.auto, .pat, .ssh].firstIndex(of: mode) ?? 0)
+                let showPat = mode == .pat
+                userField.isHidden = !showPat
+                tokenField.isHidden = !showPat
+                if let storedUser {
+                    userField.stringValue = storedUser
+                }
                 let isSsh = url?.hasPrefix("git@") == true || url?.hasPrefix("ssh://") == true
                 let guide = isSsh ? svc.sshChecker.guidance : nil
                 // Do not clobber live save/pull feedback with the async fill.
@@ -415,6 +467,15 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         userEditedPaths.insert(repoPath)
     }
 
+    /// Auth mode popup changed: toggle PAT field visibility.
+    @objc func authModeChanged(_ sender: NSPopUpButton) {
+        guard let repoPath = sender.identifier?.rawValue else { return }
+        let mode = sender.selectedItem?.representedObject as? String ?? "auto"
+        let showPat = mode == "pat"
+        authUserFields[repoPath]?.isHidden = !showPat
+        authTokenFields[repoPath]?.isHidden = !showPat
+    }
+
     /// Shared save path for button and Enter: configure + test + inline feedback.
     func saveRemote(repoPath: String) {
         guard let svc = service else { return }
@@ -436,8 +497,20 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
                     return
                 }
                 try await svc.sync.configureRemote(repoPath: repoPath, url: url, autoPush: auto)
-                // GitHub HTTPS remotes need credentials; gh provides them for free.
-                if url.contains("github.com") && url.hasPrefix("https://") {
+                let repos = svc.repoManager!
+                let modeRaw = authPopups[repoPath]?.selectedItem?.representedObject as? String ?? "auto"
+                let mode = RepoManager.AuthMode(rawValue: modeRaw) ?? .auto
+                await repos.setAuthMode(path: repoPath, mode: mode)
+                if mode == .pat {
+                    let token = authTokenFields[repoPath]?.stringValue.trimmingCharacters(in: .whitespaces) ?? ""
+                    if !token.isEmpty {
+                        let user = authUserFields[repoPath]?.stringValue.trimmingCharacters(in: .whitespaces)
+                        try await CredentialStore.store(runner: repos.runner, url: url,
+                                                        username: (user?.isEmpty == false ? user! : "personal-access-token"),
+                                                        password: token)
+                    }
+                } else if url.contains("github.com") && url.hasPrefix("https://") {
+                    // Auto mode + GitHub HTTPS: gh credential helper covers it.
                     _ = try? await GitRunner.ghAuthSetupGit()
                 }
                 setStage("已保存，正在测试连接…", .secondaryLabelColor)

@@ -93,6 +93,9 @@ final class GeneralSettingsTests: XCTestCase {
         let store1 = ConfigStore(directory: dir)
         let loaded = store1.load()
         XCTAssertEqual(loaded.general, .default, "missing general key decodes to defaults")
+        // CRITICAL: legacy roots must SURVIVE the decode (v1.3.0 root-loss bug).
+        XCTAssertEqual(loaded.roots.count, 1, "legacy roots must not be silently dropped")
+        XCTAssertEqual(loaded.roots.first?.path, "/tmp/a")
         // 2. Save -> load roundtrip.
         var cfg = loaded
         cfg.general.notificationsEnabled = false
@@ -236,5 +239,48 @@ final class GhRepoCreatorTests: XCTestCase {
         let url = try await creator.createPrivate(name: "my-notes", ghPath: gh)
         XCTAssertEqual(url, "https://github.com/testowner/my-notes.git")
         try? FileManager.default.removeItem(atPath: dir)
+    }
+}
+
+
+/// v2.1.0 per-repo authentication: keychain roundtrip + auth mode config.
+final class CredentialStoreTests: XCTestCase {
+    func testKeychainRoundtrip() async throws {
+        let runner = TestSupport.newRunner()
+        guard await CredentialStore.isAvailable(runner: runner) else {
+            throw XCTSkip("git credential-osxkeychain unavailable on this machine")
+        }
+        let url = "https://fv-test-" + UUID().uuidString.prefix(8) + ".example/repo.git"
+        defer { Task { try? await CredentialStore.erase(runner: runner, url: url) } }
+        // Store -> fill returns matching credentials.
+        // SECURITY: never print credential values in assertions.
+        try await CredentialStore.store(runner: runner, url: url,
+                                        username: "ci-user", password: "pat-secret-123")
+        let got = await CredentialStore.fill(runner: runner, url: url)
+        XCTAssertNotNil(got, "stored credential must be retrievable")
+        XCTAssertEqual(got?.username, "ci-user")
+        if got?.password != "pat-secret-123" {
+            XCTFail("password mismatch (value hidden)")
+        }
+        // Erase via reject; helpers that refuse foreign-host erase are tolerated.
+        try? await CredentialStore.erase(runner: runner, url: url)
+    }
+
+    func testAuthModeConfigRoundtrip() async throws {
+        let root = TestSupport.makeTempDir("authmode")
+        try? FileManager.default.createDirectory(atPath: root + "/repo", withIntermediateDirectories: true)
+        TestSupport.write("s", to: root + "/repo/s.md")
+        let repos = RepoManager(runner: TestSupport.newRunner())
+        _ = try await repos.ensureRepos(root: root)
+        let repo = root + "/repo"
+        let m0 = await repos.authMode(path: repo)
+        XCTAssertEqual(m0, .auto, "default auto")
+        await repos.setAuthMode(path: repo, mode: .pat)
+        let m1 = await repos.authMode(path: repo)
+        XCTAssertEqual(m1, .pat)
+        await repos.setAuthMode(path: repo, mode: .ssh)
+        let m2 = await repos.authMode(path: repo)
+        XCTAssertEqual(m2, .ssh)
+        try? FileManager.default.removeItem(atPath: root)
     }
 }

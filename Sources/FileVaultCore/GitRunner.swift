@@ -31,12 +31,12 @@ public final class GitRunner: Sendable {
     }
 
     /// Run git with args. Async wrapper over the synchronous implementation.
-    public func run(_ args: [String], cwd: String? = nil, timeout: TimeInterval? = nil) async throws -> GitResult {
+    public func run(_ args: [String], cwd: String? = nil, timeout: TimeInterval? = nil, stdin: String? = nil, env: [String: String]? = nil) async throws -> GitResult {
         let t = timeout ?? defaultTimeout
         return try await withCheckedThrowingContinuation { cont in
             DispatchQueue.global().async {
                 do {
-                    let r = try self.runSync(args, cwd: cwd, timeout: t)
+                    let r = try self.runSync(args, cwd: cwd, timeout: t, stdin: stdin, env: env)
                     cont.resume(returning: r)
                 } catch {
                     cont.resume(throwing: error)
@@ -46,17 +46,18 @@ public final class GitRunner: Sendable {
     }
 
     /// Synchronous execution with timeout. Safe to call from any thread.
-    public func runSync(_ args: [String], cwd: String? = nil, timeout: TimeInterval) throws -> GitResult {
+    public func runSync(_ args: [String], cwd: String? = nil, timeout: TimeInterval, stdin: String? = nil, env: [String: String]? = nil) throws -> GitResult {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: gitExecutable)
         process.arguments = args
 
-        var env = ProcessInfo.processInfo.environment
+        var e = ProcessInfo.processInfo.environment
         // Make sure the git executable's directory is on PATH so that
         // credential helpers / hooks / ssh can be resolved.
         let gitDir = (gitExecutable as NSString).deletingLastPathComponent
-        env["PATH"] = gitDir + ":" + (env["PATH"] ?? "/usr/bin:/bin:/usr/sbin:/sbin")
-        process.environment = env
+        e["PATH"] = gitDir + ":" + (e["PATH"] ?? "/usr/bin:/bin:/usr/sbin:/sbin")
+        for (k, v) in env ?? [:] { e[k] = v }
+        process.environment = e
 
         if let cwd {
             process.currentDirectoryURL = URL(fileURLWithPath: cwd)
@@ -83,6 +84,13 @@ public final class GitRunner: Sendable {
             let d = errPipe.fileHandleForReading.readDataToEndOfFile()
             lock.lock(); errData = d; lock.unlock()
             group.leave()
+        }
+
+        if let stdin {
+            let inPipe = Pipe()
+            process.standardInput = inPipe
+            inPipe.fileHandleForWriting.write(Data(stdin.utf8))
+            try? inPipe.fileHandleForWriting.close()
         }
 
         try process.run()
