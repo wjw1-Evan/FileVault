@@ -3,7 +3,7 @@ import FileVaultCore
 
 /// Settings window — card-based layout (v1.2.0 redesign):
 /// each managed root renders as a rounded card containing its repos.
-final class SettingsWindowController: NSWindowController, NSWindowDelegate {
+final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTextFieldDelegate {
     let service: FileVaultService?
     var urlFields: [String: NSTextField] = [:]
     var pushToggles: [String: NSButton] = [:]
@@ -12,6 +12,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     var sshLabels: [String: NSTextField] = [:]
     var rootCards: [NSView] = []
     private var gitignoreEditors: [String: GitignoreEditorController] = [:]
+    /// Fields the user has typed into (async refill must not wipe them).
+    var userEditedPaths: Set<String> = []
+    /// Per-repo status message line (save result / connectivity / ssh guidance).
+    var messageLabels: [String: NSTextField] = [:]
     var contentStack: NSStackView!
     var scrollHost: NSScrollView!
 
@@ -87,6 +91,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         healthLabels.removeAll()
         statusDots.removeAll()
         sshLabels.removeAll()
+        messageLabels.removeAll()
+        userEditedPaths.removeAll()
         rootCards.removeAll()
         for root in svc.rootsSnapshot() {
             let card = makeRootCard(root: root, svc: svc)
@@ -202,8 +208,12 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         remoteRow.orientation = .horizontal
         remoteRow.spacing = 8
         let field = NSTextField(string: "")
-        field.placeholderString = "远程仓库地址（留空 = 仅本地）"
+        field.placeholderString = "远程仓库地址（留空 = 仅本地，回车保存）"
         field.tag = 1
+        field.delegate = self
+        field.identifier = NSUserInterfaceItemIdentifier(repo.path)
+        field.target = self
+        field.action = #selector(remoteFieldSubmitted(_:))
         urlFields[repo.path] = field
         let toggle = NSButton(checkboxWithTitle: "自动推送", target: nil, action: nil)
         pushToggles[repo.path] = toggle
@@ -237,11 +247,13 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         actionRow.addArrangedSubview(actionSpacer)
         section.addArrangedSubview(actionRow)
 
-        let sshLabel = NSTextField(labelWithString: "")
-        sshLabel.font = .systemFont(ofSize: 10.5)
-        sshLabel.textColor = .systemRed
-        sshLabels[repo.path] = sshLabel
-        section.addArrangedSubview(sshLabel)
+        let messageLabel = NSTextField(labelWithString: "")
+        messageLabel.font = .systemFont(ofSize: 10.5)
+        messageLabel.textColor = .systemRed
+        messageLabel.lineBreakMode = .byTruncatingTail
+        messageLabels[repo.path] = messageLabel
+        sshLabels[repo.path] = messageLabel
+        section.addArrangedSubview(messageLabel)
 
         // Async fill: url/toggle/health/status dot/ssh guidance.
         Task { [weak self] in
@@ -251,7 +263,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             let st = await svc.sync.status(for: repo.path)
             let glyph = Self.repoGlyph(st)
             await MainActor.run {
-                field.stringValue = url ?? ""
+                // Never wipe text the user is typing (async fill vs input race).
+                if self?.userEditedPaths.contains(repo.path) != true {
+                    field.stringValue = url ?? ""
+                }
                 toggle.state = auto ? .on : .off
                 self?.healthLabels[repo.path]?.stringValue = healthInfo.summary
                 self?.statusDots[repo.path]?.image = NSImage(systemSymbolName: glyph.symbol, accessibilityDescription: "状态")?
@@ -259,7 +274,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
                 self?.statusDots[repo.path]?.contentTintColor = glyph.color
                 let isSsh = url?.hasPrefix("git@") == true || url?.hasPrefix("ssh://") == true
                 let guide = isSsh ? svc.sshChecker.guidance : nil
-                self?.sshLabels[repo.path]?.stringValue = guide ?? ""
+                self?.messageLabels[repo.path]?.stringValue = guide ?? ""
             }
         }
         return section
@@ -281,18 +296,57 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
     @objc func saveRepoConfig(_ sender: NSButton) {
         guard let svc = service, let repoPath = sender.identifier?.rawValue else { return }
+        saveRemote(repoPath: repoPath)
+    }
+
+    /// Enter in the remote field saves too (v1.2.3: the field is a first-class control).
+    @objc func remoteFieldSubmitted(_ sender: NSTextField) {
+        guard let repoPath = sender.identifier?.rawValue else { return }
+        saveRemote(repoPath: repoPath)
+    }
+
+    func controlTextDidChange(_ notification: Notification) {
+        guard let field = notification.object as? NSTextField,
+              let repoPath = field.identifier?.rawValue else { return }
+        userEditedPaths.insert(repoPath)
+    }
+
+    /// Shared save path for button and Enter: configure + test + inline feedback.
+    func saveRemote(repoPath: String) {
+        guard let svc = service else { return }
         let url = urlFields[repoPath]?.stringValue.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let auto = pushToggles[repoPath]?.state == .on
+        let setStage: (String, NSColor) -> Void = { text, color in
+            DispatchQueue.main.async {
+                self.messageLabels[repoPath]?.stringValue = text
+                self.messageLabels[repoPath]?.textColor = color
+            }
+        }
         Task {
+            setStage("正在保存…", .secondaryLabelColor)
             do {
                 if url.isEmpty {
                     try await svc.sync.clearRemote(repoPath: repoPath)
-                } else {
-                    try await svc.sync.configureRemote(repoPath: repoPath, url: url, autoPush: auto)
+                    await MainActor.run { self.reloadAfterSave() }
+                    setStage("已清除远程仓库（仅本地模式）", .secondaryLabelColor)
+                    return
                 }
+                try await svc.sync.configureRemote(repoPath: repoPath, url: url, autoPush: auto)
+                // GitHub HTTPS remotes need credentials; gh provides them for free.
+                if url.contains("github.com") && url.hasPrefix("https://") {
+                    _ = try? await GitRunner.ghAuthSetupGit()
+                }
+                setStage("已保存，正在测试连接…", .secondaryLabelColor)
+                let conn = await svc.sync.testConnectivity(repoPath: repoPath)
+                userEditedPaths.remove(repoPath)
                 await MainActor.run { self.reloadAfterSave() }
+                if conn.ok {
+                    setStage(auto ? "✓ 已保存并连通，提交后将自动推送" : "✓ 已保存并连通（自动推送未开启）", .systemGreen)
+                } else {
+                    setStage("⚠️ 已保存但连接失败：\(conn.detail)。请确认远程仓库已在平台上创建且凭证可用。", .systemRed)
+                }
             } catch {
-                await MainActor.run { self.reloadAfterSave() }
+                setStage("⚠️ 保存失败：\(error.localizedDescription)", .systemRed)
             }
         }
     }

@@ -164,3 +164,42 @@ final class UpdateProgressRenderTests: XCTestCase {
         controller.closeWindow()
     }
 }
+
+
+/// E2E of the settings save flow: rebuild -> type url -> saveRepoConfig -> git config.
+final class SettingsSaveFlowTests: XCTestCase {
+    @MainActor
+    func testSaveRemoteConfigEndToEnd() async throws {
+        let base = TestSupport.makeTempDir("saveflow")
+        try? FileManager.default.createDirectory(atPath: base + "/vault/work", withIntermediateDirectories: true)
+        TestSupport.write("seed", to: base + "/vault/work/a.md")
+        let service = FileVaultService(configDirectory: URL(fileURLWithPath: base + "/cfg"))
+        try await service.start()
+        try await service.addRoot(path: base + "/vault")
+        let repoPath = base + "/vault/work"
+        let controller = SettingsWindowController(service: service)
+        _ = controller.window
+        // The rebuild must expose a field keyed by the repo path.
+        guard let field = controller.urlFields[repoPath] else {
+            return XCTFail("url field missing for key \(repoPath); keys=\(controller.urlFields.keys)")
+        }
+        field.stringValue = "https://github.com/example/demo.git"
+        controller.userEditedPaths.insert(repoPath)
+        // Simulate the 保存 button.
+        let btn = NSButton()
+        btn.identifier = NSUserInterfaceItemIdentifier(repoPath)
+        controller.saveRepoConfig(btn)
+        // Feedback appears quickly (before the slow connectivity probe finishes).
+        try await Task.sleep(nanoseconds: 1_500_000_000)
+        let earlyMessage = controller.messageLabels[repoPath]?.stringValue ?? ""
+        XCTAssertTrue(earlyMessage.contains("已保存"), "inline feedback expected, got: '\(earlyMessage)'")
+        // Wait for the async save + rebuild.
+        try await Task.sleep(nanoseconds: 2_500_000_000)
+        let url = await service.repoManager.remoteURL(path: repoPath)
+        XCTAssertEqual(url, "https://github.com/example/demo.git", "saved url must reach git config")
+        let auto = await service.repoManager.autoPushEnabled(path: repoPath)
+        XCTAssertFalse(auto, "toggle default off")
+        XCTAssertNotNil(controller.urlFields[repoPath], "field re-exposed after rebuild")
+        try? FileManager.default.removeItem(atPath: base)
+    }
+}
