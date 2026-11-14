@@ -105,7 +105,8 @@ public final class RepoManager: @unchecked Sendable {
             switch y {
             case "D": return .deleted
             case "A": return .added
-            case "M", "T", "U", "C": return .modified
+            case "T": return .typeChanged
+            case "M", "U", "C": return .modified
             default: break
             }
         }
@@ -113,7 +114,8 @@ public final class RepoManager: @unchecked Sendable {
             switch x {
             case "D": return .deleted
             case "A": return .added
-            case "M", "T", "U", "C": return .modified
+            case "T": return .typeChanged
+            case "M", "U", "C": return .modified
             default: break
             }
         }

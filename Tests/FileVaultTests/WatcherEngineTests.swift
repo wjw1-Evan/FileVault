@@ -13,8 +13,15 @@ final class WatcherEngineTests: XCTestCase {
         try FileManager.default.createDirectory(at: sub, withIntermediateDirectories: true)
         let engine = WatcherEngine(rootPath: base.path, source: FSEventsChangeSource())
         let exp = expectation(description: "activity fired")
+        let onceLock = NSLock()
+        var fulfilled = false
         engine.start(onActivity: { name in
-            exp.fulfill()
+            // FSEvents may deliver several batches; fulfill only once.
+            onceLock.lock()
+            let first = !fulfilled
+            fulfilled = true
+            onceLock.unlock()
+            if first { exp.fulfill() }
         }, onRootStructureChanged: {
         })
         defer { engine.stop() }

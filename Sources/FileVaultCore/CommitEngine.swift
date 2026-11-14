@@ -9,6 +9,8 @@ public final class CommitEngine: @unchecked Sendable {
     public var onCommit: (@Sendable (String, String, String) -> Void)?
     /// Called when the auto-commit pipeline fails with (repoPath, errorDescription).
     public var onCommitFailure: (@Sendable (String, String) -> Void)?
+    /// Large-file threshold used by the pipeline (injectable for tests; default 200MB).
+    public var largeFileThreshold: UInt64 = RepoManager.defaultLargeFileThreshold
 
     private let inFlight = NSLock()
     private var busyKeys: Set<String> = []
@@ -66,10 +68,14 @@ public final class CommitEngine: @unchecked Sendable {
         }
         guard !entries.isEmpty else { return }
         // Reuse the single status pass for large-file checks and the commit
-        // (was 3 git-status invocations per commit, now 1).
-        let excluded = await repoManager.excludeLargeFiles(path: repoPath, entries: entries)
+        // (was 3 git-status invocations per commit, now 1). Excluded files are
+        // filtered out so the commit message reflects what is actually committed.
+        let excluded = await repoManager.excludeLargeFiles(path: repoPath, threshold: largeFileThreshold, entries: entries)
+        let excludedSet = Set(excluded)
+        let committable = entries.filter { !excludedSet.contains($0.path) }
         do {
-            let hash = try await repoManager.commitAll(path: repoPath, knownEntries: entries)
+            guard !committable.isEmpty else { return }
+            let hash = try await repoManager.commitAll(path: repoPath, knownEntries: committable)
             if !hash.isEmpty {
                 onCommit?(repoPath, hash, Self.describe(entries: entries, excluded: excluded))
             }

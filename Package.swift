@@ -20,7 +20,7 @@ let package = Package(
         ),
         .testTarget(
             name: "FileVaultTests",
-            dependencies: ["FileVaultCore"],
+            dependencies: ["FileVaultCore", "FileVaultApp"],
             swiftSettings: [.swiftLanguageMode(.v5)]
         ),
     ]

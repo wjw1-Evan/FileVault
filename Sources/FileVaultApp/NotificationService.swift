@@ -12,7 +12,7 @@ final class NotificationService: NSObject, UNUserNotificationCenterDelegate {
         // UNUserNotificationCenter.current() throws an uncatchable ObjC
         // exception in unbundled executables ("bundleProxyForCurrentProcess
         // is nil") — degrade gracefully when running without an app bundle.
-        guard Bundle.main.bundleIdentifier != nil else { return }
+        guard Bundle.main.bundleURL.pathExtension == "app" else { return }
         let center = UNUserNotificationCenter.current()
         center.delegate = self
         center.requestAuthorization(options: [.alert, .sound]) { [weak self] granted, _ in

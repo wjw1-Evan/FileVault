@@ -5,7 +5,7 @@ import ServiceManagement
 /// Only meaningful inside a proper .app bundle; degrades gracefully otherwise.
 enum LaunchAtLogin {
     static var available: Bool {
-        Bundle.main.bundleIdentifier != nil
+        Bundle.main.bundleURL.pathExtension == "app"
     }
 
     static var isEnabled: Bool {
