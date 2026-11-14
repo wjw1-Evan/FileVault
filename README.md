@@ -46,7 +46,7 @@ FileVault 常驻 macOS 菜单栏，对一个受管根目录下的**第一层子�
 
 ## 下载安装
 
-**最新发布：[v2.2.3](https://github.com/wjw1-Evan/FileVault/releases/tag/v2.2.3)** — [FileVault-2.2.3.zip](https://github.com/wjw1-Evan/FileVault/releases/download/v2.2.3/FileVault-2.2.3.zip)（sha256 `d210cb9f…774e`）
+**最新发布：[v2.3.0](https://github.com/wjw1-Evan/FileVault/releases/tag/v2.3.0)** — [FileVault-2.3.0.zip](https://github.com/wjw1-Evan/FileVault/releases/download/v2.3.0/FileVault-2.3.0.zip)（sha256 `dbc53fbc…abde`）
 
 解压后将 `FileVault.app` 拖入「应用程序」，首次打开右键 → 打开（ad-hoc 签名提示未公证），菜单栏即可见图标。
 
