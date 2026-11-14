@@ -148,23 +148,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let quitItem = NSMenuItem(title: "退出 FileVault", action: #selector(quitApp), keyEquivalent: "q")
         quitItem.target = self
         menu.addItem(quitItem)
-        // Colored status icon: red=failed, yellow=pending/pushing, green=ok (FR-08).
-        let statuses = statusCache.values
-        let icon: String
-        if svc.pause.isGloballyPaused {
-            icon = "⏸"
-        } else if svc.detection == nil {
-            icon = "⚠️"
-        } else if statuses.contains(.failed) {
-            icon = "🔴"
-        } else if statuses.contains(.pendingPush) || statuses.contains(.pushing) {
-            icon = "🟡"
-        } else if statuses.contains(.synced) {
-            icon = "🟢"
+        updateStatusIcon(for: svc)
+    }
+
+    /// Menu bar icon: template SF Symbol so macOS tints it for light/dark bars.
+    /// Replaces the old emoji-title approach (invisible "·" when no remotes).
+    func updateStatusIcon(for svc: FileVaultService) {
+        guard let button = statusItem?.button else { return }
+        let statuses = Array(statusCache.values)
+        let name = Self.statusSymbol(paused: svc.pause.isGloballyPaused,
+                                     envReady: svc.detection != nil,
+                                     statuses: statuses)
+        let size = NSSize(width: 18, height: 18)
+        let image: NSImage
+        if let symbol = NSImage(systemSymbolName: name, accessibilityDescription: "FileVault") {
+            image = symbol
+            image.size = size
         } else {
-            icon = "·"
+            // Defensive fallback: solid dot.
+            image = NSImage(size: size)
+            image.lockFocus()
+            NSColor.black.setFill()
+            NSBezierPath(ovalIn: CGRect(x: 4, y: 4, width: 10, height: 10)).fill()
+            image.unlockFocus()
         }
-        item.button?.title = icon
+        image.isTemplate = true
+        button.title = ""
+        button.image = image
+        button.toolTip = Self.headline(for: svc)
     }
 
     /// Refresh the per-repo sync status cache from SyncManager (actor).
@@ -177,6 +188,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
         statusCache = cache
+    }
+
+    /// SF Symbol for the current overall state (FR-08). Always a visible glyph.
+    static func statusSymbol(paused: Bool, envReady: Bool, statuses: [SyncStatus]) -> String {
+        if paused { return "pause.circle" }
+        if !envReady || statuses.contains(.failed) { return "exclamationmark.triangle" }
+        if statuses.contains(.pendingPush) || statuses.contains(.pushing) { return "arrow.up.arrow.down.circle" }
+        return "clock.arrow.circlepath"
     }
 
     static func menuSignature(service: FileVaultService, statuses: [String: SyncStatus]) -> String {

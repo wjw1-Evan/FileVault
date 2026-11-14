@@ -75,3 +75,29 @@ final class SettingsUIStructureTests: XCTestCase {
         try? FileManager.default.removeItem(atPath: root)
     }
 }
+
+
+/// Menu bar icon state mapping (FR-08, v1.1.3 — fixes invisible "·" glyph).
+final class StatusSymbolTests: XCTestCase {
+    func testSymbolMapping() {
+        let all: [SyncStatus] = [.noRemote, .synced, .pendingPush, .pushing, .failed]
+        // Normal / no-remote: always-visible clock glyph.
+        XCTAssertEqual(AppDelegate.statusSymbol(paused: false, envReady: true, statuses: []), "clock.arrow.circlepath")
+        XCTAssertEqual(AppDelegate.statusSymbol(paused: false, envReady: true, statuses: [.noRemote]), "clock.arrow.circlepath")
+        XCTAssertEqual(AppDelegate.statusSymbol(paused: false, envReady: true, statuses: [.synced]), "clock.arrow.circlepath")
+        // Pending / pushing.
+        XCTAssertEqual(AppDelegate.statusSymbol(paused: false, envReady: true, statuses: [.pendingPush]), "arrow.up.arrow.down.circle")
+        XCTAssertEqual(AppDelegate.statusSymbol(paused: false, envReady: true, statuses: [.pushing]), "arrow.up.arrow.down.circle")
+        // Failure / env missing / paused.
+        XCTAssertEqual(AppDelegate.statusSymbol(paused: false, envReady: true, statuses: [.failed]), "exclamationmark.triangle")
+        XCTAssertEqual(AppDelegate.statusSymbol(paused: false, envReady: false, statuses: all), "exclamationmark.triangle")
+        XCTAssertEqual(AppDelegate.statusSymbol(paused: true, envReady: true, statuses: all), "pause.circle")
+    }
+
+    /// Every mapped symbol must actually exist on this macOS (render proof).
+    func testSymbolsExistInSystem() {
+        for name in ["clock.arrow.circlepath", "arrow.up.arrow.down.circle", "exclamationmark.triangle", "pause.circle"] {
+            XCTAssertNotNil(NSImage(systemSymbolName: name, accessibilityDescription: nil), "missing symbol: \(name)")
+        }
+    }
+}
