@@ -14,6 +14,7 @@ FileVault 常驻 macOS 菜单栏，对一个受管根目录下的**第一层子�
 4. **远程仓库绑定** — 每个子仓库可单独配置远程地址（GitHub/GitLab 等，SSH/HTTPS），开启「提交后自动推送」，本地优先、失败自动重试。
 5. **菜单栏常驻** — 状态图标实时反映整体状态（空闲/同步中/待推送/异常），菜单列出每个文件夹的独立状态（✓ 已同步 / ↑N 待推送 / ⚠ 失败）。
 6. **历史时间线** — 查看每个仓库的提交历史，了解文件如何一步步演进。
+6.5 **快速打开** — 菜单栏与设置窗口均可一键在 Finder 中打开已添加的目录。
 7. **一键回滚** — 将单个文件或整个仓库恢复到任意历史版本，误删 3 步内找回。
 8. **忽略规则** — 自动注入 .gitignore 模板（.DS_Store、node_modules 等），设置窗口内可视化编辑，改动会被自动提交。
 9. **大文件保护** — 超过阈值的大文件（默认 200MB）自动排除出版本管理，避免仓库膨胀。
@@ -44,7 +45,7 @@ FileVault 常驻 macOS 菜单栏，对一个受管根目录下的**第一层子�
 
 ## 下载安装
 
-**最新发布：[v1.1.0](https://github.com/wjw1-Evan/FileVault/releases/tag/v1.1.0)** — [FileVault-1.1.0.zip](https://github.com/wjw1-Evan/FileVault/releases/download/v1.1.0/FileVault-1.1.0.zip)（0.63MB，sha256 `f1f8be8c…c727d`）
+**最新发布：[v1.1.2](https://github.com/wjw1-Evan/FileVault/releases/tag/v1.1.2)** — [FileVault-1.1.2.zip](https://github.com/wjw1-Evan/FileVault/releases/download/v1.1.2/FileVault-1.1.2.zip)（sha256 `c4dc734b…124b`）
 
 解压后将 `FileVault.app` 拖入「应用程序」，首次打开右键 → 打开（ad-hoc 签名提示未公证），菜单栏即可见图标。
 
