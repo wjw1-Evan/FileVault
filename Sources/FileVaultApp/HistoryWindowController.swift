@@ -5,7 +5,10 @@ import FileVaultCore
 /// column + per-commit changed-file list. Fixes the v1.2.x frame and switch bugs.
 final class HistoryWindowController: NSWindowController, NSTableViewDelegate, NSTextFieldDelegate {
     let service: FileVaultService?
+    var rootPopup: NSPopUpButton?
     var repoPopup: NSPopUpButton?
+    var rootPaths: [String] = []
+    var currentFolders: [SubRepo] = []
     var table: NSTableView?
     var filesTable: NSTableView?
     var filesLabel: NSTextField?
@@ -18,7 +21,6 @@ final class HistoryWindowController: NSWindowController, NSTableViewDelegate, NS
         return changedFiles[idx].path
     }
     var commits: [CommitInfo] = []
-    var repoPaths: [String] = []
     enum HistMode { case commits, file }
     var mode: HistMode = .commits
     var trackedFiles: [String] = []
@@ -69,16 +71,21 @@ final class HistoryWindowController: NSWindowController, NSTableViewDelegate, NS
         for c in [pTop, pLead, pTrail, pBottom] { c.isActive = true }
 
         // Row 1: repo picker + view mode.
-        let popup = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 240, height: 26), pullsDown: false)
+        let rootPopup = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 190, height: 26), pullsDown: false)
+        rootPopup.target = self
+        rootPopup.action = #selector(rootChanged)
+        rootPopup.identifier = NSUserInterfaceItemIdentifier("rootPicker")
+        self.rootPopup = rootPopup
+        let popup = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 170, height: 26), pullsDown: false)
         popup.target = self
         popup.action = #selector(repoChanged)
         repoPopup = popup
         let segment = NSSegmentedControl(labels: ["全部提交", "单文件恢复"], trackingMode: .selectOne, target: self, action: #selector(modeChanged(_:)))
         segment.selectedSegment = 0
         modeSegment = segment
-        let controlsRow = NSStackView(views: [popup, segment])
+        let controlsRow = NSStackView(views: [rootPopup, popup, segment])
         controlsRow.orientation = .horizontal
-        controlsRow.spacing = 10
+        controlsRow.spacing = 8
         page.addArrangedSubview(controlsRow)
 
         // Row 2: file picker (file mode only; collapses when hidden).
@@ -188,43 +195,93 @@ final class HistoryWindowController: NSWindowController, NSTableViewDelegate, NS
 
     func reloadRepos() {
         guard let svc = service else { return }
-        repoPaths = []
-        for root in svc.rootsSnapshot() {
-            for r in svc.repoManager.firstLevelFolders(root: root) {
-                repoPaths.append(r.path)
-            }
+        rootPaths = svc.rootsSnapshot()
+        rootPopup?.removeAllItems()
+        for root in rootPaths {
+            rootPopup?.addItem(withTitle: "📁 " + (root as NSString).lastPathComponent)
         }
-        repoPopup?.removeAllItems()
-        for p in repoPaths {
-            repoPopup?.addItem(withTitle: (p as NSString).lastPathComponent)
-            repoPopup?.lastItem?.image = FVDesign.lineIcon("folder")
-        }
-        guard !repoPaths.isEmpty else {
+        guard !rootPaths.isEmpty else {
+            currentFolders = []
             commits = []
             table?.reloadData()
-            filesLabel?.stringValue = "尚未添加任何根目录"
+            filesLabel?.stringValue = "尚未添加任何根目录——先在设置中添加根目录"
+            return
+        }
+        rootPopup?.selectItem(at: 0)
+        populateRepoPopup()
+    }
+
+    /// Level 2: folders of the selected root.
+    func populateRepoPopup() {
+        guard let svc = service, let root = currentRootPath() else { return }
+        currentFolders = svc.repoManager.firstLevelFolders(root: root)
+        repoPopup?.removeAllItems()
+        for f in currentFolders {
+            repoPopup?.addItem(withTitle: f.name)
+            repoPopup?.lastItem?.image = FVDesign.lineIcon("folder")
+        }
+        guard !currentFolders.isEmpty else {
+            commits = []
+            fileTimeline = []
+            table?.reloadData()
+            filesLabel?.stringValue = "该根目录暂无子文件夹"
             return
         }
         repoPopup?.selectItem(at: 0)
-        let repo = currentRepo() ?? ""
+        loadForCurrentSelection()
+    }
+
+    func currentRootPath() -> String? {
+        let idx = rootPopup?.indexOfSelectedItem ?? -1
+        guard rootPaths.indices.contains(idx) else { return nil }
+        return rootPaths[idx]
+    }
+
+    func currentRepo() -> String? {
+        let idx = repoPopup?.indexOfSelectedItem ?? -1
+        guard currentFolders.indices.contains(idx) else { return nil }
+        return currentFolders[idx].path
+    }
+
+    /// Load commits + tracked files for the current selection. The async
+    /// completion RESTORES the user's selection (a stale rebuild must not
+    /// reset the popup — v2.4.2 race fix).
+    func loadForCurrentSelection() {
+        guard let svc = service, let repo = currentRepo() else { return }
         Task {
-            let files = await service!.repoManager.listFiles(path: repo)
+            let files = await svc.repoManager.listFiles(path: repo)
             await MainActor.run {
+                guard self.currentRepo() == repo else { return }  // user moved on
                 self.trackedFiles = files
-                self.rebuildFilePopup()
+                self.rebuildFilePopup(selecting: repo)
                 if self.mode == .file { self.reloadFileTimeline() } else { self.reloadCommits() }
             }
         }
     }
 
+    /// Level 1 changed: refresh the root list if it went stale (roots added /
+    /// removed in settings while this window was open), then repopulate folders.
+    @objc func rootChanged() {
+        let fresh = service?.rootsSnapshot() ?? []
+        if rootPopup?.numberOfItems != fresh.count {
+            reloadRepos()
+            return
+        }
+        populateRepoPopup()
+    }
+
     /// Populate the file picker for the current repo.
-    func rebuildFilePopup() {
+    func rebuildFilePopup(selecting keep: String? = nil) {
         filePopup?.removeAllItems()
         for f in trackedFiles {
             filePopup?.addItem(withTitle: f)
         }
         guard !trackedFiles.isEmpty else { return }
-        filePopup?.selectItem(at: 0)
+        if let keep, let idx = trackedFiles.firstIndex(of: keep) {
+            filePopup?.selectItem(at: idx)
+        } else {
+            filePopup?.selectItem(at: 0)
+        }
     }
 
     /// v2.2.0 mode switch: all commits vs single-file timeline.
@@ -299,14 +356,9 @@ final class HistoryWindowController: NSWindowController, NSTableViewDelegate, NS
         }
     }
 
-    func currentRepo() -> String? {
-        let idx = repoPopup?.indexOfSelectedItem ?? -1
-        guard repoPaths.indices.contains(idx) else { return nil }
-        return repoPaths[idx]
-    }
-
     func reloadCommits() {
         guard let svc = service, let repo = currentRepo() else { return }
+        print("[HC] reloadCommits repo=" + repo)
         loadGeneration += 1
         let generation = loadGeneration
         filesLabel?.stringValue = "正在加载提交历史…"
@@ -315,6 +367,7 @@ final class HistoryWindowController: NSWindowController, NSTableViewDelegate, NS
             // Stale-switch guard: drop results that are no longer current.
             guard generation == self.loadGeneration else { return }
             await MainActor.run {
+                print("[HC] apply gen=" + String(generation) + " latest=" + String(self.loadGeneration) + " repo=" + repo + " count=" + String(list.count))
                 guard generation == self.loadGeneration else { return }
                 self.commits = list
                 self.table?.reloadData()
@@ -363,6 +416,7 @@ final class HistoryWindowController: NSWindowController, NSTableViewDelegate, NS
     // MARK: - Actions
 
     @objc func repoChanged() {
+        print("[HC] repoChanged sel=" + String(repoPopup?.indexOfSelectedItem ?? -1))
         table?.deselectAll(nil)
         reloadCommits()
     }
