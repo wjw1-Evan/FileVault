@@ -3,6 +3,7 @@
 set -e
 cd "$(dirname "$0")/.."
 
+APP_VERSION="${1:-1.1.0}"
 APP="build/FileVault.app"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
@@ -10,16 +11,16 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 swift build -c release
 cp .build/release/FileVaultApp "$APP/Contents/MacOS/FileVaultApp"
 
-cat > "$APP/Contents/Info.plist" <<'PLIST'
+cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
     <key>CFBundleName</key><string>FileVault</string>
     <key>CFBundleDisplayName</key><string>FileVault</string>
     <key>CFBundleIdentifier</key><string>com.filevault.FileVault</string>
-    <key>CFBundleVersion</key><string>1.0.0</string>
-    <key>CFBundleShortVersionString</key><string>1.0.0</string>
+    <key>CFBundleVersion</key><string>${APP_VERSION}</string>
+    <key>CFBundleShortVersionString</key><string>${APP_VERSION}</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleExecutable</key><string>FileVaultApp</string>
     <key>CFBundleIconFile</key><string>AppIcon</string>

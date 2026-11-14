@@ -16,6 +16,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     static let errorIcon = "●"
 
     let notifications = NotificationService()
+    /// Pending update offer (shown in menu + notification) (FR-20).
+    var pendingUpdate: ReleaseInfo?
+    lazy var updateChecker = UpdateChecker(
+        currentVersion: (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "0.0.0",
+        fetcher: GhReleaseFetcher()
+    )
 
     func applicationDidFinishLaunching(_ n: Notification) {
         let svc = FileVaultService()
@@ -31,6 +37,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 // Git env failure surfaced in menu; keep app alive.
             }
             await MainActor.run { self.refreshMenu() }
+        }
+        // FR-20: silent update check shortly after launch, once per launch.
+        Task {
+            try? await Task.sleep(nanoseconds: 20_000_000_000)
+            await self.checkForUpdate(silent: true)
         }
         // Event-driven refresh: rebuild the menu only when state actually changes.
         // A slow fallback timer (15s) covers missed events without busy polling.
@@ -124,6 +135,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let settingsItem = NSMenuItem(title: "⚙️ 设置…", action: #selector(openSettings), keyEquivalent: "")
         settingsItem.target = self
         menu.addItem(settingsItem)
+        let updateTitle = pendingUpdate != nil ? "⬆️ 下载并安装更新 \(pendingUpdate!.version)…" : "检查更新…"
+        let updateItem = NSMenuItem(title: updateTitle, action: #selector(checkForUpdateManually), keyEquivalent: "")
+        updateItem.target = self
+        menu.addItem(updateItem)
         menu.addItem(.separator())
         let quitItem = NSMenuItem(title: "退出 FileVault", action: #selector(quitApp), keyEquivalent: "q")
         quitItem.target = self
@@ -202,5 +217,56 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc func quitApp() {
         NSApp.terminate(nil)
+    }
+
+    // MARK: - Auto-update (FR-20)
+
+    @objc func checkForUpdateManually() {
+        Task { await checkForUpdate(silent: false) }
+    }
+
+    func checkForUpdate(silent: Bool) async {
+        guard pendingUpdate == nil else {
+            await installIfConfirmed(offer: pendingUpdate!, confirmed: true)
+            return
+        }
+        let offer: ReleaseInfo?
+        do {
+            offer = try await updateChecker.check()
+        } catch {
+            if !silent { await MainActor.run { Self.alert("检查更新失败", "\(error.localizedDescription)") } }
+            return
+        }
+        guard let offer else {
+            if !silent { await MainActor.run { Self.alert("已是最新版本", "当前版本 \(updateChecker.currentVersion)，没有可用的更新。") } }
+            return
+        }
+        await MainActor.run {
+            self.pendingUpdate = offer
+            self.refreshMenu()
+            self.notifications.notifyFailure("发现新版本", "FileVault \(offer.version) 已发布，菜单中选择「检查更新」即可安装。")
+            if !silent { Self.alert("发现新版本", "FileVault \(offer.version) 已发布，是否下载并安装？") }
+        }
+        await installIfConfirmed(offer: offer, confirmed: !silent)
+    }
+
+    /// Download, verify and swap the bundle. App relaunches via `open`.
+    func installIfConfirmed(offer: ReleaseInfo, confirmed: Bool) async {
+        guard confirmed, Bundle.main.bundleURL.pathExtension == "app" else { return }
+        do {
+            let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("fv-update-\(UUID().uuidString.prefix(6))")
+            let zip = try await SelfUpdater.download(info: offer, into: tmp)
+            try SelfUpdater.verify(zipURL: zip, expectedSHA256: offer.sha256)
+            try SelfUpdater.replace(bundleURL: Bundle.main.bundleURL, newZipURL: zip, relaunch: true)
+        } catch {
+            await MainActor.run { Self.alert("自动更新失败", error.localizedDescription) }
+        }
+    }
+
+    static func alert(_ title: String, _ body: String) {
+        let a = NSAlert()
+        a.messageText = title
+        a.informativeText = body
+        a.runModal()
     }
 }
