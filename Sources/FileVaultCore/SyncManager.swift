@@ -97,12 +97,15 @@ public actor SyncManager {
                 return
             }
         }
-        let task = Task { await self.pushLoop(repoPath: repoPath) }
+        let task = Task.detached { await self.pushLoop(repoPath: repoPath) }
         states[repoPath]?.task = task
     }
 
     /// Serial per-repo push loop with exponential backoff retries.
     private func pushLoop(repoPath: String) async {
+        if ProcessInfo.processInfo.environment["FV_DEBUG"] != nil {
+            print("[FV_DEBUG] pushLoop enter \(repoPath)")
+        }
         defer { states[repoPath]?.task = nil }
         var attempt = 0
         while true {
