@@ -10,7 +10,7 @@ public enum SelfUpdater {
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let proc = Process()
         proc.executableURL = ghURL()
-        proc.arguments = ["release", "download", info.tagName, "--repo", repo, "--pattern", info.assetName, "--output-dir", dir.path, "--clobber"]
+        proc.arguments = ["release", "download", info.tagName, "--repo", repo, "--pattern", info.assetName, "--dir", dir.path, "--clobber"]
         let errPipe = Pipe()
         proc.standardOutput = FileHandle.nullDevice
         proc.standardError = errPipe
