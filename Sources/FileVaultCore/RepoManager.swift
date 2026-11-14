@@ -313,6 +313,12 @@ public final class RepoManager: @unchecked Sendable {
         return mode
     }
 
+    /// Tracked files of a repo (v2.2.0 file-centric restore).
+    public func listFiles(path: String) async -> [String] {
+        guard let r = try? await runner.run(["ls-files"], cwd: path), r.succeeded else { return [] }
+        return r.stdout.split(separator: "\n").map(String.init).filter { !$0.isEmpty }.sorted()
+    }
+
     // MARK: - Large file protection (FR-12)
 
     public static let defaultLargeFileThreshold: UInt64 = 200 * 1024 * 1024

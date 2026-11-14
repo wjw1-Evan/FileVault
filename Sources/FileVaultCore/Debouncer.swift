@@ -40,7 +40,9 @@ public final class Debouncer: @unchecked Sendable {
             if ProcessInfo.processInfo.environment["FV_DEBUG"] != nil {
                 print("[FV_DEBUG] t=\(Int(Date().timeIntervalSince1970) % 1000) maxwait fireNow key=\(key) elapsed=\(elapsed)")
             }
-            fireNow(key: key)
+            // We are already holding the lock: fire without re-acquiring
+            // (the public fireNow would deadlock here — audit v2.2.2).
+            fireNowLocked(key: key)
             return
         }
         timers[key]?.cancel()
@@ -64,9 +66,15 @@ public final class Debouncer: @unchecked Sendable {
         }
     }
 
-    /// Fire immediately for a key (manual flush).
+    /// Fire immediately for a key (manual flush). Acquires the lock itself.
     public func fireNow(key: String) {
-        lock.lock(); defer { lock.unlock() }
+        lock.lock()
+        fireNowLocked(key: key)
+        lock.unlock()
+    }
+
+    /// Callers already holding `lock` must use this variant (non-reentrant NSLock).
+    private func fireNowLocked(key: String) {
         timers[key]?.cancel()
         timers[key] = nil
         firstTouch[key] = nil

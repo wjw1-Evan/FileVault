@@ -20,12 +20,18 @@ public final class FSEventsChangeSource: ChangeSource {
     private var stream: FSEventStreamRef?
     private let streamQueue = DispatchQueue(label: "fv.fsnews.queue")
     private var started = false
+    private let lifecycleLock = NSLock()
 
     public init() {}
 
     public func start(paths: [String], onEvent: @escaping @Sendable ([String] ) -> Void) {
-        guard !started else { return }
+        lifecycleLock.lock()
+        guard !started else {
+            lifecycleLock.unlock()
+            return
+        }
         started = true
+        lifecycleLock.unlock()
         let box = EventBox(handler: onEvent)
         let info = Unmanaged.passRetained(box).toOpaque()
         var context = FSEventStreamContext(
@@ -75,12 +81,17 @@ public final class FSEventsChangeSource: ChangeSource {
     }
 
     public func stop() {
-        guard let stream else { return }
+        lifecycleLock.lock()
+        guard let stream else {
+            lifecycleLock.unlock()
+            return
+        }
         FSEventStreamStop(stream)
         FSEventStreamInvalidate(stream)
         FSEventStreamRelease(stream)
         self.stream = nil
         started = false
+        lifecycleLock.unlock()
     }
 }
 

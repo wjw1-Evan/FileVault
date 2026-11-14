@@ -445,7 +445,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
             let alert = NSAlert()
             alert.messageText = "设置登录自启失败"
             alert.informativeText = error.localizedDescription
-            alert.runModal()
+            FVDesign.activateAndRunModal(alert)
             sender.state = LaunchAtLogin.isEnabled ? .on : .off
         }
     }
@@ -545,7 +545,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
                 let alert = NSAlert()
                 alert.messageText = result.ok ? "✅ 连接成功" : "⚠️ 连接失败"
                 alert.informativeText = result.detail
-                alert.runModal()
+                FVDesign.activateAndRunModal(alert)
             }
         }
     }
@@ -620,7 +620,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         alert.window.initialFirstResponder = input
         alert.addButton(withTitle: "创建并绑定")
         alert.addButton(withTitle: "取消")
-        if alert.runModal() == .alertFirstButtonReturn {
+        if FVDesign.activateAndRunModal(alert) == .alertFirstButtonReturn {
             let name = input.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
             let setMsg: (String, NSColor) -> Void = { text, color in
                 DispatchQueue.main.async {
@@ -677,7 +677,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         panel.canChooseFiles = false
         panel.canCreateDirectories = false
         panel.message = "选择要保护的根目录（第一层子文件夹将被独立版本管理）"
-        let modalResult = panel.runModal()
+        let modalResult = FVDesign.activateAndRunPanel(panel)
         if modalResult == .OK, let url = panel.url {
             Task {
                 try? await svc.addRoot(path: url.path)
