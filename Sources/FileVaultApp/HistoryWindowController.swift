@@ -1,43 +1,33 @@
 import AppKit
 import FileVaultCore
 
-/// History window (v1.2.4 redesign): repo switcher + commit table with time
-/// column + per-commit changed-file list. Fixes the v1.2.x frame and switch bugs.
-final class HistoryWindowController: NSWindowController, NSTableViewDelegate, NSTextFieldDelegate {
+/// History window (v2.5.0 simplified): repo pickers + commit table + per-file
+/// inline restore. No mode switching — one list, one click per file.
+final class HistoryWindowController: NSWindowController, NSTableViewDelegate, NSTableViewDataSource, NSTextFieldDelegate {
     let service: FileVaultService?
+    var rootPopup: NSPopUpButton?
     var repoPopup: NSPopUpButton?
+    var rootPaths: [String] = []
+    var currentFolders: [SubRepo] = []
     var table: NSTableView?
-    var filesTable: NSTableView?
-    var filesLabel: NSTextField?
-    var filesText: String? { filesLabel?.stringValue }
-    var changedFiles: [(status: String, path: String)] = []
-    /// Row the user picked for single-file restore (FR-10).
-    var selectedChangedFile: String? {
-        let idx = filesTable?.selectedRow ?? -1
-        guard changedFiles.indices.contains(idx) else { return nil }
-        return changedFiles[idx].path
-    }
     var commits: [CommitInfo] = []
-    var repoPaths: [String] = []
-    enum HistMode { case commits, file }
-    var mode: HistMode = .commits
-    var trackedFiles: [String] = []
-    var fileTimeline: [CommitInfo] = []
-    var filePopup: NSPopUpButton?
-    var modeSegment: NSSegmentedControl?
-    var restoreFileBtn: NSButton?
-    /// Guard: only the newest load may touch the table (stale-switch fix).
+    var filesTable: NSTableView?
+    var changedFiles: [(status: String, path: String)] = []
+    var filesLabel: NSTextField?
     private var loadGeneration = 0
     private var filesGeneration = 0
+    /// The commit whose changed files are currently displayed.
+    private var currentCommit: CommitInfo?
 
     init(service: FileVaultService?) {
         self.service = service
         let win = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 660, height: 540),
-            styleMask: [.titled, .closable],
+            contentRect: NSRect(x: 0, y: 0, width: 660, height: 560),
+            styleMask: [.titled, .closable, .resizable, .miniaturizable],
             backing: .buffered, defer: false
         )
         win.title = "FileVault 历史"
+        win.minSize = NSSize(width: 640, height: 480)
         super.init(window: win)
         buildUI()
     }
@@ -45,254 +35,186 @@ final class HistoryWindowController: NSWindowController, NSTableViewDelegate, NS
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError() }
 
-    func buildUI() {
-        let popup = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 300, height: 26), pullsDown: false)
-        popup.target = self
-        popup.action = #selector(repoChanged)
-        repoPopup = popup
-        let segment = NSSegmentedControl(labels: ["全部提交", "单文件恢复"], trackingMode: .selectOne, target: self, action: #selector(modeChanged(_:)))
-        segment.selectedSegment = 0
-        modeSegment = segment
-        let filePopup = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 320, height: 26), pullsDown: false)
-        filePopup.target = self
-        filePopup.action = #selector(fileChanged)
-        filePopup.isHidden = true
-        self.filePopup = filePopup
+    // MARK: - Build
 
-        let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 636, height: 260))
+    func buildUI() {
+        let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 636, height: 560))
         scroll.hasVerticalScroller = true
-        let tv = NSTableView(frame: NSRect(x: 0, y: 0, width: 636, height: 260))
+        scroll.drawsBackground = true
+        scroll.backgroundColor = .windowBackgroundColor
+        let page = NSStackView()
+        page.orientation = .vertical
+        page.alignment = .leading
+        page.spacing = 10
+        page.edgeInsets = NSEdgeInsets(top: 12, left: FVDesign.margin, bottom: 12, right: FVDesign.margin)
+        page.translatesAutoresizingMaskIntoConstraints = false
+        scroll.documentView = page
+        window?.contentView = scroll
+        let pTop = page.topAnchor.constraint(equalTo: scroll.contentView.topAnchor)
+        let pLead = page.leadingAnchor.constraint(equalTo: scroll.contentView.leadingAnchor)
+        let pTrail = page.trailingAnchor.constraint(equalTo: scroll.contentView.trailingAnchor)
+        let pBottom = page.bottomAnchor.constraint(greaterThanOrEqualTo: scroll.contentView.bottomAnchor)
+        for c in [pTop, pLead, pTrail, pBottom] { c.isActive = true }
+
+        // Row 1: two-level pickers.
+        let rootPopup = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 190, height: 26), pullsDown: false)
+        rootPopup.target = self
+        rootPopup.action = #selector(rootChanged)
+        self.rootPopup = rootPopup
+        let repoPopup = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 170, height: 26), pullsDown: false)
+        repoPopup.target = self
+        repoPopup.action = #selector(repoChanged)
+        self.repoPopup = repoPopup
+        let pickers = NSStackView(views: [rootPopup, repoPopup])
+        pickers.orientation = .horizontal
+        pickers.spacing = 8
+        page.addArrangedSubview(pickers)
+
+        // Row 2: commit table (fixed height; the page scrolls).
+        let tableScroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 612, height: 220))
+        tableScroll.hasVerticalScroller = true
+        tableScroll.drawsBackground = false
+        let tv = NSTableView(frame: tableScroll.bounds)
         let hashCol = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("hash"))
         hashCol.title = "版本"
-        hashCol.width = 80
-        hashCol.minWidth = 60
+        hashCol.width = 78
         let subjectCol = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("subject"))
         subjectCol.title = "提交信息"
-        subjectCol.width = 340
-        subjectCol.minWidth = 200
+        subjectCol.width = 330
         let dateCol = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("date"))
         dateCol.title = "时间"
         dateCol.width = 140
-        dateCol.minWidth = 100
         tv.addTableColumn(hashCol)
         tv.addTableColumn(subjectCol)
         tv.addTableColumn(dateCol)
         tv.dataSource = self
         tv.delegate = self
         tv.usesAlternatingRowBackgroundColors = true
-        tv.allowsColumnReordering = false
         tv.rowHeight = 24
         table = tv
-        scroll.documentView = tv
+        tableScroll.documentView = tv
         tv.sizeLastColumnToFit()
+        page.addArrangedSubview(tableScroll)
+        tableScroll.widthAnchor.constraint(equalToConstant: 612).isActive = true
+        tableScroll.heightAnchor.constraint(equalToConstant: 220).isActive = true
 
-        let filesScroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 636, height: 78))
+        // Row 3: changed files of the selected commit — restore inline per row.
+        let filesHeader = FVDesign.header("此提交包含的文件（点「恢复」回到该时点）")
+        page.addArrangedSubview(filesHeader)
+        let filesScroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 612, height: 110))
         filesScroll.hasVerticalScroller = true
-        let ftv = NSTableView(frame: NSRect(x: 0, y: 0, width: 636, height: 78))
+        let ftv = NSTableView(frame: filesScroll.bounds)
         let stCol = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("status"))
         stCol.title = "变更"
-        stCol.width = 56
+        stCol.width = 52
         let fCol = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("file"))
-        fCol.title = "文件（选中后可单文件恢复）"
-        fCol.width = 560
+        fCol.title = "文件"
+        fCol.width = 400
+        let rCol = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("restore"))
+        rCol.title = "操作"
+        rCol.width = 110
         ftv.addTableColumn(stCol)
         ftv.addTableColumn(fCol)
+        ftv.addTableColumn(rCol)
         ftv.dataSource = self
         ftv.delegate = self
-        ftv.rowHeight = 20
+        ftv.rowHeight = 26
         filesTable = ftv
         filesScroll.documentView = ftv
         ftv.sizeLastColumnToFit()
+        page.addArrangedSubview(filesScroll)
+        filesScroll.widthAnchor.constraint(equalToConstant: 612).isActive = true
+        filesScroll.heightAnchor.constraint(equalToConstant: 110).isActive = true
 
-        let filesLabel = NSTextField(labelWithString: "选择一个提交以查看其包含的文件变更")
-        filesLabel.font = .systemFont(ofSize: 10.5)
+        // Row 4: feedback + repo rollback.
+        let filesLabel = NSTextField(labelWithString: "选择一个提交，查看并恢复它包含的文件")
+        filesLabel.font = FVDesign.captionFont
         filesLabel.textColor = .secondaryLabelColor
+        filesLabel.lineBreakMode = .byTruncatingTail
+        filesLabel.translatesAutoresizingMaskIntoConstraints = false
+        filesLabel.widthAnchor.constraint(equalToConstant: 612).isActive = true
         self.filesLabel = filesLabel
-
-        let restoreBtn = NSButton(title: "恢复选中文件", target: self, action: #selector(restoreFileAction))
-        restoreBtn.target = self
-        restoreBtn.bezelStyle = .rounded
-        let restoreVersionBtn = NSButton(title: "恢复此文件", target: self, action: #selector(restoreFileToVersion))
-        restoreVersionBtn.target = self
-        restoreVersionBtn.bezelStyle = .rounded
-        restoreVersionBtn.isHidden = true
-        restoreFileBtn = restoreVersionBtn
-        let rollback = NSButton(title: "回滚到此版本", target: self, action: #selector(rollbackAction))
+        page.addArrangedSubview(filesLabel)
+        let rollback = NSButton(title: "回滚整个文件夹到此版本", target: self, action: #selector(rollbackAction))
         rollback.target = self
         rollback.bezelStyle = .rounded
+        page.addArrangedSubview(rollback)
 
-        // Layout: popup / table / files panel / rollback in a fixed column.
-        let host = NSView()
-        window?.contentView = host
-        popup.translatesAutoresizingMaskIntoConstraints = false
-        scroll.translatesAutoresizingMaskIntoConstraints = false
-        filesScroll.translatesAutoresizingMaskIntoConstraints = false
-        rollback.translatesAutoresizingMaskIntoConstraints = false
-        host.addSubview(popup)
-        host.addSubview(segment)
-        host.addSubview(filePopup)
-        host.addSubview(scroll)
-        host.addSubview(filesScroll)
-        host.addSubview(filesLabel)
-        host.addSubview(restoreBtn)
-        host.addSubview(restoreVersionBtn)
-        host.addSubview(rollback)
-        let m: CGFloat = 12
-        NSLayoutConstraint.activate([
-            popup.topAnchor.constraint(equalTo: host.topAnchor, constant: m),
-            popup.leadingAnchor.constraint(equalTo: host.leadingAnchor, constant: m),
-            popup.widthAnchor.constraint(greaterThanOrEqualToConstant: 240),
-            segment.centerYAnchor.constraint(equalTo: popup.centerYAnchor),
-            segment.leadingAnchor.constraint(equalTo: popup.trailingAnchor, constant: 10),
-            filePopup.topAnchor.constraint(equalTo: popup.bottomAnchor, constant: 6),
-            filePopup.leadingAnchor.constraint(equalTo: host.leadingAnchor, constant: m),
-            filePopup.widthAnchor.constraint(greaterThanOrEqualToConstant: 320),
-            scroll.topAnchor.constraint(equalTo: filePopup.bottomAnchor, constant: 8),
-            scroll.leadingAnchor.constraint(equalTo: host.leadingAnchor, constant: m),
-            scroll.trailingAnchor.constraint(equalTo: host.trailingAnchor, constant: -m),
-            scroll.heightAnchor.constraint(equalToConstant: 240),
-            filesScroll.topAnchor.constraint(equalTo: scroll.bottomAnchor, constant: 8),
-            filesScroll.leadingAnchor.constraint(equalTo: host.leadingAnchor, constant: m),
-            filesScroll.trailingAnchor.constraint(equalTo: host.trailingAnchor, constant: -m),
-            filesScroll.heightAnchor.constraint(equalToConstant: 84),
-            filesLabel.topAnchor.constraint(equalTo: filesScroll.bottomAnchor, constant: 4),
-            filesLabel.leadingAnchor.constraint(equalTo: host.leadingAnchor, constant: m),
-            filesLabel.trailingAnchor.constraint(equalTo: host.trailingAnchor, constant: -m),
-            restoreBtn.topAnchor.constraint(equalTo: filesLabel.bottomAnchor, constant: 6),
-            restoreBtn.leadingAnchor.constraint(equalTo: host.leadingAnchor, constant: m),
-            restoreVersionBtn.centerYAnchor.constraint(equalTo: restoreBtn.centerYAnchor),
-            restoreVersionBtn.leadingAnchor.constraint(equalTo: restoreBtn.trailingAnchor, constant: 8),
-            rollback.topAnchor.constraint(equalTo: restoreBtn.bottomAnchor, constant: 8),
-            rollback.leadingAnchor.constraint(equalTo: host.leadingAnchor, constant: m),
-            rollback.bottomAnchor.constraint(lessThanOrEqualTo: host.bottomAnchor, constant: -m),
-        ])
-        reloadRepos()
-    }
-
-    /// Called every time the window is shown: refresh repo list (roots may have changed).
-    override func showWindow(_ sender: Any?) {
-        super.showWindow(sender)
+        window?.setContentSize(NSSize(width: 636, height: 560))
         reloadRepos()
     }
 
     // MARK: - Data
 
+    override func showWindow(_ sender: Any?) {
+        super.showWindow(sender)
+        reloadRepos()
+    }
+
     func reloadRepos() {
         guard let svc = service else { return }
-        repoPaths = []
-        for root in svc.rootsSnapshot() {
-            for r in svc.repoManager.firstLevelFolders(root: root) {
-                repoPaths.append(r.path)
-            }
+        rootPaths = svc.rootsSnapshot()
+        rootPopup?.removeAllItems()
+        for root in rootPaths {
+            rootPopup?.addItem(withTitle: (root as NSString).lastPathComponent)
+            rootPopup?.lastItem?.image = FVDesign.lineIcon("folder")
         }
-        repoPopup?.removeAllItems()
-        for p in repoPaths {
-            repoPopup?.addItem(withTitle: (p as NSString).lastPathComponent)
-            repoPopup?.lastItem?.image = FVDesign.lineIcon("folder")
-        }
-        guard !repoPaths.isEmpty else {
+        guard !rootPaths.isEmpty else {
+            currentFolders = []
             commits = []
             table?.reloadData()
-            filesLabel?.stringValue = "尚未添加任何根目录"
+            changedFiles = []
+            filesTable?.reloadData()
+            filesLabel?.stringValue = "尚未添加任何根目录——先在设置中添加根目录"
             return
         }
-        repoPopup?.selectItem(at: 0)
-        let repo = currentRepo() ?? ""
-        Task {
-            let files = await service!.repoManager.listFiles(path: repo)
-            await MainActor.run {
-                self.trackedFiles = files
-                self.rebuildFilePopup()
-                if self.mode == .file { self.reloadFileTimeline() } else { self.reloadCommits() }
-            }
-        }
+        rootPopup?.selectItem(at: 0)
+        populateRepoPopup()
     }
 
-    /// Populate the file picker for the current repo.
-    func rebuildFilePopup() {
-        filePopup?.removeAllItems()
-        for f in trackedFiles {
-            filePopup?.addItem(withTitle: f)
-        }
-        guard !trackedFiles.isEmpty else { return }
-        filePopup?.selectItem(at: 0)
-    }
-
-    /// v2.2.0 mode switch: all commits vs single-file timeline.
-    @objc func modeChanged(_ sender: NSSegmentedControl) {
-        mode = sender.selectedSegment == 1 ? .file : .commits
-        filePopup?.isHidden = mode == .commits
-        restoreFileBtn?.isHidden = mode == .commits
-        table?.deselectAll(nil)
-        if mode == .file {
-            reloadFileTimeline()
-        } else {
-            reloadCommits()
-        }
-    }
-
-    /// File picker changed: reload that file's timeline.
-    @objc func fileChanged() {
-        table?.deselectAll(nil)
-        reloadFileTimeline()
-    }
-
-    /// Version timeline of the selected file.
-    func reloadFileTimeline() {
-        guard let svc = service, let repo = currentRepo(),
-              let file = filePopup?.selectedItem?.title, !file.isEmpty else { return }
-        loadGeneration += 1
-        let generation = loadGeneration
-        Task {
-            let list = (try? await svc.history.fileHistory(repoPath: repo, file: file, limit: 100)) ?? []
-            guard generation == self.loadGeneration else { return }
-            await MainActor.run {
-                guard generation == self.loadGeneration else { return }
-                self.fileTimeline = list
-                self.table?.reloadData()
-                if list.isEmpty {
-                    self.filesLabel?.stringValue = "该文件还没有版本历史"
-                } else {
-                    self.filesLabel?.stringValue = "「" + file + "」的版本时间线（" + String(list.count) + " 个版本），选中后点「恢复此文件」"
-                }
-            }
-        }
-    }
-
-    /// Restore the selected file to the selected timeline version.
-    @objc func restoreFileToVersion() {
-        guard let svc = service, let repo = currentRepo(),
-              let file = filePopup?.selectedItem?.title, !file.isEmpty else { return }
-        let row = table?.selectedRow ?? -1
-        guard row >= 0, row < fileTimeline.count else { return }
-        let target = fileTimeline[row]
-        let alert = NSAlert()
-        alert.messageText = "恢复文件到历史版本"
-        alert.informativeText = "把「" + file + "」恢复到 " + target.shortHash + "（" + target.subject + "）？恢复会形成一次新的提交。"
-        alert.addButton(withTitle: "恢复")
-        alert.addButton(withTitle: "取消")
-        if FVDesign.activateAndRunModal(alert) == .alertFirstButtonReturn {
-            filesLabel?.stringValue = "正在恢复…"
-            Task {
-                do {
-                    _ = try await svc.history.restoreFile(repoPath: repo, file: file, to: target.hash)
-                    await MainActor.run {
-                        filesLabel?.stringValue = "✓ 已将 " + file + " 恢复到 " + target.shortHash + "（已自动提交）"
-                        self.reloadFileTimeline()
-                    }
-                } catch {
-                    await MainActor.run {
-                        filesLabel?.stringValue = "⚠️ 恢复失败: " + error.localizedDescription
-                    }
-                }
-            }
-        }
+    func currentRootPath() -> String? {
+        let idx = rootPopup?.indexOfSelectedItem ?? -1
+        guard rootPaths.indices.contains(idx) else { return nil }
+        return rootPaths[idx]
     }
 
     func currentRepo() -> String? {
         let idx = repoPopup?.indexOfSelectedItem ?? -1
-        guard repoPaths.indices.contains(idx) else { return nil }
-        return repoPaths[idx]
+        guard currentFolders.indices.contains(idx) else { return nil }
+        return currentFolders[idx].path
+    }
+
+    func populateRepoPopup() {
+        guard let svc = service, let root = currentRootPath() else { return }
+        currentFolders = svc.repoManager.firstLevelFolders(root: root)
+        repoPopup?.removeAllItems()
+        for f in currentFolders {
+            repoPopup?.addItem(withTitle: f.name)
+            repoPopup?.lastItem?.image = FVDesign.lineIcon("folder")
+        }
+        guard !currentFolders.isEmpty else {
+            commits = []
+            table?.reloadData()
+            changedFiles = []
+            filesTable?.reloadData()
+            filesLabel?.stringValue = "该根目录暂无子文件夹"
+            return
+        }
+        repoPopup?.selectItem(at: 0)
+        loadForCurrentSelection()
+    }
+
+    /// Load commits + tracked files; the async completion restores the user's
+    /// selection (a stale rebuild must not reset the popup).
+    func loadForCurrentSelection() {
+        guard let svc = service, let repo = currentRepo() else { return }
+        Task {
+            let files = await svc.repoManager.listFiles(path: repo)
+            await MainActor.run {
+                guard self.currentRepo() == repo else { return }
+                self.reloadCommits()
+            }
+        }
     }
 
     func reloadCommits() {
@@ -302,37 +224,36 @@ final class HistoryWindowController: NSWindowController, NSTableViewDelegate, NS
         filesLabel?.stringValue = "正在加载提交历史…"
         Task {
             let list = (try? await svc.history.commits(repoPath: repo, limit: 100)) ?? []
-            // Stale-switch guard: drop results that are no longer current.
             guard generation == self.loadGeneration else { return }
             await MainActor.run {
                 guard generation == self.loadGeneration else { return }
                 self.commits = list
                 self.table?.reloadData()
                 if list.isEmpty {
+                    self.changedFiles = []
+                    self.filesTable?.reloadData()
                     self.filesLabel?.stringValue = "该文件夹还没有提交历史"
-                } else if self.table?.selectedRow == -1 || self.table?.selectedRow == nil {
-                    self.table?.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
                 } else {
-                    self.loadChangedFiles()
+                    self.table?.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
                 }
             }
         }
     }
 
-    /// Load + display the changed files of the selected commit.
+    /// Changed files of the selected commit (with inline restore buttons).
     func loadChangedFiles() {
         guard let svc = service, let repo = currentRepo() else { return }
         let row = table?.selectedRow ?? -1
         guard row >= 0, row < commits.count else {
-            filesLabel?.stringValue = "选择一个提交以查看其包含的文件变更"
+            filesLabel?.stringValue = "选择一个提交以查看其包含的文件"
             return
         }
-        let hash = commits[row].hash
-        let subject = commits[row].subject
+        let commit = commits[row]
+        currentCommit = commit
         filesGeneration += 1
         let generation = filesGeneration
         Task {
-            let lines = (try? await svc.history.changedFiles(repoPath: repo, hash: hash)) ?? []
+            let lines = (try? await svc.history.changedFiles(repoPath: repo, hash: commit.hash)) ?? []
             guard generation == self.filesGeneration else { return }
             await MainActor.run {
                 guard generation == self.filesGeneration else { return }
@@ -341,41 +262,46 @@ final class HistoryWindowController: NSWindowController, NSTableViewDelegate, NS
                     return (parts.count > 1 ? String(parts[0]) : "?", parts.count > 1 ? String(parts[1]) : line)
                 }
                 self.filesTable?.reloadData()
-                if self.changedFiles.isEmpty {
-                    self.filesLabel?.stringValue = "「" + subject + "」没有文件变更"
-                } else {
-                    self.filesLabel?.stringValue = "「" + subject + "」包含 " + String(self.changedFiles.count) + " 个文件，选中后可单文件恢复"
-                }
+                self.filesLabel?.stringValue = self.changedFiles.isEmpty
+                    ? "「" + commit.subject + "」没有文件变更"
+                    : "「" + commit.subject + "」包含 " + String(self.changedFiles.count) + " 个文件"
             }
         }
     }
 
     // MARK: - Actions
 
+    @objc func rootChanged() {
+        let fresh = service?.rootsSnapshot() ?? []
+        if rootPopup?.numberOfItems != fresh.count {
+            reloadRepos()
+            return
+        }
+        populateRepoPopup()
+    }
+
     @objc func repoChanged() {
         table?.deselectAll(nil)
         reloadCommits()
     }
 
-    /// FR-10 single-file restore from the selected commit.
-    @objc func restoreFileAction() {
+    /// Inline per-file restore: one click on the row's button (FR-10).
+    @objc func restoreFileRow(_ sender: NSButton) {
         guard let svc = service, let repo = currentRepo(),
-              let file = selectedChangedFile else { return }
-        let row = table?.selectedRow ?? -1
-        guard row >= 0, row < commits.count else { return }
-        let target = commits[row]
+              let file = sender.identifier?.rawValue else { return }
+        guard let commit = currentCommit else { return }
         let alert = NSAlert()
-        alert.messageText = "单文件恢复"
-        alert.informativeText = "把「" + file + "」恢复到 " + target.shortHash + "（" + target.subject + "）？恢复会形成一次新的回滚提交。"
+        alert.messageText = "恢复文件"
+        alert.informativeText = "把「" + file + "」恢复到 " + commit.shortHash + "（" + commit.subject + "）？恢复会形成一次新的提交。"
         alert.addButton(withTitle: "恢复")
         alert.addButton(withTitle: "取消")
         if FVDesign.activateAndRunModal(alert) == .alertFirstButtonReturn {
             filesLabel?.stringValue = "正在恢复 " + file + "…"
             Task {
                 do {
-                    _ = try await svc.history.restoreFile(repoPath: repo, file: file, to: target.hash)
+                    _ = try await svc.history.restoreFile(repoPath: repo, file: file, to: commit.hash)
                     await MainActor.run {
-                        filesLabel?.stringValue = "✓ 已恢复 " + file + " 到 " + target.shortHash + "（已自动提交）"
+                        filesLabel?.stringValue = "✓ 已恢复 " + file + " 到 " + commit.shortHash
                         self.reloadCommits()
                     }
                 } catch {
@@ -390,50 +316,53 @@ final class HistoryWindowController: NSWindowController, NSTableViewDelegate, NS
     @objc func rollbackAction() {
         guard let svc = service, let repo = currentRepo() else { return }
         let row = table?.selectedRow ?? -1
-        guard row >= 0, row < commits.count else { return }
+        guard row >= 0, row < commits.count else {
+            filesLabel?.stringValue = "先在列表中选择一个版本"
+            return
+        }
         let target = commits[row]
         let alert = NSAlert()
         alert.messageText = "回滚确认"
-        alert.informativeText = "把「\((repo as NSString).lastPathComponent)」整个回滚到 \(target.shortHash)（\(target.subject)）？此操作会丢弃之后的提交。"
+        alert.informativeText = "把「" + (repo as NSString).lastPathComponent + "」整个回滚到 " + target.shortHash + "（" + target.subject + "）？此操作会丢弃之后的提交。"
         alert.addButton(withTitle: "回滚")
         alert.addButton(withTitle: "取消")
-        let modalResult = FVDesign.activateAndRunModal(alert)
-        if modalResult == .alertFirstButtonReturn {
+        if FVDesign.activateAndRunModal(alert) == .alertFirstButtonReturn {
+            filesLabel?.stringValue = "正在回滚…"
             Task {
-                try? await svc.history.resetRepo(repoPath: repo, to: target.hash)
-                await MainActor.run { self.reloadCommits() }
+                do {
+                    try await svc.history.resetRepo(repoPath: repo, to: target.hash)
+                    await MainActor.run {
+                        filesLabel?.stringValue = "✓ 已回滚到 " + target.shortHash
+                        self.reloadCommits()
+                    }
+                } catch {
+                    await MainActor.run {
+                        filesLabel?.stringValue = "⚠️ 回滚失败: " + error.localizedDescription
+                    }
+                }
             }
         }
     }
-}
 
-extension HistoryWindowController: NSTableViewDataSource {
+    // MARK: - Tables
+
     func numberOfRows(in tableView: NSTableView) -> Int {
         if tableView === filesTable { return changedFiles.count }
-        return mode == .file ? fileTimeline.count : commits.count
+        return commits.count
     }
-}
 
-extension HistoryWindowController /* delegate methods */ {
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         let id = tableColumn?.identifier.rawValue ?? ""
+        // Files table with inline per-row restore button.
         if tableView === filesTable {
             let entry = changedFiles[row]
+            if id == "restore" {
+                let btn = NSButton(title: "恢复", target: self, action: #selector(restoreFileRow(_:)))
+                btn.bezelStyle = .rounded
+                btn.identifier = NSUserInterfaceItemIdentifier(entry.path)
+                return btn
+            }
             let text = id == "status" ? entry.status : entry.path
-            let cell = NSTableCellView()
-            let tf = NSTextField(labelWithString: text)
-            tf.font = .systemFont(ofSize: 11)
-            tf.translatesAutoresizingMaskIntoConstraints = false
-            cell.addSubview(tf)
-            NSLayoutConstraint.activate([
-                tf.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 4),
-                tf.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
-            ])
-            return cell
-        }
-        if mode == .file {
-            let c = fileTimeline[row]
-            let text: String = id == "hash" ? c.shortHash : (id == "date" ? Self.dateText(c.date) : c.subject)
             return Self.makeCell(text)
         }
         let c = commits[row]
@@ -443,22 +372,11 @@ extension HistoryWindowController /* delegate methods */ {
         case "date": text = Self.dateText(c.date)
         default: text = c.subject
         }
-        let cell = NSTableCellView()
-        let tf = NSTextField(labelWithString: text)
-        tf.font = .systemFont(ofSize: 12)
-        tf.lineBreakMode = .byTruncatingTail
-        tf.translatesAutoresizingMaskIntoConstraints = false
-        cell.addSubview(tf)
-        NSLayoutConstraint.activate([
-            tf.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 4),
-            tf.trailingAnchor.constraint(lessThanOrEqualTo: cell.trailingAnchor, constant: -4),
-            tf.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
-        ])
-        return cell
+        return Self.makeCell(text)
     }
 
     func tableViewSelectionDidChange(_ notification: Notification) {
-        if mode == .file { return }  // file mode: panel shows timeline hint instead
+        if notification.object as? NSTableView === filesTable { return }
         loadChangedFiles()
     }
 

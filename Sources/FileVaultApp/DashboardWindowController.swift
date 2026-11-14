@@ -168,7 +168,9 @@ header.addArrangedSubview(FVDesign.header("FileVault — 文件时光机"))
             } else {
                 state = "全部正常"
             }
-            statusLabel?.stringValue = String(repoCount) + " 个仓库受守护 · " + state
+            let version = (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? ""
+            let versionPart = version.isEmpty ? "" : " · v" + version
+            statusLabel?.stringValue = String(repoCount) + " 个仓库受守护 · " + state + versionPart
             // Activity rows.
             activityStack?.views.forEach { $0.removeFromSuperview() }
             if top.isEmpty {

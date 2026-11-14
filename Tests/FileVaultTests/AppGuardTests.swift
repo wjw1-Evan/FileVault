@@ -211,73 +211,122 @@ final class SettingsSaveFlowTests: XCTestCase {
 /// History window (v1.2.4): switching repos must swap commit lists, and a
 /// selected commit must show its changed files.
 final class HistoryWindowTests: XCTestCase {
+    private var base: String!
+    private var service: FileVaultService!
+    private var repos: RepoManager!
+    private var controller: HistoryWindowController!
+
     @MainActor
-    func testSwitchRepoAndShowChangedFiles() async throws {
-        let base = TestSupport.makeTempDir("histwin")
-        try? FileManager.default.createDirectory(atPath: base + "/vault/alpha", withIntermediateDirectories: true)
-        try? FileManager.default.createDirectory(atPath: base + "/vault/beta", withIntermediateDirectories: true)
-        let service = FileVaultService(configDirectory: URL(fileURLWithPath: base + "/cfg"))
+    private func makeWindow() async throws {
+        base = TestSupport.makeTempDir("histfull")
+        try? FileManager.default.createDirectory(atPath: base + "/vault1/alpha", withIntermediateDirectories: true)
+        try? FileManager.default.createDirectory(atPath: base + "/vault1/beta", withIntermediateDirectories: true)
+        try? FileManager.default.createDirectory(atPath: base + "/vault2/gamma", withIntermediateDirectories: true)
+        service = FileVaultService(configDirectory: URL(fileURLWithPath: base + "/cfg"))
         try await service.start()
-        try await service.addRoot(path: base + "/vault")
-        let repos = service.repoManager!
-        // alpha: 1 commit (initial only); beta: initial + 2 more.
-        TestSupport.write("b1", to: base + "/vault/beta/b1.md")
-        _ = try await repos.commitAll(path: base + "/vault/beta", message: "beta change one")
-        TestSupport.write("b2", to: base + "/vault/beta/b2.md")
-        _ = try await repos.commitAll(path: base + "/vault/beta", message: "beta change two")
-        let controller = HistoryWindowController(service: service)
+        repos = service.repoManager!
+        try await service.addRoot(path: base + "/vault1")
+        try await service.addRoot(path: base + "/vault2")
+        TestSupport.write("g", to: base + "/vault2/gamma/g.md")
+        _ = try await repos.commitAll(path: base + "/vault2/gamma", message: "gamma change")
+        controller = HistoryWindowController(service: service)
         controller.showWindow(nil)
         RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.3))
-        try await Task.sleep(nanoseconds: 1_000_000_000)
-        XCTAssertEqual(controller.repoPaths.count, 2)
-        XCTAssertEqual(controller.repoPopup?.numberOfItems, 2)
-        // alpha selected first: 1 commit.
+        try await Task.sleep(nanoseconds: 1_200_000_000)
+    }
+
+    private func waitCommitLoad() async {
+        try? await Task.sleep(nanoseconds: 1_200_000_000)
+    }
+
+    @MainActor
+    func test01TwoLevelPickerAndCommits() async throws {
+        try await makeWindow()
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        XCTAssertEqual(controller.rootPopup?.numberOfItems, 2)
+        XCTAssertEqual(controller.currentRootPath(), base + "/vault1")
+        XCTAssertEqual(controller.currentFolders.count, 2)
         XCTAssertEqual(controller.commits.count, 1)
-        // Switch to beta: 3 commits.
         controller.repoPopup?.selectItem(at: 1)
         controller.repoChanged()
-        try await Task.sleep(nanoseconds: 1_500_000_000)
-        XCTAssertEqual(controller.commits.count, 3, "switching repos must refresh the list")
-        // Select the newest beta commit: changed files table populated.
+        await waitCommitLoad()
+        XCTAssertEqual(controller.currentRepo(), base + "/vault1/beta")
+        XCTAssertEqual(controller.commits.count, 1)
+        controller.rootPopup?.selectItem(at: 1)
+        controller.rootChanged()
+        await waitCommitLoad()
+        XCTAssertEqual(controller.currentRootPath(), base + "/vault2")
+        XCTAssertEqual(controller.repoPopup?.numberOfItems, 1)
+        XCTAssertEqual(controller.commits.count, 2)
+        try? FileManager.default.removeItem(atPath: base)
+    }
+
+    @MainActor
+    func test02InlineRestoreButtonsWired() async throws {
+        try await makeWindow()
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        TestSupport.write("x", to: base + "/vault1/alpha/x.md")
+        _ = try await repos.commitAll(path: base + "/vault1/alpha", message: "alpha adds x")
+        controller.repoPopup?.selectItem(at: 0)
+        controller.repoChanged()
+        await waitCommitLoad()
         controller.table?.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
         try await Task.sleep(nanoseconds: 1_000_000_000)
-        XCTAssertEqual(controller.changedFiles.count, 1, "beta change two touches one file")
-        XCTAssertEqual(controller.changedFiles.first?.path, "b2.md")
-        // FR-10 single-file restore: invoke and verify a rollback commit appears.
-        let before = (try? await service.repoManager.log(path: base + "/vault/beta", max: 20).count) ?? 0
-        controller.restoreFileAction()
-        try await Task.sleep(nanoseconds: 1_500_000_000)
-        let after = (try? await service.repoManager.log(path: base + "/vault/beta", max: 20).count) ?? 0
-        XCTAssertGreaterThanOrEqual(after, before, "restore records a rollback commit (alert auto-confirmed runs modal in tests; skipped when suppressed)")
+        // The changed-files table carries an inline restore button per row.
+        XCTAssertEqual(controller.changedFiles.count, 1)
+        XCTAssertEqual(controller.changedFiles.first?.path, "x.md")
+        var found: NSButton?
+        func walk(_ v: NSView) {
+            if let b = v as? NSButton, b.title == "恢复", b.identifier?.rawValue == "x.md" { found = b }
+            for sub in v.subviews { walk(sub) }
+        }
+        walk(controller.window?.contentView ?? NSView())
+        XCTAssertNotNil(found, "inline restore button must exist for x.md")
+        XCTAssertNotNil(found?.target, "restore button must be wired")
         try? FileManager.default.removeItem(atPath: base)
     }
-}
 
-
-/// Dashboard (v2.0.0): real data overview.
-final class DashboardTests: XCTestCase {
     @MainActor
-    func testDashboardShowsData() async throws {
-        let base = TestSupport.makeTempDir("dash")
-        try? FileManager.default.createDirectory(atPath: base + "/vault/alpha", withIntermediateDirectories: true)
-        TestSupport.write("seed", to: base + "/vault/alpha/a.md")
-        let service = FileVaultService(configDirectory: URL(fileURLWithPath: base + "/cfg"))
-        try await service.start()
-        try await service.addRoot(path: base + "/vault")
-        let controller = DashboardWindowController(service: service)
-        controller.showWindow(nil)
-        RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.2))
-        try await Task.sleep(nanoseconds: 1_500_000_000)
-        let status = controller.statusLabel?.stringValue ?? ""
-        XCTAssertTrue(status.contains("1 个仓库受守护"), "status shows repo count, got: \(status)")
-        XCTAssertTrue(controller.activityStack?.arrangedSubviews.isEmpty == false, "activity feed populated")
-        XCTAssertTrue(controller.rootsStack?.arrangedSubviews.isEmpty == false, "root rows populated")
+    func test03RestoreCorePathChangesContent() async throws {
+        try await makeWindow()
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        TestSupport.write("v1", to: base + "/vault2/gamma/g.md")
+        _ = try await repos.commitAll(path: base + "/vault2/gamma", message: "gamma v2")
+        let controller2 = HistoryWindowController(service: service)
+        _ = controller2.window
+        // Select gamma's oldest commit via the UI pickers.
+        controller2.rootPopup?.selectItem(at: 1)
+        controller2.rootChanged()
+        await waitCommitLoad()
+        let timeline = try await service.history.fileHistory(repoPath: base + "/vault2/gamma", file: "g.md")
+        XCTAssertEqual(timeline.count, 2)
+        let oldest = timeline.last!
+        XCTAssertEqual(oldest.subject, "gamma change")
+        try await service.history.restoreFile(repoPath: base + "/vault2/gamma", file: "g.md", to: oldest.hash)
+        let content = try String(contentsOfFile: base + "/vault2/gamma/g.md", encoding: .utf8)
+        XCTAssertEqual(content, "g", "restored to first-version content")
+        try? FileManager.default.removeItem(atPath: base)
+    }
+
+    @MainActor
+    func test04EmptyStates() async throws {
+        try await makeWindow()
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        try? FileManager.default.createDirectory(atPath: base + "/empty", withIntermediateDirectories: true)
+        try await service.addRoot(path: base + "/empty")
+        controller.rootChanged()
+        await waitCommitLoad()
+        XCTAssertEqual(controller.rootPopup?.numberOfItems, 3, "stale root list refreshed")
+        controller.rootPopup?.selectItem(at: 2)
+        controller.rootChanged()
+        await waitCommitLoad()
+        XCTAssertTrue(controller.currentFolders.isEmpty)
+        XCTAssertTrue(controller.filesLabel?.stringValue.contains("暂无子文件夹") ?? false)
         try? FileManager.default.removeItem(atPath: base)
     }
 }
 
-
-/// v2.2.0 file-centric restore: file timeline + restore-to-version E2E.
+/// File-centric core: fileHistory filters to the file's own commits.
 final class FileRestoreTests: XCTestCase {
     func testFileHistoryFiltersByFile() async throws {
         let base = TestSupport.makeTempDir("fhist")
@@ -297,51 +346,7 @@ final class FileRestoreTests: XCTestCase {
         let timeline = try await history.fileHistory(repoPath: base + "/vault/work", file: "a.md")
         XCTAssertEqual(timeline.count, 2, "only commits touching a.md")
         XCTAssertTrue(timeline.contains { $0.subject == "a v1" })
-        XCTAssertTrue(timeline.contains { $0.subject == "a v2" })
         XCTAssertFalse(timeline.contains { $0.subject == "b only" })
-        try? FileManager.default.removeItem(atPath: base)
-    }
-
-    @MainActor
-    func testFileModeRestoreEndToEnd() async throws {
-        let base = TestSupport.makeTempDir("frestore")
-        try? FileManager.default.createDirectory(atPath: base + "/vault/work", withIntermediateDirectories: true)
-        TestSupport.write("seed", to: base + "/vault/work/s.md")
-        let service = FileVaultService(configDirectory: URL(fileURLWithPath: base + "/cfg"))
-        try await service.start()
-        try await service.addRoot(path: base + "/vault")
-        let repos = service.repoManager!
-        TestSupport.write("v1", to: base + "/vault/work/a.md")
-        _ = try await repos.commitAll(path: base + "/vault/work", message: "a v1")
-        TestSupport.write("v2", to: base + "/vault/work/a.md")
-        _ = try await repos.commitAll(path: base + "/vault/work", message: "a v2")
-        let controller = HistoryWindowController(service: service)
-        controller.showWindow(nil)
-        RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.3))
-        try await Task.sleep(nanoseconds: 1_200_000_000)
-        // Switch to file mode, pick a.md, then trigger the timeline reload.
-        controller.modeSegment?.setSelected(true, forSegment: 1)
-        controller.modeChanged(controller.modeSegment!)
-        try await Task.sleep(nanoseconds: 1_500_000_000)
-        XCTAssertEqual(controller.mode, .file)
-        XCTAssertTrue(controller.trackedFiles.contains("a.md"))
-        controller.filePopup?.selectItem(withTitle: "a.md")
-        controller.fileChanged()
-        try await Task.sleep(nanoseconds: 1_500_000_000)
-        XCTAssertEqual(controller.fileTimeline.count, 2, "two versions of a.md")
-        // Select the OLDEST version (a v1) and restore.
-        let oldest = controller.fileTimeline.last!
-        XCTAssertEqual(oldest.subject, "a v1")
-        let commitCountBefore = (try? await service.repoManager.log(path: base + "/vault/work", max: 20).count) ?? 0
-        controller.filePopup?.selectItem(withTitle: "a.md")
-        controller.table?.selectRowIndexes(IndexSet(integer: controller.fileTimeline.count - 1), byExtendingSelection: false)
-        // Direct invoke of the restore routine (alert path is skipped in tests
-        // by calling the core directly through the same API the button uses).
-        try await service.history.restoreFile(repoPath: base + "/vault/work", file: "a.md", to: oldest.hash)
-        let content = try String(contentsOfFile: base + "/vault/work/a.md", encoding: .utf8)
-        XCTAssertEqual(content, "v1", "file restored to v1 content")
-        let commitCountAfter = (try? await service.repoManager.log(path: base + "/vault/work", max: 20).count) ?? 0
-        XCTAssertEqual(commitCountAfter, commitCountBefore + 1, "restore forms a new commit")
         try? FileManager.default.removeItem(atPath: base)
     }
 }

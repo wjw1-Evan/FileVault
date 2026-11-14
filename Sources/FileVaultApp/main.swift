@@ -1,5 +1,6 @@
 import Foundation
 import AppKit
+import ServiceManagement
 import FileVaultCore
 
 // Argument handling
@@ -21,6 +22,53 @@ if args.contains("--help") {
 if args.contains("--smoke") {
     let ok = SmokeTest.run()
     exit(ok ? 0 : 1)
+}
+
+// Diagnostic: inspect/flip the login-item registration (FR: auto-launch).
+if args.contains("--launch-status") || args.contains("--launch-register") || args.contains("--launch-unregister") {
+    let svc = SMAppService.mainApp
+    print("status(before): \(svc.status)")
+    if args.contains("--launch-register") {
+        do { try svc.register(); print("register: ok") } catch { print("register ERROR: \(error)") }
+    }
+    if args.contains("--launch-unregister") {
+        do { try svc.unregister(); print("unregister: ok") } catch { print("unregister ERROR: \(error)") }
+    }
+    print("status(after): \(svc.status)")
+    exit(0)
+}
+
+// Diagnostic: render the history window to a PNG.
+if let idx = args.firstIndex(of: "--render-history"), args.indices.contains(idx + 1) {
+    let outPath = args[idx + 1]
+    let app = NSApplication.shared
+    app.setActivationPolicy(.accessory)
+    Task {
+        let service = FileVaultService()
+        try? await service.start()
+        let controller = HistoryWindowController(service: service)
+        controller.showWindow(nil)
+        controller.window?.makeKeyAndOrderFront(nil)
+        try? await Task.sleep(nanoseconds: 2_000_000_000)
+        RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.3))
+        if let win = controller.window {
+            print("[HDBG] win=\(win.frame) content=\(win.contentView?.frame ?? .zero)")
+            for sub in win.contentView?.subviews ?? [] {
+                print("[HDBG] sub \(type(of: sub)) \(sub.frame)")
+            }
+            let img = CGWindowListCreateImage(.null, .optionIncludingWindow, CGWindowID(win.windowNumber), [.bestResolution])
+            if let img {
+                let rep = NSBitmapImageRep(cgImage: img)
+                if let png = rep.representation(using: .png, properties: [:]) {
+                    try? png.write(to: URL(fileURLWithPath: outPath))
+                    print("rendered: " + outPath)
+                }
+            }
+        }
+        exit(0)
+    }
+    app.run()
+    exit(0)
 }
 
 // Diagnostic: render the dashboard to a PNG.

@@ -42,11 +42,11 @@ FileVault 常驻 macOS 菜单栏，对一个受管根目录下的**第一层子�
 
 ## 自动更新
 
-应用内置更新器（FR-20）：启动后静默检查 GitHub Releases（每日一次），发现新版本发系统通知并在菜单标记；菜单「检查更新…」手动触发。安装流程：**带进度条**的字节级下载（实时百分比+字节数）→ sha256 校验 → 原子替换 bundle（旧版保留 `.old` 可回滚）→ 自动重启。仅 `.app` 包内运行时可用。
+应用内置更新器（FR-20）：启动后静默检查 GitHub Releases（每日一次），**发现新版本自动下载安装并重启**（进度条可见，受「自动检查更新」开关门控）。安装流程：**带进度条**的字节级下载（实时百分比+字节数）→ sha256 校验 → 原子替换 bundle（旧版保留 `.old` 可回滚）→ 自动重启。仅 `.app` 包内运行时可用。
 
 ## 下载安装
 
-**最新发布：[v2.2.3](https://github.com/wjw1-Evan/FileVault/releases/tag/v2.2.3)** — [FileVault-2.2.3.zip](https://github.com/wjw1-Evan/FileVault/releases/download/v2.2.3/FileVault-2.2.3.zip)（sha256 `d210cb9f…774e`）
+**最新发布：[v2.4.2](https://github.com/wjw1-Evan/FileVault/releases/tag/v2.4.2)** — [FileVault-2.4.2.zip](https://github.com/wjw1-Evan/FileVault/releases/download/v2.4.2/FileVault-2.4.2.zip)（sha256 `309f7699…f224`）
 
 解压后将 `FileVault.app` 拖入「应用程序」，首次打开右键 → 打开（ad-hoc 签名提示未公证），菜单栏即可见图标。
 

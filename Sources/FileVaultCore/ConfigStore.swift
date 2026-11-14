@@ -28,15 +28,19 @@ public struct GeneralSettings: Codable, Equatable, Sendable {
     public var autoCheckUpdates: Bool
     public var debounceSeconds: Int          // auto-commit quiet window
     public var largeFileThresholdMB: Int     // FR-12 threshold
+    /// The USER's intent for login-launch; re-registered after updates break it.
+    public var launchAtLoginRequested: Bool
 
     public init(notificationsEnabled: Bool = true,
                 autoCheckUpdates: Bool = true,
                 debounceSeconds: Int = 5,
-                largeFileThresholdMB: Int = 200) {
+                largeFileThresholdMB: Int = 200,
+                launchAtLoginRequested: Bool = false) {
         self.notificationsEnabled = notificationsEnabled
         self.autoCheckUpdates = autoCheckUpdates
         self.debounceSeconds = max(1, debounceSeconds)
         self.largeFileThresholdMB = max(1, largeFileThresholdMB)
+        self.launchAtLoginRequested = launchAtLoginRequested
     }
 
     public static let `default` = GeneralSettings()
@@ -47,6 +51,7 @@ public struct GeneralSettings: Codable, Equatable, Sendable {
         autoCheckUpdates = try c.decodeIfPresent(Bool.self, forKey: .autoCheckUpdates) ?? true
         debounceSeconds = max(1, (try c.decodeIfPresent(Int.self, forKey: .debounceSeconds)) ?? 5)
         largeFileThresholdMB = max(1, (try c.decodeIfPresent(Int.self, forKey: .largeFileThresholdMB)) ?? 200)
+        launchAtLoginRequested = try c.decodeIfPresent(Bool.self, forKey: .launchAtLoginRequested) ?? false
     }
 }
 
