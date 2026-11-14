@@ -34,30 +34,40 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     var grid: NSGridView!
 
     func buildUI() {
+        // Vertical stack: [login toggle (bundled only)] + [scrollable settings grid].
+        let stack = NSStackView()
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 8
+        stack.translatesAutoresizingMaskIntoConstraints = false
+
+        if LaunchAtLogin.available {
+            let toggle = NSButton(checkboxWithTitle: "登录时启动 FileVault", target: self, action: #selector(toggleLaunchAtLogin(_:)))
+            toggle.state = LaunchAtLogin.isEnabled ? .on : .off
+            stack.addArrangedSubview(toggle)
+        }
+
         let grid = NSGridView(numberOfColumns: 2, rows: 0)
         grid.rowSpacing = 10
         grid.column(at: 0).width = 440
         grid.column(at: 1).width = 80
         grid.xPlacement = .fill
-        let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 560, height: 520))
+        let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 560, height: 460))
         scroll.hasVerticalScroller = true
         scroll.documentView = grid
-        window?.contentView = scroll
-        self.grid = grid
-        // Login-item toggle (FR: launch at login; bundled builds only).
-        if LaunchAtLogin.available {
-            let toggle = NSButton(checkboxWithTitle: "登录时启动 FileVault", target: self, action: #selector(toggleLaunchAtLogin(_:)))
-            toggle.state = LaunchAtLogin.isEnabled ? .on : .off
-            let header = NSGridView(numberOfColumns: 1, rows: 0)
-            header.addRow(with: [toggle])
-            header.addRow(with: [NSGridCell.emptyContentView])
-            let wrapper = NSGridView(numberOfColumns: 2, rows: 0)
-            wrapper.addRow(with: [header, NSView()])
-            let scrollHost = NSScrollView(frame: NSRect(x: 0, y: 0, width: 560, height: 480))
-            scrollHost.hasVerticalScroller = true
-            scrollHost.documentView = grid
-            window?.contentView = wrapper
+        stack.addArrangedSubview(scroll)
+
+        window?.contentView = stack
+        if let content = window?.contentView {
+            NSLayoutConstraint.activate([
+                stack.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 12),
+                stack.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -12),
+                stack.topAnchor.constraint(equalTo: content.topAnchor, constant: 10),
+                stack.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -10),
+                scroll.heightAnchor.constraint(equalToConstant: LaunchAtLogin.available ? 440 : 480),
+            ])
         }
+        self.grid = grid
         rebuild()
     }
 
