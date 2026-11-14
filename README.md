@@ -42,7 +42,7 @@ FileVault 常驻 macOS 菜单栏，对一个受管根目录下的**第一层子�
 
 ```bash
 swift build          # 构建
-swift test           # 运行全部测试（38 项）
+swift test           # 运行全部测试（52 项）
 .build/debug/FileVaultApp            # 启动菜单栏应用
 .build/debug/FileVaultApp --smoke    # 无 UI 冒烟自检
 swift run FileVaultApp --help        # 命令行参数
