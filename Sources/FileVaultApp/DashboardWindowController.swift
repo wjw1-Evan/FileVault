@@ -52,7 +52,11 @@ final class DashboardWindowController: NSWindowController, NSWindowDelegate {
 
         // Header.
         let header = FVDesign.card()
-        header.addArrangedSubview(FVDesign.header("🕐 FileVault — 文件时光机"))
+        let iconView = NSImageView()
+iconView.image = FVDesign.lineIcon("clock.arrow.circlepath", pointSize: 18)
+iconView.contentTintColor = .controlAccentColor
+header.addArrangedSubview(iconView)
+header.addArrangedSubview(FVDesign.header("FileVault — 文件时光机"))
         let status = NSTextField(labelWithString: "正在加载…")
         status.font = FVDesign.bodyFont
         status.textColor = .secondaryLabelColor
@@ -89,9 +93,12 @@ final class DashboardWindowController: NSWindowController, NSWindowDelegate {
         let actions = NSStackView()
         actions.orientation = .horizontal
         actions.spacing = 8
-        let addBtn = FVDesign.button("＋ 添加根目录…", action: #selector(addRootFromDashboard), target: self)
-        let settingsBtn = FVDesign.button("⚙️ 设置", action: #selector(openSettingsFromDashboard), target: self)
-        let historyBtn = FVDesign.button("🕘 历史", action: #selector(openHistoryFromDashboard), target: self)
+        let addBtn = FVDesign.button("添加根目录…", action: #selector(addRootFromDashboard), target: self)
+        addBtn.image = FVDesign.lineIcon("plus.circle")
+        let settingsBtn = FVDesign.button("设置", action: #selector(openSettingsFromDashboard), target: self)
+        settingsBtn.image = FVDesign.lineIcon("gearshape")
+        let historyBtn = FVDesign.button("历史", action: #selector(openHistoryFromDashboard), target: self)
+        historyBtn.image = FVDesign.lineIcon("clock.arrow.circlepath")
         actions.addArrangedSubview(addBtn)
         actions.addArrangedSubview(settingsBtn)
         actions.addArrangedSubview(historyBtn)
@@ -170,7 +177,7 @@ final class DashboardWindowController: NSWindowController, NSWindowDelegate {
                     row.spacing = 6
                     let f = DateFormatter()
                     f.dateFormat = "MM-dd HH:mm"
-                    row.addArrangedSubview(FVDesign.statusGlyph("checkmark.circle.fill", .systemGreen))
+                    row.addArrangedSubview(FVDesign.statusGlyph("checkmark.circle", .systemGreen))
                     row.addArrangedSubview(FVDesign.caption(f.string(from: a.date)))
                     let nameLabel = NSTextField(labelWithString: a.repoName)
                     nameLabel.font = FVDesign.captionFont
@@ -190,7 +197,10 @@ final class DashboardWindowController: NSWindowController, NSWindowDelegate {
                 let row = NSStackView()
                 row.orientation = .horizontal
                 row.spacing = 6
-                let nameLabel = NSTextField(labelWithString: "📁 " + (root as NSString).lastPathComponent)
+                let folderIcon = NSImageView()
+folderIcon.image = FVDesign.lineIcon("folder", pointSize: 13)
+row.addArrangedSubview(folderIcon)
+let nameLabel = NSTextField(labelWithString: (root as NSString).lastPathComponent)
                 nameLabel.font = FVDesign.bodyFont
                 row.addArrangedSubview(nameLabel)
                 let countLabel = FVDesign.caption(String(folders.count) + " 个仓库")

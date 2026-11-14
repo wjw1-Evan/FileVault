@@ -57,6 +57,14 @@ enum FVDesign {
         return b
     }
 
+    /// Single-line (outline, template) icon for menus and labels.
+    static func lineIcon(_ symbol: String, pointSize: CGFloat = 12) -> NSImage? {
+        let img = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)?
+            .withSymbolConfiguration(.init(pointSize: pointSize, weight: .regular))
+        img?.isTemplate = true
+        return img
+    }
+
     /// Status glyph image view (colored SF Symbol).
     static func statusGlyph(_ symbol: String, _ color: NSColor, pointSize: CGFloat = 12) -> NSImageView {
         let iv = NSImageView()

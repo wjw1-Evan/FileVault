@@ -142,10 +142,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         items.append(sectionHeader("受保护的目录"))
         for root in roots {
             let folders = service.repoManager.firstLevelFolders(root: root)
-            let rootItem = NSMenuItem(title: "📂 \((root as NSString).lastPathComponent)（\(folders.count)）",
+            let rootItem = NSMenuItem(title: "\((root as NSString).lastPathComponent)（\(folders.count)）",
                                       action: nil, keyEquivalent: "")
+            rootItem.image = FVDesign.lineIcon("folder")
             let sub = NSMenu()
             let openItem = NSMenuItem(title: "在 Finder 中打开根目录", action: #selector(AppDelegate.openRootInFinder(_:)), keyEquivalent: "")
+            openItem.image = FVDesign.lineIcon("arrow.up.forward.app")
             openItem.target = target
             openItem.representedObject = root
             sub.addItem(openItem)
@@ -168,30 +170,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         items.append(.separator())
         items.append(sectionHeader("操作"))
-        let pauseTitle = paused ? "▶ 恢复自动提交" : "⏸ 暂停自动提交"
+        let pauseTitle = paused ? "恢复自动提交" : "暂停自动提交"
         let pauseItem = NSMenuItem(title: pauseTitle, action: #selector(AppDelegate.toggleGlobalPause), keyEquivalent: "p")
+        pauseItem.image = FVDesign.lineIcon(paused ? "play.circle" : "pause.circle")
         pauseItem.target = target
         pauseItem.keyEquivalentModifierMask = [.command, .shift]
         items.append(pauseItem)
-        let commitItem = NSMenuItem(title: "⤴ 立即提交全部", action: #selector(AppDelegate.commitAllNow), keyEquivalent: "")
+        let commitItem = NSMenuItem(title: "立即提交全部", action: #selector(AppDelegate.commitAllNow), keyEquivalent: "")
+        commitItem.image = FVDesign.lineIcon("arrow.up.circle")
         commitItem.target = target
         items.append(commitItem)
         let dashItem = NSMenuItem(title: "打开主面板", action: #selector(AppDelegate.openDashboard), keyEquivalent: "d")
+        dashItem.image = FVDesign.lineIcon("square.grid.2x2")
         dashItem.target = target
         dashItem.keyEquivalentModifierMask = [.command, .shift]
         items.append(dashItem)
-        let historyItem = NSMenuItem(title: "🕘 历史版本…", action: #selector(AppDelegate.openHistory), keyEquivalent: "")
+        let historyItem = NSMenuItem(title: "历史版本…", action: #selector(AppDelegate.openHistory), keyEquivalent: "")
+        historyItem.image = FVDesign.lineIcon("clock.arrow.circlepath")
         historyItem.target = target
         items.append(historyItem)
 
         items.append(.separator())
-        let settingsItem = NSMenuItem(title: "⚙️ 设置…", action: #selector(AppDelegate.openSettings), keyEquivalent: ",")
+        let settingsItem = NSMenuItem(title: "设置…", action: #selector(AppDelegate.openSettings), keyEquivalent: ",")
+        settingsItem.image = FVDesign.lineIcon("gearshape")
         settingsItem.target = target
         items.append(settingsItem)
         let updateTitle = pendingUpdate != nil
-            ? "⬆️ 更新到 \(pendingUpdate!.version)（当前 v\(currentVersion)）"
+            ? "更新到 \(pendingUpdate!.version)（当前 v\(currentVersion)）"
             : "检查更新…（当前 v\(currentVersion)）"
         let updateItem = NSMenuItem(title: updateTitle, action: #selector(AppDelegate.checkForUpdateManually), keyEquivalent: "")
+        updateItem.image = FVDesign.lineIcon(pendingUpdate != nil ? "arrow.up.circle" : "arrow.down.circle")
         updateItem.target = target
         items.append(updateItem)
 

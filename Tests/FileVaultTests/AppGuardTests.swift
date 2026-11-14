@@ -97,7 +97,10 @@ final class StatusSymbolTests: XCTestCase {
 
     /// Every mapped symbol must actually exist on this macOS (render proof).
     func testSymbolsExistInSystem() {
-        for name in ["clock.arrow.circlepath", "arrow.up.arrow.down.circle", "exclamationmark.triangle", "pause.circle"] {
+        for name in ["clock.arrow.circlepath", "arrow.up.arrow.down.circle", "exclamationmark.triangle", "pause.circle",
+                     "checkmark.circle", "arrow.up.circle", "arrow.down.circle", "arrow.triangle.2.circlepath",
+                     "folder", "gearshape", "play.circle", "plus.circle", "square.grid.2x2", "arrow.up.forward.app",
+                     "circle.dashed"] {
             XCTAssertNotNil(NSImage(systemSymbolName: name, accessibilityDescription: nil), "missing symbol: \(name)")
         }
     }

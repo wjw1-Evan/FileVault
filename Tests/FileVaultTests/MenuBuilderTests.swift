@@ -30,6 +30,8 @@ final class MenuBuilderTests: XCTestCase {
         XCTAssertEqual(headers.count, 2, "two section headers")
         // Root row with count + submenu of clickable repos.
         let rootItem = items.first { $0.title.contains("vault（2）") }
+        XCTAssertFalse(rootItem?.title.contains("📂") ?? true, "menu titles must be emoji-free")
+        XCTAssertNotNil(rootItem?.image, "root row uses a line icon")
         XCTAssertNotNil(rootItem, "root row shows repo count")
         let sub = rootItem?.submenu
         XCTAssertNotNil(sub)
@@ -40,7 +42,8 @@ final class MenuBuilderTests: XCTestCase {
         XCTAssertNotNil(betaRow?.image, "repo row carries status glyph")
         XCTAssertNotNil(betaRow?.representedObject, "repo row opens the repo in Finder")
         // Actions present with shortcuts.
-        XCTAssertTrue(items.contains { $0.title.contains("暂停自动提交") })
+        XCTAssertTrue(items.contains { $0.title == "暂停自动提交" })
+        XCTAssertTrue(items.contains { $0.title == "设置…" })
         XCTAssertTrue(items.contains { $0.keyEquivalent == "," && $0.title.contains("设置") })
         XCTAssertTrue(items.contains { $0.keyEquivalent == "q" && $0.title.contains("退出") })
         XCTAssertTrue(items.contains { $0.title.contains("检查更新") })
@@ -49,7 +52,7 @@ final class MenuBuilderTests: XCTestCase {
         let items2 = AppDelegate.buildMenuItems(service: service, statuses: statuses,
                                                 pendingUpdate: pending, healthCache: health,
                                                 currentVersion: "1.3.1", target: nil)
-        XCTAssertEqual(items2.first { $0.title.contains("更新到") }?.title, "⬆️ 更新到 1.4.0（当前 v1.3.1）")
+        XCTAssertEqual(items2.first { $0.title.contains("更新到") }?.title, "更新到 1.4.0（当前 v1.3.1）")
         XCTAssertTrue(items.contains { $0.title.contains("立即提交全部") })
         try? FileManager.default.removeItem(atPath: root)
     }

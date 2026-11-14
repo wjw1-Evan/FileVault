@@ -157,7 +157,8 @@ final class HistoryWindowController: NSWindowController, NSTableViewDelegate, NS
         }
         repoPopup?.removeAllItems()
         for p in repoPaths {
-            repoPopup?.addItem(withTitle: "📁 " + (p as NSString).lastPathComponent)
+            repoPopup?.addItem(withTitle: (p as NSString).lastPathComponent)
+            repoPopup?.lastItem?.image = FVDesign.lineIcon("folder")
         }
         guard !repoPaths.isEmpty else {
             commits = []

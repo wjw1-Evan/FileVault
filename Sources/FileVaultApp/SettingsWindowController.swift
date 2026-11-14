@@ -26,10 +26,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     static func repoGlyph(_ status: SyncStatus) -> (symbol: String, color: NSColor) {
         switch status {
         case .noRemote: return ("circle.dashed", .systemGray)
-        case .synced: return ("checkmark.circle.fill", .systemGreen)
+        case .synced: return ("checkmark.circle", .systemGreen)
         case .pendingPush: return ("arrow.up.circle", .systemOrange)
         case .pushing: return ("arrow.triangle.2.circlepath", .systemBlue)
-        case .failed: return ("exclamationmark.triangle.fill", .systemRed)
+        case .failed: return ("exclamationmark.triangle", .systemRed)
         }
     }
 
@@ -127,7 +127,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         card.layer?.borderWidth = 1
         card.widthAnchor.constraint(equalToConstant: 586).isActive = true
 
-        let header = NSTextField(labelWithString: "⚙️ 通用设置")
+        let header = NSTextField(labelWithString: "通用设置")
         header.font = .systemFont(ofSize: 14, weight: .semibold)
         card.addArrangedSubview(header)
         card.addArrangedSubview(makeSeparator())
@@ -221,7 +221,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         nameLine.orientation = .vertical
         nameLine.alignment = .leading
         nameLine.spacing = 1
-        let nameLabel = NSTextField(labelWithString: "📁 " + (root as NSString).lastPathComponent)
+        let nameLabel = NSTextField(labelWithString: (root as NSString).lastPathComponent)
         nameLabel.font = .systemFont(ofSize: 14, weight: .semibold)
         let pathLabel = NSTextField(labelWithString: root)
         pathLabel.font = .systemFont(ofSize: 10.5)
@@ -234,7 +234,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
         header.addArrangedSubview(spacer)
         let cfgRoot = svc.configStore.load().roots.first { $0.path == root }
-        let pause = NSButton(checkboxWithTitle: "⏸ 暂停", target: self, action: #selector(pauseRootChanged(_:)))
+        let pause = NSButton(checkboxWithTitle: "暂停", target: self, action: #selector(pauseRootChanged(_:)))
         pause.identifier = NSUserInterfaceItemIdentifier(root)
         pause.state = (cfgRoot?.paused ?? false) ? .on : .off
         let openBtn = NSButton(title: "打开", target: self, action: #selector(openRootInFinder(_:)))
