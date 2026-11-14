@@ -16,7 +16,7 @@ FileVault 常驻 macOS 菜单栏，对一个受管根目录下的**第一层子�
 6. **历史时间线** — 查看每个仓库的提交历史，了解文件如何一步步演进。
 6.5 **快速打开** — 菜单栏与设置窗口均可一键在 Finder 中打开已添加的目录。
 6.6 **主控面板** — 菜单「打开主面板」(⇧⌘D)：状态总览 + 跨仓库最近活动流 + 目录卡片。
-7. **一键回滚** — 整仓回滚到任意提交；**单文件恢复**支持以文件为中心的时间线（查看该文件被哪些提交修改过）并恢复到任意时间点，误删 3 步内找回。
+7. **一键回滚** — 整仓回滚到任意提交；**单文件恢复**一步到位：选中提交后，它包含的每个文件旁都有「恢复」按钮，误删 3 步内找回。
 8. **忽略规则** — 自动注入 .gitignore 模板（.DS_Store、node_modules 等），设置窗口内可视化编辑，改动会被自动提交。
 9. **大文件保护** — 超过阈值的大文件（默认 200MB）自动排除出版本管理，避免仓库膨胀。
 10. **手动暂停** — 一键暂停/恢复自动提交，恢复时自动补一次全量提交。
@@ -46,7 +46,7 @@ FileVault 常驻 macOS 菜单栏，对一个受管根目录下的**第一层子�
 
 ## 下载安装
 
-**最新发布：[v2.4.0](https://github.com/wjw1-Evan/FileVault/releases/tag/v2.4.0)** — [FileVault-2.4.0.zip](https://github.com/wjw1-Evan/FileVault/releases/download/v2.4.0/FileVault-2.4.0.zip)（sha256 `7d7a22b0…53af6`）
+**最新发布：[v2.5.0](https://github.com/wjw1-Evan/FileVault/releases/tag/v2.5.0)** — [FileVault-2.5.0.zip](https://github.com/wjw1-Evan/FileVault/releases/download/v2.5.0/FileVault-2.5.0.zip)（sha256 `0b463bc3…d3f60`）
 
 解压后将 `FileVault.app` 拖入「应用程序」，首次打开右键 → 打开（ad-hoc 签名提示未公证），菜单栏即可见图标。
 
