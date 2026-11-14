@@ -57,8 +57,12 @@ final class SettingsUIStructureTests: XCTestCase {
         var foundAddButton = false
         var foundGrid = false
         var foundUrlField = false
+        var foundOpenButton = false
         func walk(_ v: NSView) {
             if let b = v as? NSButton, b.title.contains("添加根目录") { foundAddButton = true }
+            if let b = v as? NSButton, b.title.contains("打开"), b.identifier?.rawValue.contains("/vault") == true {
+                foundOpenButton = true
+            }
             if let g = v as? NSGridView, g === controller.grid { foundGrid = true }
             if let f = v as? NSTextField, f.placeholderString?.contains("远程仓库地址") == true { foundUrlField = true }
             for sub in v.subviews { walk(sub) }
@@ -67,6 +71,7 @@ final class SettingsUIStructureTests: XCTestCase {
         XCTAssertTrue(foundGrid, "settings grid must be attached to the window (v1.1.0 regression)")
         XCTAssertTrue(foundAddButton, "添加根目录 button must be visible")
         XCTAssertTrue(foundUrlField, "per-repo remote config field must be visible")
+        XCTAssertTrue(foundOpenButton, "root 打开 button must exist with the root path identifier (FR-21)")
         try? FileManager.default.removeItem(atPath: root)
     }
 }

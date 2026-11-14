@@ -92,7 +92,15 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         for root in svc.rootsSnapshot() {
             let nameLabel = NSTextField(labelWithString: "根目录: " + (root as NSString).lastPathComponent)
             nameLabel.font = NSFont.boldSystemFont(ofSize: 13)
-            grid.addRow(with: [nameLabel, NSView()])
+            let openBtn = NSButton(title: "📂 打开", target: self, action: #selector(openRootInFinder(_:)))
+            openBtn.identifier = NSUserInterfaceItemIdentifier(root)
+            openBtn.bezelStyle = .rounded
+            let removeBtn = NSButton(title: "移除此根目录", target: self, action: #selector(removeRootAction(_:)))
+            removeBtn.identifier = NSUserInterfaceItemIdentifier(root)
+            let rootActions = NSStackView(views: [openBtn, removeBtn])
+            rootActions.orientation = .horizontal
+            rootActions.spacing = 8
+            grid.addRow(with: [nameLabel, rootActions])
             for r in svc.repoManager.firstLevelFolders(root: root) {
                 let nameLabel = NSTextField(labelWithString: "  📁 " + r.name)
                 let healthLabel = NSTextField(labelWithString: "…")
@@ -139,9 +147,6 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
                 sshLabels[r.path] = sshLabel
                 grid.addRow(with: [sshLabel, NSGridCell.emptyContentView])
             }
-            let removeBtn = NSButton(title: "移除此根目录", target: self, action: #selector(removeRootAction(_:)))
-            removeBtn.identifier = NSUserInterfaceItemIdentifier(root)
-            grid.addRow(with: [removeBtn, NSView()])
             grid.addRow(with: [NSGridCell.emptyContentView, NSGridCell.emptyContentView])
         }
         let addBtn = NSButton(title: "添加根目录…", target: self, action: #selector(addRootAction))
@@ -214,6 +219,12 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
                 await MainActor.run { self.rebuild() }
             }
         }
+    }
+
+    /// Open a managed root folder in Finder (FR-21).
+    @objc func openRootInFinder(_ sender: NSButton) {
+        guard let root = sender.identifier?.rawValue else { return }
+        NSWorkspace.shared.open(URL(fileURLWithPath: root))
     }
 
     @objc func removeRootAction(_ sender: NSButton) {

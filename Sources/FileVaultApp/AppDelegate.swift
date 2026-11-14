@@ -102,6 +102,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let last = (root as NSString).lastPathComponent
             let rootItem = NSMenuItem(title: "📂 " + last, action: nil, keyEquivalent: "")
             let sub = NSMenu()
+            let openItem = NSMenuItem(title: "在 Finder 中打开", action: #selector(openRootInFinder(_:)), keyEquivalent: "")
+            openItem.target = self
+            openItem.representedObject = root
+            sub.addItem(openItem)
+            sub.addItem(.separator())
             let repos = svc.repoManager.firstLevelFolders(root: root)
             for r in repos {
                 let st = statusCache[r.path] ?? .noRemote
@@ -217,6 +222,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc func quitApp() {
         NSApp.terminate(nil)
+    }
+
+    /// Open a managed root folder in Finder (FR-21).
+    @objc func openRootInFinder(_ sender: NSMenuItem) {
+        guard let path = sender.representedObject as? String else { return }
+        NSWorkspace.shared.open(URL(fileURLWithPath: path))
     }
 
     // MARK: - Auto-update (FR-20)
