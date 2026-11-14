@@ -95,10 +95,13 @@ header.addArrangedSubview(FVDesign.header("FileVault — 文件时光机"))
         actions.spacing = 8
         let addBtn = FVDesign.button("添加根目录…", action: #selector(addRootFromDashboard), target: self)
         addBtn.image = FVDesign.lineIcon("plus.circle")
+        addBtn.imagePosition = .imageLeading
         let settingsBtn = FVDesign.button("设置", action: #selector(openSettingsFromDashboard), target: self)
         settingsBtn.image = FVDesign.lineIcon("gearshape")
+        settingsBtn.imagePosition = .imageLeading
         let historyBtn = FVDesign.button("历史", action: #selector(openHistoryFromDashboard), target: self)
         historyBtn.image = FVDesign.lineIcon("clock.arrow.circlepath")
+        historyBtn.imagePosition = .imageLeading
         actions.addArrangedSubview(addBtn)
         actions.addArrangedSubview(settingsBtn)
         actions.addArrangedSubview(historyBtn)
