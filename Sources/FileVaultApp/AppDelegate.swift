@@ -40,15 +40,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             await MainActor.run { self.refreshMenu() }
         }
-        // FR-20: silent update check shortly after launch, once per launch.
+        // FR-20: silent update check shortly after launch (respects the toggle).
         Task {
             try? await Task.sleep(nanoseconds: 20_000_000_000)
+            guard svc.configStore.load().general.autoCheckUpdates else { return }
             await self.checkForUpdate(silent: true)
         }
         // Event-driven refresh: rebuild the menu only when state actually changes.
         // A slow fallback timer (15s) covers missed events without busy polling.
         svc.onStateChange = { [weak self] in
             Task { @MainActor in
+                self?.notifications.enabled = svc.configStore.load().general.notificationsEnabled
                 await self?.refreshStatuses()
                 self?.refreshMenu()
             }

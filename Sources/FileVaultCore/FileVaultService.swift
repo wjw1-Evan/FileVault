@@ -16,7 +16,7 @@ public final class FileVaultService: @unchecked Sendable {
     /// Unified failure events for UI notifications (FR-18).
     public let onFailure = EventCallbackBox()
     public let sshChecker = SshKeyChecker()
-    private var debouncer: Debouncer!
+    var debouncer: Debouncer!
     private let lock = NSLock()
 
     public init(configDirectory: URL? = nil, locator: GitLocator = SystemGitLocator()) {
@@ -60,6 +60,7 @@ public final class FileVaultService: @unchecked Sendable {
         }
         // Load configured roots, ensure repos, start watchers.
         let cfg = configStore.load()
+        applyGeneral(cfg.general)
         for root in cfg.roots {
             try await attachRoot(path: root.path, paused: root.paused)
         }
@@ -143,6 +144,20 @@ public final class FileVaultService: @unchecked Sendable {
         if !p {
             await commitEngine.commitAllDirty(root: resolved(root))
         }
+    }
+
+    /// Apply general settings to runtime components (v1.3.0 complete settings).
+    public func applyGeneral(_ g: GeneralSettings) {
+        debouncer?.setQuietInterval(TimeInterval(g.debounceSeconds))
+        commitEngine?.largeFileThreshold = UInt64(g.largeFileThresholdMB) * 1024 * 1024
+    }
+
+    /// Mutate and persist general settings, then apply them at runtime.
+    public func updateGeneral(_ mutate: (inout GeneralSettings) -> Void) {
+        var cfg = configStore.load()
+        mutate(&cfg.general)
+        configStore.save(cfg)
+        applyGeneral(cfg.general)
     }
 
     public func commitAllNow() async {

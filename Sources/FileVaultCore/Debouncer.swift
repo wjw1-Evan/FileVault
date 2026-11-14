@@ -2,8 +2,10 @@ import Foundation
 
 /// Trailing-edge debounce with a max-wait cap (FR-04).
 public final class Debouncer: @unchecked Sendable {
-    private let quietInterval: TimeInterval
+    /// Mutable at runtime (settings can change the quiet window).
+    public private(set) var quietInterval: TimeInterval
     private let maxWait: TimeInterval
+    private let intervalLock = NSLock()
     private let onFired: @Sendable (String) -> Void
     private let lock = NSLock()
     private var timers: [String: DispatchSourceTimer] = [:]
@@ -13,6 +15,19 @@ public final class Debouncer: @unchecked Sendable {
         self.quietInterval = quietInterval
         self.maxWait = maxWait
         self.onFired = onFired
+    }
+
+    /// Update the quiet window at runtime; applies to subsequent touches.
+    public func setQuietInterval(_ interval: TimeInterval) {
+        intervalLock.lock()
+        quietInterval = max(0.1, interval)
+        intervalLock.unlock()
+    }
+
+    public var currentQuietInterval: TimeInterval {
+        intervalLock.lock()
+        defer { intervalLock.unlock() }
+        return quietInterval
     }
 
     public func touch(_ key: String) {
@@ -30,7 +45,7 @@ public final class Debouncer: @unchecked Sendable {
         }
         timers[key]?.cancel()
         let t = DispatchSource.makeTimerSource(queue: DispatchQueue.global())
-        t.schedule(deadline: .now() + min(quietInterval, remaining))
+        t.schedule(deadline: .now() + min(currentQuietInterval, remaining))
         t.setEventHandler { [weak self] in
             guard let self else { return }
             self.lock.lock()

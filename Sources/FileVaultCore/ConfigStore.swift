@@ -16,12 +16,34 @@ public struct ManagedRoot: Codable, Equatable, Identifiable, Sendable {
     }
 }
 
+/// General (non-root) user preferences (v1.3.0 complete settings).
+public struct GeneralSettings: Codable, Equatable, Sendable {
+    public var notificationsEnabled: Bool
+    public var autoCheckUpdates: Bool
+    public var debounceSeconds: Int          // auto-commit quiet window
+    public var largeFileThresholdMB: Int     // FR-12 threshold
+
+    public init(notificationsEnabled: Bool = true,
+                autoCheckUpdates: Bool = true,
+                debounceSeconds: Int = 5,
+                largeFileThresholdMB: Int = 200) {
+        self.notificationsEnabled = notificationsEnabled
+        self.autoCheckUpdates = autoCheckUpdates
+        self.debounceSeconds = max(1, debounceSeconds)
+        self.largeFileThresholdMB = max(1, largeFileThresholdMB)
+    }
+
+    public static let `default` = GeneralSettings()
+}
+
 /// Top-level app configuration.
 public struct AppConfig: Codable, Equatable, Sendable {
     public var roots: [ManagedRoot]
+    public var general: GeneralSettings
 
-    public init(roots: [ManagedRoot] = []) {
+    public init(roots: [ManagedRoot] = [], general: GeneralSettings = .default) {
         self.roots = roots
+        self.general = general
     }
 }
 

@@ -26,7 +26,25 @@ public enum UpdateDownloader {
     /// no token is available (progress unavailable on that path).
     @discardableResult
     public static func download(info: ReleaseInfo, repo: String = "wjw1-Evan/FileVault",
-                                progress: ((Double, Int64, Int64) -> Void)? = nil) async throws -> URL {
+                                progress: ((Double, Int64, Int64) -> Void)? = nil,
+                                attempts: Int = 3) async throws -> URL {
+        var lastError: Error = UpdateError.downloadFailed
+        for attempt in 1...max(1, attempts) {
+            do {
+                return try await downloadOnce(info: info, repo: repo, progress: progress)
+            } catch {
+                lastError = error
+                if attempt < attempts {
+                    try? await Task.sleep(nanoseconds: UInt64(attempt) * 1_500_000_000)
+                }
+            }
+        }
+        throw lastError
+    }
+
+    /// One download attempt (URLSession with gh token; CLI fallback).
+    private static func downloadOnce(info: ReleaseInfo, repo: String,
+                                     progress: ((Double, Int64, Int64) -> Void)?) async throws -> URL {
         guard let token = ghToken(), info.assetID > 0 else {
             return try await SelfUpdater.download(info: info, into: FileManager.default.temporaryDirectory.appendingPathComponent("fv-update-cli"), repo: repo)
         }

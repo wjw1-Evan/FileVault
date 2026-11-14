@@ -164,3 +164,83 @@ final class UpdateProgressRenderTests: XCTestCase {
         controller.closeWindow()
     }
 }
+
+
+/// E2E of the settings save flow: rebuild -> type url -> saveRepoConfig -> git config.
+final class SettingsSaveFlowTests: XCTestCase {
+    @MainActor
+    func testSaveRemoteConfigEndToEnd() async throws {
+        let base = TestSupport.makeTempDir("saveflow")
+        try? FileManager.default.createDirectory(atPath: base + "/vault/work", withIntermediateDirectories: true)
+        TestSupport.write("seed", to: base + "/vault/work/a.md")
+        let service = FileVaultService(configDirectory: URL(fileURLWithPath: base + "/cfg"))
+        try await service.start()
+        try await service.addRoot(path: base + "/vault")
+        let repoPath = base + "/vault/work"
+        let controller = SettingsWindowController(service: service)
+        _ = controller.window
+        // The rebuild must expose a field keyed by the repo path.
+        guard let field = controller.urlFields[repoPath] else {
+            return XCTFail("url field missing for key \(repoPath); keys=\(controller.urlFields.keys)")
+        }
+        field.stringValue = "https://github.com/example/demo.git"
+        controller.userEditedPaths.insert(repoPath)
+        // Simulate the 保存 button.
+        let btn = NSButton()
+        btn.identifier = NSUserInterfaceItemIdentifier(repoPath)
+        controller.saveRepoConfig(btn)
+        // Feedback appears quickly (before the slow connectivity probe finishes).
+        try await Task.sleep(nanoseconds: 1_500_000_000)
+        let earlyMessage = controller.messageLabels[repoPath]?.stringValue ?? ""
+        XCTAssertTrue(earlyMessage.contains("已保存"), "inline feedback expected, got: '\(earlyMessage)'")
+        // Wait for the async save + rebuild.
+        try await Task.sleep(nanoseconds: 2_500_000_000)
+        let url = await service.repoManager.remoteURL(path: repoPath)
+        XCTAssertEqual(url, "https://github.com/example/demo.git", "saved url must reach git config")
+        let auto = await service.repoManager.autoPushEnabled(path: repoPath)
+        XCTAssertFalse(auto, "toggle default off")
+        XCTAssertNotNil(controller.urlFields[repoPath], "field re-exposed after rebuild")
+        try? FileManager.default.removeItem(atPath: base)
+    }
+}
+
+
+/// History window (v1.2.4): switching repos must swap commit lists, and a
+/// selected commit must show its changed files.
+final class HistoryWindowTests: XCTestCase {
+    @MainActor
+    func testSwitchRepoAndShowChangedFiles() async throws {
+        let base = TestSupport.makeTempDir("histwin")
+        try? FileManager.default.createDirectory(atPath: base + "/vault/alpha", withIntermediateDirectories: true)
+        try? FileManager.default.createDirectory(atPath: base + "/vault/beta", withIntermediateDirectories: true)
+        let service = FileVaultService(configDirectory: URL(fileURLWithPath: base + "/cfg"))
+        try await service.start()
+        try await service.addRoot(path: base + "/vault")
+        let repos = service.repoManager!
+        // alpha: 1 commit (initial only); beta: initial + 2 more.
+        TestSupport.write("b1", to: base + "/vault/beta/b1.md")
+        _ = try await repos.commitAll(path: base + "/vault/beta", message: "beta change one")
+        TestSupport.write("b2", to: base + "/vault/beta/b2.md")
+        _ = try await repos.commitAll(path: base + "/vault/beta", message: "beta change two")
+        let controller = HistoryWindowController(service: service)
+        controller.showWindow(nil)
+        RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.3))
+        try await Task.sleep(nanoseconds: 1_000_000_000)
+        XCTAssertEqual(controller.repoPaths.count, 2)
+        XCTAssertEqual(controller.repoPopup?.numberOfItems, 2)
+        // alpha selected first: 1 commit.
+        XCTAssertEqual(controller.commits.count, 1)
+        // Switch to beta: 3 commits.
+        controller.repoPopup?.selectItem(at: 1)
+        controller.repoChanged()
+        try await Task.sleep(nanoseconds: 1_500_000_000)
+        XCTAssertEqual(controller.commits.count, 3, "switching repos must refresh the list")
+        // Select the newest beta commit: changed files shown.
+        controller.table?.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
+        try await Task.sleep(nanoseconds: 1_000_000_000)
+        let filesText = controller.filesText ?? ""
+        XCTAssertTrue(filesText.contains("b2.md"), "changed file list must include b2.md, got: \(filesText)")
+        XCTAssertTrue(filesText.contains("beta change two"))
+        try? FileManager.default.removeItem(atPath: base)
+    }
+}

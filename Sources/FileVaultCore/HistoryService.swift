@@ -32,3 +32,17 @@ public final class HistoryService: @unchecked Sendable {
         try await repoManager.resetRepo(path: repoPath, to: hash)
     }
 }
+
+public extension HistoryService {
+    /// Changed files of one commit ("M\ta.md" style lines, FR-09 content view).
+    func changedFiles(repoPath: String, hash: String) async throws -> [String] {
+        let r = try await repoManager.runner.run(
+            ["diff-tree", "--no-commit-id", "--name-status", "-r", "--root", hash],
+            cwd: repoPath
+        )
+        guard r.succeeded else {
+            throw GitCommandError(command: "diff-tree", exitCode: r.exitCode, stderr: r.stderr)
+        }
+        return r.stdout.split(separator: "\n").map(String.init).filter { !$0.isEmpty }
+    }
+}

@@ -7,6 +7,8 @@ import FileVaultCore
 /// (e.g. unbundled debug binaries), so core flows are never affected.
 final class NotificationService: NSObject, UNUserNotificationCenterDelegate {
     private var authorized = false
+    /// User preference (general settings) — persisted in config.json.
+    var enabled = true
 
     func setup() {
         // UNUserNotificationCenter.current() throws an uncatchable ObjC
@@ -23,7 +25,7 @@ final class NotificationService: NSObject, UNUserNotificationCenterDelegate {
     }
 
     func notifyFailure(_ title: String, _ body: String) {
-        guard authorized else { return }
+        guard authorized, enabled else { return }
         let content = UNMutableNotificationContent()
         content.title = title
         content.body = body

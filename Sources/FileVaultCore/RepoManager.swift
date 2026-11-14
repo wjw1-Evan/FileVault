@@ -285,6 +285,15 @@ public final class RepoManager: @unchecked Sendable {
         _ = try await runner.run(["reset", "--hard", hash], cwd: path)
     }
 
+    /// Pull with --ff-only: never auto-merges (PRD); conflicts surface as errors.
+    public func pull(path: String) async throws -> String {
+        let r = try await runner.run(["pull", "--ff-only", "origin"], cwd: path)
+        guard r.succeeded else {
+            throw GitCommandError(command: "pull --ff-only origin", exitCode: r.exitCode, stderr: r.stderr)
+        }
+        return r.stdout
+    }
+
     // MARK: - Large file protection (FR-12)
 
     public static let defaultLargeFileThreshold: UInt64 = 200 * 1024 * 1024

@@ -106,4 +106,18 @@ public final class GitRunner: Sendable {
             stderr: String(decoding: errData, as: UTF8.self)
         )
     }
+    /// One-time `gh auth setup-git` so GitHub HTTPS pushes work without manual
+    /// credential setup (idempotent).
+    public static func ghAuthSetupGit() async {
+        let gh = SelfUpdater.ghURL()
+        guard FileManager.default.isExecutableFile(atPath: gh.path) else { return }
+        let p = Process()
+        p.executableURL = gh
+        p.arguments = ["auth", "setup-git"]
+        p.standardOutput = FileHandle.nullDevice
+        p.standardError = FileHandle.nullDevice
+        try? p.run()
+        p.waitUntilExit()
+    }
+
 }
