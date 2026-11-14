@@ -7,8 +7,16 @@ final class HistoryWindowController: NSWindowController, NSTableViewDelegate, NS
     let service: FileVaultService?
     var repoPopup: NSPopUpButton?
     var table: NSTableView?
+    var filesTable: NSTableView?
     var filesLabel: NSTextField?
     var filesText: String? { filesLabel?.stringValue }
+    var changedFiles: [(status: String, path: String)] = []
+    /// Row the user picked for single-file restore (FR-10).
+    var selectedChangedFile: String? {
+        let idx = filesTable?.selectedRow ?? -1
+        guard changedFiles.indices.contains(idx) else { return nil }
+        return changedFiles[idx].path
+    }
     var commits: [CommitInfo] = []
     var repoPaths: [String] = []
     /// Guard: only the newest load may touch the table (stale-switch fix).
@@ -18,7 +26,7 @@ final class HistoryWindowController: NSWindowController, NSTableViewDelegate, NS
     init(service: FileVaultService?) {
         self.service = service
         let win = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 660, height: 460),
+            contentRect: NSRect(x: 0, y: 0, width: 660, height: 540),
             styleMask: [.titled, .closable],
             backing: .buffered, defer: false
         )
@@ -63,17 +71,32 @@ final class HistoryWindowController: NSWindowController, NSTableViewDelegate, NS
         scroll.documentView = tv
         tv.sizeLastColumnToFit()
 
-        let filesLabel = NSTextField(wrappingLabelWithString: "选择一个提交以查看其包含的文件变更")
-        filesLabel.font = .systemFont(ofSize: 11)
-        filesLabel.textColor = .secondaryLabelColor
-        filesLabel.frame = NSRect(x: 0, y: 0, width: 636, height: 60)
-        self.filesLabel = filesLabel
-        let filesScroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 636, height: 70))
+        let filesScroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 636, height: 78))
         filesScroll.hasVerticalScroller = true
-        filesScroll.documentView = filesLabel
-        filesLabel.autoresizingMask = [.width]
-        filesLabel.isEditable = false
+        let ftv = NSTableView(frame: NSRect(x: 0, y: 0, width: 636, height: 78))
+        let stCol = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("status"))
+        stCol.title = "变更"
+        stCol.width = 56
+        let fCol = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("file"))
+        fCol.title = "文件（选中后可单文件恢复）"
+        fCol.width = 560
+        ftv.addTableColumn(stCol)
+        ftv.addTableColumn(fCol)
+        ftv.dataSource = self
+        ftv.delegate = self
+        ftv.rowHeight = 20
+        filesTable = ftv
+        filesScroll.documentView = ftv
+        ftv.sizeLastColumnToFit()
 
+        let filesLabel = NSTextField(labelWithString: "选择一个提交以查看其包含的文件变更")
+        filesLabel.font = .systemFont(ofSize: 10.5)
+        filesLabel.textColor = .secondaryLabelColor
+        self.filesLabel = filesLabel
+
+        let restoreBtn = NSButton(title: "恢复选中文件", target: self, action: #selector(restoreFileAction))
+        restoreBtn.target = self
+        restoreBtn.bezelStyle = .rounded
         let rollback = NSButton(title: "回滚到此版本", target: self, action: #selector(rollbackAction))
         rollback.target = self
         rollback.bezelStyle = .rounded
@@ -88,6 +111,8 @@ final class HistoryWindowController: NSWindowController, NSTableViewDelegate, NS
         host.addSubview(popup)
         host.addSubview(scroll)
         host.addSubview(filesScroll)
+        host.addSubview(filesLabel)
+        host.addSubview(restoreBtn)
         host.addSubview(rollback)
         let m: CGFloat = 12
         NSLayoutConstraint.activate([
@@ -101,8 +126,13 @@ final class HistoryWindowController: NSWindowController, NSTableViewDelegate, NS
             filesScroll.topAnchor.constraint(equalTo: scroll.bottomAnchor, constant: 8),
             filesScroll.leadingAnchor.constraint(equalTo: host.leadingAnchor, constant: m),
             filesScroll.trailingAnchor.constraint(equalTo: host.trailingAnchor, constant: -m),
-            filesScroll.heightAnchor.constraint(equalToConstant: 78),
-            rollback.topAnchor.constraint(equalTo: filesScroll.bottomAnchor, constant: 10),
+            filesScroll.heightAnchor.constraint(equalToConstant: 84),
+            filesLabel.topAnchor.constraint(equalTo: filesScroll.bottomAnchor, constant: 4),
+            filesLabel.leadingAnchor.constraint(equalTo: host.leadingAnchor, constant: m),
+            filesLabel.trailingAnchor.constraint(equalTo: host.trailingAnchor, constant: -m),
+            restoreBtn.topAnchor.constraint(equalTo: filesLabel.bottomAnchor, constant: 6),
+            restoreBtn.leadingAnchor.constraint(equalTo: host.leadingAnchor, constant: m),
+            rollback.topAnchor.constraint(equalTo: restoreBtn.bottomAnchor, constant: 8),
             rollback.leadingAnchor.constraint(equalTo: host.leadingAnchor, constant: m),
             rollback.bottomAnchor.constraint(lessThanOrEqualTo: host.bottomAnchor, constant: -m),
         ])
@@ -182,14 +212,19 @@ final class HistoryWindowController: NSWindowController, NSTableViewDelegate, NS
         filesGeneration += 1
         let generation = filesGeneration
         Task {
-            let files = (try? await svc.history.changedFiles(repoPath: repo, hash: hash)) ?? []
+            let lines = (try? await svc.history.changedFiles(repoPath: repo, hash: hash)) ?? []
             guard generation == self.filesGeneration else { return }
             await MainActor.run {
                 guard generation == self.filesGeneration else { return }
-                if files.isEmpty {
-                    self.filesLabel?.stringValue = "「\(subject)」没有文件变更"
+                self.changedFiles = lines.map { line -> (String, String) in
+                    let parts = line.split(separator: "\t", maxSplits: 1)
+                    return (parts.count > 1 ? String(parts[0]) : "?", parts.count > 1 ? String(parts[1]) : line)
+                }
+                self.filesTable?.reloadData()
+                if self.changedFiles.isEmpty {
+                    self.filesLabel?.stringValue = "「" + subject + "」没有文件变更"
                 } else {
-                    self.filesLabel?.stringValue = "「\(subject)」包含 \(files.count) 个文件：\\n" + files.joined(separator: "\\n")
+                    self.filesLabel?.stringValue = "「" + subject + "」包含 " + String(self.changedFiles.count) + " 个文件，选中后可单文件恢复"
                 }
             }
         }
@@ -200,6 +235,36 @@ final class HistoryWindowController: NSWindowController, NSTableViewDelegate, NS
     @objc func repoChanged() {
         table?.deselectAll(nil)
         reloadCommits()
+    }
+
+    /// FR-10 single-file restore from the selected commit.
+    @objc func restoreFileAction() {
+        guard let svc = service, let repo = currentRepo(),
+              let file = selectedChangedFile else { return }
+        let row = table?.selectedRow ?? -1
+        guard row >= 0, row < commits.count else { return }
+        let target = commits[row]
+        let alert = NSAlert()
+        alert.messageText = "单文件恢复"
+        alert.informativeText = "把「" + file + "」恢复到 " + target.shortHash + "（" + target.subject + "）？恢复会形成一次新的回滚提交。"
+        alert.addButton(withTitle: "恢复")
+        alert.addButton(withTitle: "取消")
+        if alert.runModal() == .alertFirstButtonReturn {
+            filesLabel?.stringValue = "正在恢复 " + file + "…"
+            Task {
+                do {
+                    _ = try await svc.history.restoreFile(repoPath: repo, file: file, to: target.hash)
+                    await MainActor.run {
+                        filesLabel?.stringValue = "✓ 已恢复 " + file + " 到 " + target.shortHash + "（已自动提交）"
+                        self.reloadCommits()
+                    }
+                } catch {
+                    await MainActor.run {
+                        filesLabel?.stringValue = "⚠️ 恢复失败: " + error.localizedDescription
+                    }
+                }
+            }
+        }
     }
 
     @objc func rollbackAction() {
@@ -224,13 +289,28 @@ final class HistoryWindowController: NSWindowController, NSTableViewDelegate, NS
 
 extension HistoryWindowController: NSTableViewDataSource {
     func numberOfRows(in tableView: NSTableView) -> Int {
-        commits.count
+        if tableView === filesTable { return changedFiles.count }
+        return commits.count
     }
 }
 
 extension HistoryWindowController /* delegate methods */ {
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         let id = tableColumn?.identifier.rawValue ?? ""
+        if tableView === filesTable {
+            let entry = changedFiles[row]
+            let text = id == "status" ? entry.status : entry.path
+            let cell = NSTableCellView()
+            let tf = NSTextField(labelWithString: text)
+            tf.font = .systemFont(ofSize: 11)
+            tf.translatesAutoresizingMaskIntoConstraints = false
+            cell.addSubview(tf)
+            NSLayoutConstraint.activate([
+                tf.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 4),
+                tf.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
+            ])
+            return cell
+        }
         let c = commits[row]
         let text: String
         switch id {

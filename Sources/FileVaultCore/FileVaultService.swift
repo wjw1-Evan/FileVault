@@ -146,6 +146,17 @@ public final class FileVaultService: @unchecked Sendable {
         }
     }
 
+    /// Start with FR-01 auto-install: when git is missing, run the installer
+    /// once and retry start (testable via the GitInstalling seam).
+    public func startWithAutoInstall(installer: GitInstalling) async throws {
+        do {
+            try await start()
+        } catch {
+            _ = try await installer.install()
+            try await start()
+        }
+    }
+
     /// Apply general settings to runtime components (v1.3.0 complete settings).
     public func applyGeneral(_ g: GeneralSettings) {
         debouncer?.setQuietInterval(TimeInterval(g.debounceSeconds))

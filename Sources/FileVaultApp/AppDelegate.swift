@@ -34,11 +34,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         Task {
             do {
-                try await svc.start()
+                try await svc.startWithAutoInstall(installer: svc.envGuard)
             } catch {
-                // Git env failure surfaced in menu; keep app alive.
+                // FR-01: auto-install attempted; surface the failure but stay alive.
+                self.notifications.notifyFailure("Git 环境未就绪", "自动安装未完成：请安装 Xcode Command Line Tools 后重启应用。")
             }
-            await MainActor.run { self.refreshMenu() }
+            await MainActor.run {
+                self.refreshMenu()
+                // First-run onboarding: empty config -> open settings once.
+                if svc.configStore.load().roots.isEmpty,
+                   !UserDefaults.standard.bool(forKey: "fv.onboarded") {
+                    UserDefaults.standard.set(true, forKey: "fv.onboarded")
+                    self.openSettings()
+                }
+            }
         }
         // FR-20: silent update check shortly after launch (respects the toggle).
         Task {
@@ -182,10 +191,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         items.append(updateItem)
 
         items.append(.separator())
+        let aboutItem = NSMenuItem(title: "关于 FileVault（v\(currentVersion)）", action: #selector(AppDelegate.showAbout), keyEquivalent: "")
+        aboutItem.target = target
+        items.append(aboutItem)
         let quitItem = NSMenuItem(title: "退出 FileVault", action: #selector(AppDelegate.quitApp), keyEquivalent: "q")
         quitItem.target = target
         items.append(quitItem)
         return items
+    }
+
+    @objc func showAbout() {
+        NSApp.orderFrontStandardAboutPanel(options: [
+            .applicationName: "FileVault",
+            .applicationVersion: updateChecker.currentVersion,
+        ])
     }
 
     /// Open a managed REPO folder in Finder (clickable repo rows).
