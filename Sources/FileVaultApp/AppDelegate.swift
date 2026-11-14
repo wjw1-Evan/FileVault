@@ -19,8 +19,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     static let errorIcon = "●"
 
     let notifications = NotificationService()
-    /// Pending update offer (shown in menu + notification) (FR-20).
-    var pendingUpdate: ReleaseInfo?
     lazy var updateChecker = UpdateChecker(
         currentVersion: (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "0.0.0",
         fetcher: GhReleaseFetcher()
@@ -118,7 +116,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if !force && signature == lastMenuSignature { return }
         lastMenuSignature = signature
         menu.removeAllItems()
-        for item in Self.buildMenuItems(service: svc, statuses: statusCache, pendingUpdate: pendingUpdate, healthCache: healthCache, currentVersion: updateChecker.currentVersion, target: self) {
+        for item in Self.buildMenuItems(service: svc, statuses: statusCache, healthCache: healthCache, target: self) {
             menu.addItem(item)
         }
         updateStatusIcon(for: svc)
@@ -139,8 +137,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Builds the whole status menu (pure — unit-testable).
     static func buildMenuItems(service: FileVaultService, statuses: [String: SyncStatus],
-                               pendingUpdate: ReleaseInfo?, healthCache: [String: String],
-                               currentVersion: String, target: AnyObject?) -> [NSMenuItem] {
+                               healthCache: [String: String], target: AnyObject?) -> [NSMenuItem] {
         var items: [NSMenuItem] = []
         let paused = service.pause.isGloballyPaused
         let roots = service.rootsSnapshot()
@@ -208,16 +205,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         settingsItem.image = FVDesign.lineIcon("gearshape")
         settingsItem.target = target
         items.append(settingsItem)
-        let updateTitle = pendingUpdate != nil
-            ? "更新到 \(pendingUpdate!.version)（当前 v\(currentVersion)）"
-            : "检查更新…（当前 v\(currentVersion)）"
-        let updateItem = NSMenuItem(title: updateTitle, action: #selector(AppDelegate.checkForUpdateManually), keyEquivalent: "")
-        updateItem.image = FVDesign.lineIcon(pendingUpdate != nil ? "arrow.up.circle" : "arrow.down.circle")
-        updateItem.target = target
-        items.append(updateItem)
-
         items.append(.separator())
-        let aboutItem = NSMenuItem(title: "关于 FileVault（v\(currentVersion)）", action: #selector(AppDelegate.showAbout), keyEquivalent: "")
+        let aboutItem = NSMenuItem(title: "关于 FileVault", action: #selector(AppDelegate.showAbout), keyEquivalent: "")
         aboutItem.target = target
         items.append(aboutItem)
         let quitItem = NSMenuItem(title: "退出 FileVault", action: #selector(AppDelegate.quitApp), keyEquivalent: "q")
@@ -358,15 +347,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - Auto-update (FR-20)
 
-    @objc func checkForUpdateManually() {
-        Task { await checkForUpdate(silent: false) }
-    }
-
     func checkForUpdate(silent: Bool) async {
-        guard pendingUpdate == nil else {
-            await installIfConfirmed(offer: pendingUpdate!, confirmed: true)
-            return
-        }
         let offer: ReleaseInfo?
         do {
             offer = try await updateChecker.check()
@@ -378,13 +359,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if !silent { await MainActor.run { Self.alert("已是最新版本", "当前版本 \(updateChecker.currentVersion)，没有可用的更新。") } }
             return
         }
+        // v2.4.0: automatic install — the user asked for silent self-updating.
         await MainActor.run {
-            self.pendingUpdate = offer
-            self.refreshMenu()
-            self.notifications.notifyFailure("发现新版本", "FileVault \(offer.version) 已发布，菜单中选择「检查更新」即可安装。")
-            if !silent { Self.alert("发现新版本", "FileVault \(offer.version) 已发布，是否下载并安装？") }
+            self.notifications.notifyFailure("发现新版本", "FileVault \(offer.version) 正在自动更新，完成后将自动重启。")
         }
-        await installIfConfirmed(offer: offer, confirmed: !silent)
+        await installIfConfirmed(offer: offer, confirmed: true)
     }
 
     /// Download (with progress bar), verify and swap the bundle.
