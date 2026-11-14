@@ -95,7 +95,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if !force && signature == lastMenuSignature { return }
         lastMenuSignature = signature
         menu.removeAllItems()
-        for item in Self.buildMenuItems(service: svc, statuses: statusCache, pendingUpdate: pendingUpdate, healthCache: healthCache, target: self) {
+        for item in Self.buildMenuItems(service: svc, statuses: statusCache, pendingUpdate: pendingUpdate, healthCache: healthCache, currentVersion: updateChecker.currentVersion, target: self) {
             menu.addItem(item)
         }
         updateStatusIcon(for: svc)
@@ -116,7 +116,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Builds the whole status menu (pure — unit-testable).
     static func buildMenuItems(service: FileVaultService, statuses: [String: SyncStatus],
-                               pendingUpdate: ReleaseInfo?, healthCache: [String: String], target: AnyObject?) -> [NSMenuItem] {
+                               pendingUpdate: ReleaseInfo?, healthCache: [String: String],
+                               currentVersion: String, target: AnyObject?) -> [NSMenuItem] {
         var items: [NSMenuItem] = []
         let paused = service.pause.isGloballyPaused
         let roots = service.rootsSnapshot()
@@ -173,7 +174,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let settingsItem = NSMenuItem(title: "⚙️ 设置…", action: #selector(AppDelegate.openSettings), keyEquivalent: ",")
         settingsItem.target = target
         items.append(settingsItem)
-        let updateTitle = pendingUpdate != nil ? "⬆️ 下载并安装更新 \(pendingUpdate!.version)…" : "检查更新…"
+        let updateTitle = pendingUpdate != nil
+            ? "⬆️ 更新到 \(pendingUpdate!.version)（当前 v\(currentVersion)）"
+            : "检查更新…（当前 v\(currentVersion)）"
         let updateItem = NSMenuItem(title: updateTitle, action: #selector(AppDelegate.checkForUpdateManually), keyEquivalent: "")
         updateItem.target = target
         items.append(updateItem)
