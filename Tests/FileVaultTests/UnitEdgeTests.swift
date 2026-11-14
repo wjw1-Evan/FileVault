@@ -93,6 +93,9 @@ final class GeneralSettingsTests: XCTestCase {
         let store1 = ConfigStore(directory: dir)
         let loaded = store1.load()
         XCTAssertEqual(loaded.general, .default, "missing general key decodes to defaults")
+        // CRITICAL: legacy roots must SURVIVE the decode (v1.3.0 root-loss bug).
+        XCTAssertEqual(loaded.roots.count, 1, "legacy roots must not be silently dropped")
+        XCTAssertEqual(loaded.roots.first?.path, "/tmp/a")
         // 2. Save -> load roundtrip.
         var cfg = loaded
         cfg.general.notificationsEnabled = false
@@ -167,5 +170,74 @@ final class PullTests: XCTestCase {
         let out = try await repos.pull(path: root + "/repo")
         _ = out
         XCTAssertTrue(true, "ff-only pull on up-to-date repo succeeds")
+    }
+}
+
+
+/// FR-01 auto-install closure (v1.4.0).
+final class AutoInstallTests: XCTestCase {
+    func testStartWithAutoInstall() async throws {
+        final class InstallThenFoundLocator: GitLocator {
+            var installed = false
+            func locate() -> String? { installed ? "/usr/bin/git" : nil }
+        }
+        final class FakeInstaller: GitInstalling {
+            let locator: InstallThenFoundLocator
+            var calls = 0
+            init(_ l: InstallThenFoundLocator) { self.locator = l }
+            func install() async throws -> GitDetection {
+                calls += 1
+                locator.installed = true
+                return GitDetection(gitPath: "/usr/bin/git", version: "test", source: .system)
+            }
+        }
+        let locator = InstallThenFoundLocator()
+        let installer = FakeInstaller(locator)
+        let service = FileVaultService(configDirectory: URL(fileURLWithPath: TestSupport.makeTempDir("autoinstall")),
+                                       locator: locator)
+        try await service.startWithAutoInstall(installer: installer)
+        XCTAssertEqual(installer.calls, 1, "install ran once when git was missing")
+        XCTAssertNotNil(service.detection)
+    }
+
+    func testStartSucceedsDirectlyWithoutInstall() async throws {
+        final class NoopInstaller: GitInstalling {
+            var calls = 0
+            func install() async throws -> GitDetection {
+                calls += 1
+                throw GitEnvError.installFailed
+            }
+        }
+        let installer = NoopInstaller()
+        let service = FileVaultService(configDirectory: URL(fileURLWithPath: TestSupport.makeTempDir("noopinstall")))
+        try await service.startWithAutoInstall(installer: installer)
+        XCTAssertEqual(installer.calls, 0, "no install when git already present")
+    }
+}
+
+/// GhRepoCreator validation + fake-gh flow (v1.4.0).
+final class GhRepoCreatorTests: XCTestCase {
+    func testRejectsInvalidNames() async {
+        let creator = GhRepoCreator()
+        for bad in ["", "has space", "a/b", "../evil"] {
+            do {
+                _ = try await creator.createPrivate(name: bad, ghPath: "/usr/bin/true")
+                XCTFail("should reject: \(bad)")
+            } catch {
+                // expected
+            }
+        }
+    }
+
+    func testCreateWithFakeGh() async throws {
+        let dir = TestSupport.makeTempDir("fakegh")
+        let gh = dir + "/gh"
+        let body = "#!/bin/sh\nif [ \"$1\" = \"api\" ]; then echo \"testowner\"; else echo \"created\"; fi\n"
+        try body.write(toFile: gh, atomically: true, encoding: .utf8)
+        try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: gh)
+        let creator = GhRepoCreator()
+        let url = try await creator.createPrivate(name: "my-notes", ghPath: gh)
+        XCTAssertEqual(url, "https://github.com/testowner/my-notes.git")
+        try? FileManager.default.removeItem(atPath: dir)
     }
 }

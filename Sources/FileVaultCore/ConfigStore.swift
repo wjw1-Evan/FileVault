@@ -6,6 +6,12 @@ public struct ManagedRoot: Codable, Equatable, Identifiable, Sendable {
     public var path: String
     public var paused: Bool
 
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        path = try c.decodeIfPresent(String.self, forKey: .path) ?? ""
+        paused = try c.decodeIfPresent(Bool.self, forKey: .paused) ?? false
+    }
+
     public init(path: String, paused: Bool = false) {
         var resolved = path
         if let resolvedURL = try? URL(fileURLWithPath: path).resolvingSymlinksInPath() {
@@ -34,9 +40,18 @@ public struct GeneralSettings: Codable, Equatable, Sendable {
     }
 
     public static let `default` = GeneralSettings()
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        notificationsEnabled = try c.decodeIfPresent(Bool.self, forKey: .notificationsEnabled) ?? true
+        autoCheckUpdates = try c.decodeIfPresent(Bool.self, forKey: .autoCheckUpdates) ?? true
+        debounceSeconds = max(1, (try c.decodeIfPresent(Int.self, forKey: .debounceSeconds)) ?? 5)
+        largeFileThresholdMB = max(1, (try c.decodeIfPresent(Int.self, forKey: .largeFileThresholdMB)) ?? 200)
+    }
 }
 
-/// Top-level app configuration.
+/// Top-level app configuration. Custom decoding so NEW keys never invalidate
+/// OLD config files (the v1.3.0 silent-root-loss bug).
 public struct AppConfig: Codable, Equatable, Sendable {
     public var roots: [ManagedRoot]
     public var general: GeneralSettings
@@ -44,6 +59,12 @@ public struct AppConfig: Codable, Equatable, Sendable {
     public init(roots: [ManagedRoot] = [], general: GeneralSettings = .default) {
         self.roots = roots
         self.general = general
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        roots = try c.decodeIfPresent([ManagedRoot].self, forKey: .roots) ?? []
+        general = try c.decodeIfPresent(GeneralSettings.self, forKey: .general) ?? .default
     }
 }
 

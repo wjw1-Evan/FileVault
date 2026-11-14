@@ -333,11 +333,16 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         let pullBtn = NSButton(title: "拉取", target: self, action: #selector(pullRepo(_:)))
         pullBtn.identifier = NSUserInterfaceItemIdentifier(repo.path)
         pullBtn.bezelStyle = .rounded
+        let createBtn = NSButton(title: "建仓", target: self, action: #selector(createRepoAction(_:)))
+        createBtn.identifier = NSUserInterfaceItemIdentifier(repo.path)
+        createBtn.bezelStyle = .rounded
+        createBtn.toolTip = "在 GitHub 创建私有仓库并绑定"
         actionRow.addArrangedSubview(save)
         actionRow.addArrangedSubview(pushBtn)
         actionRow.addArrangedSubview(testBtn)
         actionRow.addArrangedSubview(ignoreBtn)
         actionRow.addArrangedSubview(pullBtn)
+        actionRow.addArrangedSubview(createBtn)
         let actionSpacer = NSView()
         actionSpacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
         actionRow.addArrangedSubview(actionSpacer)
@@ -370,7 +375,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
                 self?.statusDots[repo.path]?.contentTintColor = glyph.color
                 let isSsh = url?.hasPrefix("git@") == true || url?.hasPrefix("ssh://") == true
                 let guide = isSsh ? svc.sshChecker.guidance : nil
-                self?.messageLabels[repo.path]?.stringValue = guide ?? ""
+                // Do not clobber live save/pull feedback with the async fill.
+                if (self?.messageLabels[repo.path]?.stringValue ?? "").isEmpty {
+                    self?.messageLabels[repo.path]?.stringValue = guide ?? ""
+                }
             }
         }
         return section
@@ -524,6 +532,41 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         Task {
             await svc.setRootPaused(on, root: root)
             await MainActor.run { self.reloadAfterSave() }
+        }
+    }
+
+    /// Create a private GitHub repo and bind it to this repo (P2 gh integration).
+    @objc func createRepoAction(_ sender: NSButton) {
+        guard let svc = service, let repoPath = sender.identifier?.rawValue else { return }
+        let alert = NSAlert()
+        alert.messageText = "在 GitHub 创建私有仓库并绑定"
+        alert.informativeText = "输入仓库名（将创建为当前 gh 账号下的私有仓库）："
+        let input = NSTextField(frame: NSRect(x: 0, y: 0, width: 240, height: 24))
+        input.placeholderString = "my-notes"
+        alert.accessoryView = input
+        alert.window.initialFirstResponder = input
+        alert.addButton(withTitle: "创建并绑定")
+        alert.addButton(withTitle: "取消")
+        if alert.runModal() == .alertFirstButtonReturn {
+            let name = input.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            let setMsg: (String, NSColor) -> Void = { text, color in
+                DispatchQueue.main.async {
+                    self.messageLabels[repoPath]?.stringValue = text
+                    self.messageLabels[repoPath]?.textColor = color
+                }
+            }
+            setMsg("正在创建仓库 " + name + "…", .secondaryLabelColor)
+            Task {
+                do {
+                    let url = try await GhRepoCreator().createPrivate(name: name)
+                    await MainActor.run {
+                        self.urlFields[repoPath]?.stringValue = url
+                    }
+                    saveRemote(repoPath: repoPath)
+                } catch {
+                    setMsg("⚠️ 创建失败: " + error.localizedDescription, .systemRed)
+                }
+            }
         }
     }
 

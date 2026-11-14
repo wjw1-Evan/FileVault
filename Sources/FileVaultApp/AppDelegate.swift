@@ -10,6 +10,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var healthCache: [String: String] = [:]
     var lastHealthFetch = Date.distantPast
     weak var settingsWindow: SettingsWindowController?
+    var dashboardWindow: DashboardWindowController?
     weak var historyWindow: HistoryWindowController?
 
     static let pausedIcon = "⏸"
@@ -34,11 +35,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         Task {
             do {
-                try await svc.start()
+                try await svc.startWithAutoInstall(installer: svc.envGuard)
             } catch {
-                // Git env failure surfaced in menu; keep app alive.
+                // FR-01: auto-install attempted; surface the failure but stay alive.
+                self.notifications.notifyFailure("Git 环境未就绪", "自动安装未完成：请安装 Xcode Command Line Tools 后重启应用。")
             }
-            await MainActor.run { self.refreshMenu() }
+            await MainActor.run {
+                self.refreshMenu()
+                // First-run onboarding: empty config -> open settings once.
+                if svc.configStore.load().roots.isEmpty,
+                   !UserDefaults.standard.bool(forKey: "fv.onboarded") {
+                    UserDefaults.standard.set(true, forKey: "fv.onboarded")
+                    self.openSettings()
+                }
+            }
         }
         // FR-20: silent update check shortly after launch (respects the toggle).
         Task {
@@ -166,6 +176,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let commitItem = NSMenuItem(title: "⤴ 立即提交全部", action: #selector(AppDelegate.commitAllNow), keyEquivalent: "")
         commitItem.target = target
         items.append(commitItem)
+        let dashItem = NSMenuItem(title: "打开主面板", action: #selector(AppDelegate.openDashboard), keyEquivalent: "d")
+        dashItem.target = target
+        dashItem.keyEquivalentModifierMask = [.command, .shift]
+        items.append(dashItem)
         let historyItem = NSMenuItem(title: "🕘 历史版本…", action: #selector(AppDelegate.openHistory), keyEquivalent: "")
         historyItem.target = target
         items.append(historyItem)
@@ -182,10 +196,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         items.append(updateItem)
 
         items.append(.separator())
+        let aboutItem = NSMenuItem(title: "关于 FileVault（v\(currentVersion)）", action: #selector(AppDelegate.showAbout), keyEquivalent: "")
+        aboutItem.target = target
+        items.append(aboutItem)
         let quitItem = NSMenuItem(title: "退出 FileVault", action: #selector(AppDelegate.quitApp), keyEquivalent: "q")
         quitItem.target = target
         items.append(quitItem)
         return items
+    }
+
+    @objc func showAbout() {
+        NSApp.orderFrontStandardAboutPanel(options: [
+            .applicationName: "FileVault",
+            .applicationVersion: updateChecker.currentVersion,
+        ])
     }
 
     /// Open a managed REPO folder in Finder (clickable repo rows).
@@ -270,6 +294,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if svc.pause.isGloballyPaused { return "⏸ 已暂停自动提交" }
         guard svc.detection != nil else { return "⚠ Git 环境未就绪" }
         return "FileVault 正在守护 \(svc.rootsSnapshot().count) 个根目录"
+    }
+
+    @objc func openDashboard() {
+        if dashboardWindow == nil {
+            dashboardWindow = DashboardWindowController(service: service)
+        }
+        dashboardWindow?.showWindow(nil)
+        NSApp.activate(ignoringOtherApps: true)
     }
 
     @objc func openSettings() {

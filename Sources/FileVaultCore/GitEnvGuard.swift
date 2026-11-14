@@ -78,6 +78,13 @@ public final class SystemGitLocator: GitLocator, @unchecked Sendable {
     }
 }
 
+/// Injectable installer seam (tests use fakes; the real path shells out).
+public protocol GitInstalling: Sendable {
+    func install() async throws -> GitDetection
+}
+
+extension GitEnvGuard: GitInstalling {}
+
 /// Detects and prepares the git environment (FR-01).
 public final class GitEnvGuard: @unchecked Sendable {
     public enum Status: Equatable {

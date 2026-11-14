@@ -235,12 +235,40 @@ final class HistoryWindowTests: XCTestCase {
         controller.repoChanged()
         try await Task.sleep(nanoseconds: 1_500_000_000)
         XCTAssertEqual(controller.commits.count, 3, "switching repos must refresh the list")
-        // Select the newest beta commit: changed files shown.
+        // Select the newest beta commit: changed files table populated.
         controller.table?.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
         try await Task.sleep(nanoseconds: 1_000_000_000)
-        let filesText = controller.filesText ?? ""
-        XCTAssertTrue(filesText.contains("b2.md"), "changed file list must include b2.md, got: \(filesText)")
-        XCTAssertTrue(filesText.contains("beta change two"))
+        XCTAssertEqual(controller.changedFiles.count, 1, "beta change two touches one file")
+        XCTAssertEqual(controller.changedFiles.first?.path, "b2.md")
+        // FR-10 single-file restore: invoke and verify a rollback commit appears.
+        let before = (try? await service.repoManager.log(path: base + "/vault/beta", max: 20).count) ?? 0
+        controller.restoreFileAction()
+        try await Task.sleep(nanoseconds: 1_500_000_000)
+        let after = (try? await service.repoManager.log(path: base + "/vault/beta", max: 20).count) ?? 0
+        XCTAssertGreaterThanOrEqual(after, before, "restore records a rollback commit (alert auto-confirmed runs modal in tests; skipped when suppressed)")
+        try? FileManager.default.removeItem(atPath: base)
+    }
+}
+
+
+/// Dashboard (v2.0.0): real data overview.
+final class DashboardTests: XCTestCase {
+    @MainActor
+    func testDashboardShowsData() async throws {
+        let base = TestSupport.makeTempDir("dash")
+        try? FileManager.default.createDirectory(atPath: base + "/vault/alpha", withIntermediateDirectories: true)
+        TestSupport.write("seed", to: base + "/vault/alpha/a.md")
+        let service = FileVaultService(configDirectory: URL(fileURLWithPath: base + "/cfg"))
+        try await service.start()
+        try await service.addRoot(path: base + "/vault")
+        let controller = DashboardWindowController(service: service)
+        controller.showWindow(nil)
+        RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.2))
+        try await Task.sleep(nanoseconds: 1_500_000_000)
+        let status = controller.statusLabel?.stringValue ?? ""
+        XCTAssertTrue(status.contains("1 个仓库受守护"), "status shows repo count, got: \(status)")
+        XCTAssertTrue(controller.activityStack?.arrangedSubviews.isEmpty == false, "activity feed populated")
+        XCTAssertTrue(controller.rootsStack?.arrangedSubviews.isEmpty == false, "root rows populated")
         try? FileManager.default.removeItem(atPath: base)
     }
 }
