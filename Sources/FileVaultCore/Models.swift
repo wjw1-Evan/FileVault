@@ -94,3 +94,18 @@ public enum SyncStatus: String, Codable, Sendable {
     case pushing
     case failed
 }
+
+/// Thread-safe mutable callback holder (usable from actors).
+public final class EventCallbackBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _handler: (@Sendable (String, String) -> Void)?
+    public init() {}
+    public var handler: (@Sendable (String, String) -> Void)? {
+        get { lock.lock(); defer { lock.unlock() }; return _handler }
+        set { lock.lock(); _handler = newValue; lock.unlock() }
+    }
+    public func callAsFunction(_ a: String, _ b: String) {
+        lock.lock(); let h = _handler; lock.unlock()
+        h?(a, b)
+    }
+}

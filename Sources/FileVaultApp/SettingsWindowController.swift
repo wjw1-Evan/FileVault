@@ -6,6 +6,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     let service: FileVaultService?
     var urlFields: [String: NSTextField] = [:]
     var pushToggles: [String: NSButton] = [:]
+    var healthLabels: [String: NSTextField] = [:]
+    var sshLabels: [String: NSTextField] = [:]
+    private var gitignoreEditors: [String: GitignoreEditorController] = [:]
 
     init(service: FileVaultService?) {
         self.service = service
@@ -55,8 +58,11 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             nameLabel.font = NSFont.boldSystemFont(ofSize: 13)
             grid.addRow(with: [nameLabel, NSView()])
             for r in svc.repoManager.firstLevelFolders(root: root) {
-                let row = [NSTextField(labelWithString: "  📁 " + r.name)]
-                grid.addRow(with: row)
+                let nameLabel = NSTextField(labelWithString: "  📁 " + r.name)
+                let healthLabel = NSTextField(labelWithString: "…")
+                healthLabel.textColor = .secondaryLabelColor
+                healthLabels[r.path] = healthLabel
+                grid.addRow(with: [nameLabel, healthLabel])
                 let field = NSTextField(string: "")
                 field.placeholderString = "远程仓库地址（留空 = 仅本地）"
                 field.tag = 1
@@ -67,17 +73,35 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
                                 Task { [weak self] in
                     let url = await svc.repoManager.remoteURL(path: r.path)
                     let auto = await svc.sync.autoPushEnabled(repoPath: r.path)
+                    let health = await svc.repoManager.health(path: r.path)
                     await MainActor.run {
                         field.stringValue = url ?? ""
                         toggle.state = auto ? .on : .off
+                        self?.healthLabels[r.path]?.stringValue = health.summary
+                    }
+                    let isSsh = url?.hasPrefix("git@") == true || url?.hasPrefix("ssh://") == true
+                    if isSsh, let guide = svc.sshChecker.guidance {
+                        await MainActor.run {
+                            self?.sshLabels[r.path]?.stringValue = guide
+                        }
                     }
                 }
                 let save = NSButton(title: "保存", target: self, action: #selector(saveRepoConfig(_:)))
                 save.identifier = NSUserInterfaceItemIdentifier(r.path)
                 let pushBtn = NSButton(title: "立即推送", target: self, action: #selector(pushNow(_:)))
                 pushBtn.identifier = NSUserInterfaceItemIdentifier(r.path)
-                grid.addRow(with: [save, pushBtn])
-                grid.addRow(with: [NSGridCell.emptyContentView, NSGridCell.emptyContentView])
+                let testBtn = NSButton(title: "测试连接", target: self, action: #selector(testConnection(_:)))
+                testBtn.identifier = NSUserInterfaceItemIdentifier(r.path)
+                let ignoreBtn = NSButton(title: "忽略规则", target: self, action: #selector(editGitignore(_:)))
+                ignoreBtn.identifier = NSUserInterfaceItemIdentifier(r.path)
+                let stack = NSStackView(views: [save, pushBtn, testBtn, ignoreBtn])
+                stack.orientation = .horizontal
+                stack.spacing = 8
+                grid.addRow(with: [stack, NSGridCell.emptyContentView])
+                let sshLabel = NSTextField(labelWithString: "")
+                sshLabel.textColor = .systemRed
+                sshLabels[r.path] = sshLabel
+                grid.addRow(with: [sshLabel, NSGridCell.emptyContentView])
             }
             let removeBtn = NSButton(title: "移除此根目录", target: self, action: #selector(removeRootAction(_:)))
             removeBtn.identifier = NSUserInterfaceItemIdentifier(root)
@@ -106,6 +130,29 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
                 await MainActor.run { self.reloadAfterSave() }
             }
         }
+    }
+
+    @objc func testConnection(_ sender: NSButton) {
+        guard let svc = service, let repoPath = sender.identifier?.rawValue else { return }
+        Task {
+            let result = await svc.sync.testConnectivity(repoPath: repoPath)
+            await MainActor.run {
+                let alert = NSAlert()
+                alert.messageText = result.ok ? "✅ 连接成功" : "⚠️ 连接失败"
+                alert.informativeText = result.detail
+                alert.runModal()
+            }
+        }
+    }
+
+    @objc func editGitignore(_ sender: NSButton) {
+        guard let svc = service, let repoPath = sender.identifier?.rawValue else { return }
+        let editor = GitignoreEditorController(repoPath: repoPath, repos: svc.repoManager)
+        gitignoreEditors[repoPath] = editor
+        editor.onSaved = { [weak self] in
+            DispatchQueue.main.async { self?.rebuild() }
+        }
+        editor.showWindow(nil)
     }
 
     @objc func pushNow(_ sender: NSButton) {

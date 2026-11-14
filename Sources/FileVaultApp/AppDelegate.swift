@@ -15,9 +15,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     static let pendingIcon = "●"
     static let errorIcon = "●"
 
+    let notifications = NotificationService()
+
     func applicationDidFinishLaunching(_ n: Notification) {
         let svc = FileVaultService()
         service = svc
+        notifications.setup()
+        svc.onFailure.handler = { [weak self] title, body in
+            self?.notifications.notifyFailure(title, body)
+        }
         Task {
             do {
                 try await svc.start()
@@ -110,7 +116,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let quitItem = NSMenuItem(title: "退出 FileVault", action: #selector(quitApp), keyEquivalent: "q")
         quitItem.target = self
         menu.addItem(quitItem)
-        item.button?.title = svc.pause.isGloballyPaused ? "⏸" : "●"
+        // Colored status icon: red=failed, yellow=pending/pushing, green=ok (FR-08).
+        let statuses = statusCache.values
+        let icon: String
+        if svc.pause.isGloballyPaused {
+            icon = "⏸"
+        } else if svc.detection == nil {
+            icon = "⚠️"
+        } else if statuses.contains(.failed) {
+            icon = "🔴"
+        } else if statuses.contains(.pendingPush) || statuses.contains(.pushing) {
+            icon = "🟡"
+        } else if statuses.contains(.synced) {
+            icon = "🟢"
+        } else {
+            icon = "·"
+        }
+        item.button?.title = icon
     }
 
     /// Refresh the per-repo sync status cache from SyncManager (actor).

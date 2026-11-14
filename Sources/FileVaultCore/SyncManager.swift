@@ -6,6 +6,8 @@ public actor SyncManager {
     public let repoManager: RepoManager
     public let backoffSchedule: [TimeInterval]
     public let maxAttempts: Int
+    /// Called on each failed push attempt with (repoPath, reason).
+    public nonisolated let onPushFailure = EventCallbackBox()
 
     private var states: [String: RepoSyncState] = [:]
 
@@ -121,6 +123,7 @@ public actor SyncManager {
                 return
             } catch {
                 attempt += 1
+                onPushFailure(repoPath, (error as? GitCommandError)?.errorDescription ?? String(describing: error))
                 setState(repoPath, .failed)
                 if attempt >= maxAttempts {
                     return
@@ -159,6 +162,7 @@ public actor SyncManager {
             setState(repoPath, .synced)
             return true
         } catch {
+            onPushFailure(repoPath, (error as? GitCommandError)?.errorDescription ?? String(describing: error))
             setState(repoPath, .failed)
             return false
         }

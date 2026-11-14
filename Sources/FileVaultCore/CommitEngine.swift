@@ -7,6 +7,8 @@ public final class CommitEngine: @unchecked Sendable {
     public let pause: PauseController
     /// Called after a successful auto-commit with (repoPath, hash, message).
     public var onCommit: (@Sendable (String, String, String) -> Void)?
+    /// Called when the auto-commit pipeline fails with (repoPath, errorDescription).
+    public var onCommitFailure: (@Sendable (String, String) -> Void)?
 
     private let inFlight = NSLock()
     private var busyKeys: Set<String> = []
@@ -73,6 +75,7 @@ public final class CommitEngine: @unchecked Sendable {
             if ProcessInfo.processInfo.environment["FV_DEBUG"] != nil {
                 print("[FV_DEBUG] commit error: \(error)")
             }
+            onCommitFailure?(repoPath, (error as? GitCommandError)?.errorDescription ?? String(describing: error))
         }
     }
 

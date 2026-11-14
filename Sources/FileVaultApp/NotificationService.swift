@@ -1,0 +1,35 @@
+import AppKit
+import UserNotifications
+import FileVaultCore
+
+/// System notifications for commit/push failures (FR-18).
+/// Best-effort: degrades silently when the runtime cannot post notifications
+/// (e.g. unbundled debug binaries), so core flows are never affected.
+final class NotificationService: NSObject, UNUserNotificationCenterDelegate {
+    private var authorized = false
+
+    func setup() {
+        let center = UNUserNotificationCenter.current()
+        center.delegate = self
+        center.requestAuthorization(options: [.alert, .sound]) { [weak self] granted, _ in
+            DispatchQueue.main.async {
+                self?.authorized = granted
+            }
+        }
+    }
+
+    func notifyFailure(_ title: String, _ body: String) {
+        guard authorized else { return }
+        let content = UNMutableNotificationContent()
+        content.title = title
+        content.body = body
+        let req = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
+        UNUserNotificationCenter.current().add(req)
+    }
+
+    /// Show banners even when the accessory app is not frontmost.
+    func userNotificationCenter(_ center: UNUserNotificationCenter,
+                                willPresent notification: UNNotification) -> UNNotificationPresentationOptions {
+        [.banner, .sound]
+    }
+}
