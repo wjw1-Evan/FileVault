@@ -65,9 +65,11 @@ public final class CommitEngine: @unchecked Sendable {
             print("[FV_DEBUG] status entries=\(entries.count)")
         }
         guard !entries.isEmpty else { return }
-        let excluded = await repoManager.excludeLargeFiles(path: repoPath)
+        // Reuse the single status pass for large-file checks and the commit
+        // (was 3 git-status invocations per commit, now 1).
+        let excluded = await repoManager.excludeLargeFiles(path: repoPath, entries: entries)
         do {
-            let hash = try await repoManager.commitAll(path: repoPath)
+            let hash = try await repoManager.commitAll(path: repoPath, knownEntries: entries)
             if !hash.isEmpty {
                 onCommit?(repoPath, hash, Self.describe(entries: entries, excluded: excluded))
             }

@@ -152,3 +152,32 @@ final class FailureCallbackTests: XCTestCase {
         try? FileManager.default.removeItem(atPath: root)
     }
 }
+
+final class StatusEventTests: XCTestCase {
+    /// Event-driven refresh depends on status transitions emitting events.
+    func testStatusChangeEventsFire() async throws {
+        let root = TestSupport.makeTempDir("statev")
+        try? FileManager.default.createDirectory(atPath: root + "/repo", withIntermediateDirectories: true)
+        TestSupport.write("seed", to: root + "/repo/s.md")
+        let repos = RepoManager(runner: TestSupport.newRunner())
+        let sync = SyncManager(repoManager: repos, backoffSchedule: [0.1], maxAttempts: 1)
+        _ = try await repos.ensureRepos(root: root)
+        let lock = NSLock()
+        var events: [String] = []
+        sync.onStatusChange.handler = { _, status in
+            lock.lock(); events.append(status); lock.unlock()
+        }
+        try await sync.configureRemote(repoPath: root + "/repo", url: root + "/absent.git", autoPush: true)
+        var waited = 0.0
+        while waited < 6 {
+            let st = await sync.status(for: root + "/repo")
+            if st == .failed { break }
+            try? await Task.sleep(nanoseconds: 100_000_000)
+            waited += 0.1
+        }
+        lock.lock(); let evs = events; lock.unlock()
+        XCTAssertTrue(evs.contains(SyncStatus.pendingPush.rawValue), "pendingPush event expected, got \(evs)")
+        XCTAssertTrue(evs.contains(SyncStatus.failed.rawValue), "failed event expected, got \(evs)")
+        try? FileManager.default.removeItem(atPath: root)
+    }
+}

@@ -32,8 +32,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             await MainActor.run { self.refreshMenu() }
         }
-        // Poll state to refresh the menu (simple & robust).
-        timer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
+        // Event-driven refresh: rebuild the menu only when state actually changes.
+        // A slow fallback timer (15s) covers missed events without busy polling.
+        svc.onStateChange = { [weak self] in
+            Task { @MainActor in
+                await self?.refreshStatuses()
+                self?.refreshMenu()
+            }
+        }
+        timer = Timer.scheduledTimer(withTimeInterval: 15.0, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 await self?.refreshStatuses()
                 self?.refreshMenu()
@@ -65,8 +72,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - Menu building
 
-    func refreshMenu() {
+    private var lastMenuSignature: String = ""
+
+    func refreshMenu(force: Bool = false) {
         guard let item = statusItem, let menu = item.menu, let svc = service else { return }
+        let signature = Self.menuSignature(service: svc, statuses: statusCache)
+        if !force && signature == lastMenuSignature { return }
+        lastMenuSignature = signature
         menu.removeAllItems()
         // Status headline.
         let title = Self.headline(for: svc)
@@ -145,6 +157,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
         statusCache = cache
+    }
+
+    static func menuSignature(service: FileVaultService, statuses: [String: SyncStatus]) -> String {
+        var parts: [String] = []
+        parts.append(service.pause.isGloballyPaused ? "P" : "R")
+        parts.append(service.detection == nil ? "noenv" : "env")
+        parts.append(String(service.rootsSnapshot().count))
+        for root in service.rootsSnapshot() {
+            for r in service.repoManager.firstLevelFolders(root: root) {
+                parts.append(r.path + ":" + (statuses[r.path]?.rawValue ?? "none"))
+            }
+        }
+        return parts.joined(separator: "|")
     }
 
     /// Overall headline for the menu bar menu and icon.

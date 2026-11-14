@@ -8,6 +8,8 @@ public actor SyncManager {
     public let maxAttempts: Int
     /// Called on each failed push attempt with (repoPath, reason).
     public nonisolated let onPushFailure = EventCallbackBox()
+    /// Called on every sync-status transition (repoPath, newStatus rawValue).
+    public nonisolated let onStatusChange = EventCallbackBox()
 
     private var states: [String: RepoSyncState] = [:]
 
@@ -178,5 +180,6 @@ public actor SyncManager {
         } else {
             states[path] = RepoSyncState(status: s, task: nil, attempt: 0, needsPushAgain: false)
         }
+        onStatusChange(path, s.rawValue)
     }
 }

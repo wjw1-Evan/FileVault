@@ -129,8 +129,13 @@ public final class RepoManager: @unchecked Sendable {
     /// Commit everything: add -A, build summary message from staged diff, commit.
     /// Returns the new commit hash.
     @discardableResult
-    public func commitAll(path: String, message: String? = nil) async throws -> String {
-        let entries = try await status(path: path)
+    public func commitAll(path: String, message: String? = nil, knownEntries: [StatusEntry]? = nil) async throws -> String {
+        let entries: [StatusEntry]
+        if let knownEntries {
+            entries = knownEntries
+        } else {
+            entries = try await status(path: path)
+        }
         guard !entries.isEmpty else { return "" }
         _ = try await runner.run(["add", "-A"], cwd: path)
         let stats = try await stagedStats(path: path)
@@ -285,9 +290,15 @@ public final class RepoManager: @unchecked Sendable {
 
     /// Exclude oversize untracked files via .git/info/exclude (not polluting user .gitignore).
     @discardableResult
-    public func excludeLargeFiles(path: String, threshold: UInt64 = RepoManager.defaultLargeFileThreshold) async -> [String] {
+    public func excludeLargeFiles(path: String, threshold: UInt64 = RepoManager.defaultLargeFileThreshold, entries precomputed: [StatusEntry]? = nil) async -> [String] {
         let fm = FileManager.default
-        guard let entries = try? await status(path: path) else { return [] }
+        let entries: [StatusEntry]
+        if let precomputed {
+            entries = precomputed
+        } else {
+            guard let fetched = try? await status(path: path) else { return [] }
+            entries = fetched
+        }
         var excluded: [String] = []
         for e in entries where e.change == .added {
             let abs = (path as NSString).appendingPathComponent(e.path)

@@ -43,26 +43,35 @@ public final class FileVaultService: @unchecked Sendable {
         commitEngine = CommitEngine(repoManager: repos, debouncer: debouncer!, pause: pause)
         sync = SyncManager(repoManager: repos)
         history = HistoryService(repoManager: repos)
-        commitEngine.onCommit = { [weak self] repoPath, _, _ in
-            guard let self else { return }
-            Task { await self.sync.enqueuePush(repoPath: repoPath) }
-        }
         commitEngine.onCommitFailure = { [weak self] repoPath, reason in
             self?.onFailure("自动提交失败", "\((repoPath as NSString).lastPathComponent)：\(reason)")
         }
         sync.onPushFailure.handler = { [weak self] repoPath, reason in
             self?.onFailure("推送失败", "\((repoPath as NSString).lastPathComponent)：\(reason)")
         }
+        // Event-driven UI refresh: any sync transition or commit event notifies observers.
+        sync.onStatusChange.handler = { [weak self] _, _ in
+            self?.onStateChange?()
+        }
+        commitEngine.onCommit = { [weak self] repoPath, _, _ in
+            guard let self else { return }
+            onStateChange?()
+            Task { await self.sync.enqueuePush(repoPath: repoPath) }
+        }
         // Load configured roots, ensure repos, start watchers.
         let cfg = configStore.load()
         for root in cfg.roots {
             try await attachRoot(path: root.path, paused: root.paused)
         }
-        // FR-19: weekly gc maintenance on startup (fire and forget).
-        for root in rootsSnapshot() {
-            for repo in repoManager.firstLevelFolders(root: root) {
-                let p = repo.path
-                Task { _ = await repoManager.runMaintenanceIfNeeded(path: p) }
+        // FR-19: weekly gc maintenance, deferred out of the cold-start path.
+        let rootsForMaintenance = rootsSnapshot()
+        Task {
+            try? await Task.sleep(nanoseconds: 60_000_000_000)
+            for root in rootsForMaintenance {
+                for repo in repoManager.firstLevelFolders(root: root) {
+                    let p = repo.path
+                    await repoManager.runMaintenanceIfNeeded(path: p)
+                }
             }
         }
     }

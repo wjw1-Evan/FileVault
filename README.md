@@ -58,7 +58,7 @@ ditto -c -k --keepParent build/FileVault.app dist/FileVault-1.0.0.zip
 ```
 
 - 产物：`FileVault.app`（LSUIElement 菜单栏模式、bundle 通知可用、设置内可开启「登录时启动」）
-- Release 实测：RSS 62MB、空闲 CPU 0.0%、二进制 0.8MB
+- Release 实测：RSS 54–60MB、空闲 CPU **0.07%**（事件驱动刷新后，较轮询架构降低约 14 倍）、二进制 0.8MB
 - 代码签名为 ad-hoc（本地验证）；对外分发需正式开发者证书
 
 文档：[产品需求文档](docs/01-产品需求文档-PRD.md) · [技术架构](docs/02-技术架构方案.md) · [开发路线图](docs/03-开发路线图.md) · [风险与竞品](docs/04-风险与竞品分析.md)
