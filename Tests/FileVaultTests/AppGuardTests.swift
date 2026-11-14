@@ -55,23 +55,24 @@ final class SettingsUIStructureTests: XCTestCase {
             return XCTFail("settings window has no content view")
         }
         var foundAddButton = false
-        var foundGrid = false
         var foundUrlField = false
         var foundOpenButton = false
+        var foundStatusDot = false
         func walk(_ v: NSView) {
             if let b = v as? NSButton, b.title.contains("添加根目录") { foundAddButton = true }
-            if let b = v as? NSButton, b.title.contains("打开"), b.identifier?.rawValue.contains("/vault") == true {
+            if let b = v as? NSButton, b.title == "打开", b.identifier?.rawValue.contains("/vault") == true {
                 foundOpenButton = true
             }
-            if let g = v as? NSGridView, g === controller.grid { foundGrid = true }
             if let f = v as? NSTextField, f.placeholderString?.contains("远程仓库地址") == true { foundUrlField = true }
+            if let iv = v as? NSImageView, iv.image != nil { foundStatusDot = true }
             for sub in v.subviews { walk(sub) }
         }
         walk(content)
-        XCTAssertTrue(foundGrid, "settings grid must be attached to the window (v1.1.0 regression)")
+        XCTAssertEqual(controller.rootCards.count, 1, "one card per root (v1.2.0 card layout)")
         XCTAssertTrue(foundAddButton, "添加根目录 button must be visible")
         XCTAssertTrue(foundUrlField, "per-repo remote config field must be visible")
         XCTAssertTrue(foundOpenButton, "root 打开 button must exist with the root path identifier (FR-21)")
+        XCTAssertTrue(foundStatusDot, "per-repo status glyph must be visible")
         try? FileManager.default.removeItem(atPath: root)
     }
 }
@@ -99,5 +100,44 @@ final class StatusSymbolTests: XCTestCase {
         for name in ["clock.arrow.circlepath", "arrow.up.arrow.down.circle", "exclamationmark.triangle", "pause.circle"] {
             XCTAssertNotNil(NSImage(systemSymbolName: name, accessibilityDescription: nil), "missing symbol: \(name)")
         }
+    }
+}
+
+
+/// Renders the settings window offscreen to a PNG (visual design review) and
+/// asserts the render succeeds with a sane size.
+final class SettingsRenderTests: XCTestCase {
+    @MainActor
+    func testRenderSettingsWindow() async throws {
+        let base = TestSupport.makeTempDir("settingsrender")
+        try? FileManager.default.createDirectory(atPath: base + "/vault/work", withIntermediateDirectories: true)
+        TestSupport.write("seed", to: base + "/vault/work/a.md")
+        let service = FileVaultService(configDirectory: URL(fileURLWithPath: base + "/cfg"))
+        try await service.start()
+        try await service.addRoot(path: base + "/vault")
+        let repos = service.repoManager!
+        let bare = URL(fileURLWithPath: base).appendingPathComponent("remote.git")
+        _ = try? await repos.runner.run(["init", "--bare", bare.path])
+        try? await repos.setRemote(path: base + "/vault/work", url: bare.path)
+        await repos.setAutoPush(path: base + "/vault/work", enabled: true)
+        // Give async fills time to land.
+        let controller = SettingsWindowController(service: service)
+        controller.window?.makeKeyAndOrderFront(nil)
+        controller.window?.contentView?.layoutSubtreeIfNeeded()
+        try await Task.sleep(nanoseconds: 800_000_000)
+        RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.2))
+        controller.window?.contentView?.layoutSubtreeIfNeeded()
+        guard let content = controller.window?.contentView else {
+            return XCTFail("no content view")
+        }
+        let rep = content.bitmapImageRepForCachingDisplay(in: content.bounds)!
+        content.cacheDisplay(in: content.bounds, to: rep)
+        let png = rep.representation(using: .png, properties: [:])
+        XCTAssertNotNil(png)
+        XCTAssertGreaterThan(png!.count, 10_000, "render should be substantial")
+        let out = URL(fileURLWithPath: "/tmp/settings_render.png")
+        try? png!.write(to: out)
+        print("[render] saved \(out.path) (\(png!.count) bytes)")
+        try? FileManager.default.removeItem(atPath: base)
     }
 }
