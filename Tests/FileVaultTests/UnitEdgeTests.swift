@@ -102,10 +102,13 @@ final class GeneralSettingsTests: XCTestCase {
         cfg.general.debounceSeconds = 10
         cfg.general.largeFileThresholdMB = 512
         store1.save(cfg)
+        cfg.general.launchAtLoginRequested = true
+        store1.save(cfg)
         let again = ConfigStore(directory: dir).load()
         XCTAssertFalse(again.general.notificationsEnabled)
         XCTAssertEqual(again.general.debounceSeconds, 10)
         XCTAssertEqual(again.general.largeFileThresholdMB, 512)
+        XCTAssertTrue(again.general.launchAtLoginRequested, "login intent persists")
         try? FileManager.default.removeItem(atPath: dir.path)
     }
 
@@ -282,5 +285,64 @@ final class CredentialStoreTests: XCTestCase {
         let m2 = await repos.authMode(path: repo)
         XCTAssertEqual(m2, .ssh)
         try? FileManager.default.removeItem(atPath: root)
+    }
+}
+
+
+/// v2.2.4: remote URL comes from the repo's own source control, editable,
+/// and survives remove-root -> re-add unchanged.
+final class RemoteSourceOfTruthTests: XCTestCase {
+    func testReadsNonOriginRemote() async throws {
+        let root = TestSupport.makeTempDir("sot")
+        try? FileManager.default.createDirectory(atPath: root + "/repo", withIntermediateDirectories: true)
+        TestSupport.write("s", to: root + "/repo/s.md")
+        let repos = RepoManager(runner: TestSupport.newRunner())
+        _ = try await repos.ensureRepos(root: root)
+        let repo = root + "/repo"
+        // User configured a remote in their own tooling under a custom name.
+        try await repos.runner.run(["remote", "add", "upstream", "https://example.com/up.git"], cwd: repo)
+        let url = await repos.remoteURL(path: repo)
+        XCTAssertEqual(url, "https://example.com/up.git", "must read non-origin remotes")
+        // Saving via settings writes the standard origin (terminal-compatible).
+        try await repos.setRemote(path: repo, url: "https://example.com/origin.git")
+        let url2 = await repos.remoteURL(path: repo)
+        XCTAssertEqual(url2, "https://example.com/origin.git")
+        let all = await repos.allRemotes(path: repo)
+        XCTAssertEqual(all.count, 2, "upstream preserved alongside origin")
+        try? FileManager.default.removeItem(atPath: root)
+    }
+
+    /// Remove-root -> re-add: remote/auth/autopush/history all intact.
+    func testRemoveReaddPreservesEverything() async throws {
+        let base = TestSupport.makeTempDir("rerea")
+        try? FileManager.default.createDirectory(atPath: base + "/vault/work", withIntermediateDirectories: true)
+        TestSupport.write("seed", to: base + "/vault/work/s.md")
+        let service = FileVaultService(configDirectory: URL(fileURLWithPath: base + "/cfg"))
+        try await service.start()
+        try await service.addRoot(path: base + "/vault")
+        let repos = service.repoManager!
+        let repo = base + "/vault/work"
+        let remote = base + "/r.git"
+        _ = try await repos.runner.run(["init", "--bare", remote])
+        try await repos.setRemote(path: repo, url: remote)
+        await repos.setAutoPush(path: repo, enabled: true)
+        await repos.setAuthMode(path: repo, mode: .pat)
+        TestSupport.write("v1", to: repo + "/s.md")
+        _ = try await repos.commitAll(path: repo)
+        // Remove the root, then re-add it.
+        await service.removeRoot(path: base + "/vault")
+        XCTAssertEqual(service.rootsSnapshot().count, 0)
+        try await service.addRoot(path: base + "/vault")
+        // Everything intact (read from the folder's own source control).
+        let url = await repos.remoteURL(path: repo)
+        XCTAssertEqual(url, remote)
+        let auto = await repos.autoPushEnabled(path: repo)
+        XCTAssertTrue(auto)
+        let mode = await repos.authMode(path: repo)
+        XCTAssertEqual(mode, .pat)
+        let log = try await repos.log(path: repo)
+        XCTAssertEqual(log.count, 2, "history intact")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: repo + "/.git"))
+        try? FileManager.default.removeItem(atPath: base)
     }
 }

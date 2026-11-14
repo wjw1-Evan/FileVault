@@ -128,7 +128,11 @@ public actor SyncManager {
                 return
             } catch {
                 attempt += 1
-                onPushFailure(repoPath, (error as? GitCommandError)?.errorDescription ?? String(describing: error))
+                let reason = (error as? GitCommandError)?.errorDescription ?? String(describing: error)
+                let message = AuthClassifier.isAuthRelated(reason)
+                    ? AuthClassifier.guidance() + "（" + reason + "）"
+                    : reason
+                onPushFailure(repoPath, message)
                 setState(repoPath, .failed)
                 if attempt >= maxAttempts {
                     return

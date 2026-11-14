@@ -65,6 +65,19 @@ enum FVDesign {
         return img
     }
 
+    /// Activate the accessory app first so modal panels/alerts actually appear
+    /// (menu-bar-only apps otherwise open panels behind/unfocused: the
+    /// "点击没反应" bug).
+    static func activateAndRunModal(_ alert: NSAlert) -> NSApplication.ModalResponse {
+        NSApp.activate(ignoringOtherApps: true)
+        return alert.runModal()
+    }
+
+    static func activateAndRunPanel(_ panel: NSOpenPanel) -> NSApplication.ModalResponse {
+        NSApp.activate(ignoringOtherApps: true)
+        return panel.runModal()
+    }
+
     /// Status glyph image view (colored SF Symbol).
     static func statusGlyph(_ symbol: String, _ color: NSColor, pointSize: CGFloat = 12) -> NSImageView {
         let iv = NSImageView()

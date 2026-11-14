@@ -181,3 +181,58 @@ final class StatusEventTests: XCTestCase {
         try? FileManager.default.removeItem(atPath: root)
     }
 }
+
+
+/// v2.2.3 auth failure classification + periodic monitor with dedup/recovery.
+final class AuthMonitorTests: XCTestCase {
+    func testClassifierPatterns() {
+        XCTAssertTrue(AuthClassifier.isAuthRelated("Authentication failed for 'https://...'"))
+        XCTAssertTrue(AuthClassifier.isAuthRelated("fatal: could not read from remote repository"))
+        XCTAssertTrue(AuthClassifier.isAuthRelated("The requested URL returned error: 403"))
+        XCTAssertFalse(AuthClassifier.isAuthRelated("fatal: pathspec 'x' did not match"))
+        XCTAssertFalse(AuthClassifier.isAuthRelated("Already up to date"))
+    }
+
+    /// Probe dedupes while a repo stays broken, resets on recovery, and
+    /// re-alerts when it breaks again.
+    func testMonitorDedupAndRecovery() async throws {
+        let base = TestSupport.makeTempDir("authmon")
+        try? FileManager.default.createDirectory(atPath: base + "/vault/work", withIntermediateDirectories: true)
+        TestSupport.write("seed", to: base + "/vault/work/s.md")
+        let repos = RepoManager(runner: TestSupport.newRunner())
+        let sync = SyncManager(repoManager: repos)
+        // work must be a REAL repo (otherwise git's upward discovery would
+        // apply the remote to the parent vault repo instead).
+        _ = try await repos.ensureRepos(root: base + "/vault")
+        let repo = base + "/vault/work"
+        // Start with a BROKEN remote (nonexistent path -> fast failure).
+        try await repos.setRemote(path: repo, url: base + "/absent.git")
+        let monitor = AuthMonitor(repos: repos, sync: sync, interval: 3600)
+        var issues: [String] = []
+        let lock = NSLock()
+        monitor.onAuthIssue.handler = { path, msg in
+            lock.lock(); issues.append(path + "|" + msg); lock.unlock()
+        }
+        let roots: @Sendable () -> [String] = { [base + "/vault"] }
+        await monitor.checkAll(rootsProvider: roots)
+        lock.lock(); let first = issues.count; let firstMsg = issues.first ?? ""; lock.unlock()
+        XCTAssertEqual(first, 1, "first probe alerts once; got: " + firstMsg)
+        XCTAssertTrue(monitor.isAlerted(repoPath: repo))
+        // Second pass while still broken: NO duplicate alert.
+        await monitor.checkAll(rootsProvider: roots)
+        lock.lock(); let second = issues.count; lock.unlock()
+        XCTAssertEqual(second, 1, "dedup while unchanged")
+        // Recovery: point at a valid bare repo.
+        let bare = base + "/ok.git"
+        _ = try await repos.runner.run(["init", "--bare", bare])
+        try await repos.setRemote(path: repo, url: bare)
+        await monitor.checkAll(rootsProvider: roots)
+        XCTAssertFalse(monitor.isAlerted(repoPath: repo), "recovered repos reset the episode")
+        // Break again -> alerts again (new episode).
+        try await repos.setRemote(path: repo, url: base + "/absent2.git")
+        await monitor.checkAll(rootsProvider: roots)
+        lock.lock(); let third = issues.count; lock.unlock()
+        XCTAssertEqual(third, 2, "new failure episode re-alerts")
+        try? FileManager.default.removeItem(atPath: base)
+    }
+}
