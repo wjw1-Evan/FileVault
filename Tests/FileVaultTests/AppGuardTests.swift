@@ -275,3 +275,73 @@ final class DashboardTests: XCTestCase {
         try? FileManager.default.removeItem(atPath: base)
     }
 }
+
+
+/// v2.2.0 file-centric restore: file timeline + restore-to-version E2E.
+final class FileRestoreTests: XCTestCase {
+    func testFileHistoryFiltersByFile() async throws {
+        let base = TestSupport.makeTempDir("fhist")
+        try? FileManager.default.createDirectory(atPath: base + "/vault/work", withIntermediateDirectories: true)
+        TestSupport.write("seed", to: base + "/vault/work/s.md")
+        let service = FileVaultService(configDirectory: URL(fileURLWithPath: base + "/cfg"))
+        try await service.start()
+        try await service.addRoot(path: base + "/vault")
+        let repos = service.repoManager!
+        TestSupport.write("v1", to: base + "/vault/work/a.md")
+        _ = try await repos.commitAll(path: base + "/vault/work", message: "a v1")
+        TestSupport.write("v2", to: base + "/vault/work/a.md")
+        _ = try await repos.commitAll(path: base + "/vault/work", message: "a v2")
+        TestSupport.write("other", to: base + "/vault/work/b.md")
+        _ = try await repos.commitAll(path: base + "/vault/work", message: "b only")
+        let history = HistoryService(repoManager: repos)
+        let timeline = try await history.fileHistory(repoPath: base + "/vault/work", file: "a.md")
+        XCTAssertEqual(timeline.count, 2, "only commits touching a.md")
+        XCTAssertTrue(timeline.contains { $0.subject == "a v1" })
+        XCTAssertTrue(timeline.contains { $0.subject == "a v2" })
+        XCTAssertFalse(timeline.contains { $0.subject == "b only" })
+        try? FileManager.default.removeItem(atPath: base)
+    }
+
+    @MainActor
+    func testFileModeRestoreEndToEnd() async throws {
+        let base = TestSupport.makeTempDir("frestore")
+        try? FileManager.default.createDirectory(atPath: base + "/vault/work", withIntermediateDirectories: true)
+        TestSupport.write("seed", to: base + "/vault/work/s.md")
+        let service = FileVaultService(configDirectory: URL(fileURLWithPath: base + "/cfg"))
+        try await service.start()
+        try await service.addRoot(path: base + "/vault")
+        let repos = service.repoManager!
+        TestSupport.write("v1", to: base + "/vault/work/a.md")
+        _ = try await repos.commitAll(path: base + "/vault/work", message: "a v1")
+        TestSupport.write("v2", to: base + "/vault/work/a.md")
+        _ = try await repos.commitAll(path: base + "/vault/work", message: "a v2")
+        let controller = HistoryWindowController(service: service)
+        controller.showWindow(nil)
+        RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.3))
+        try await Task.sleep(nanoseconds: 1_200_000_000)
+        // Switch to file mode, pick a.md, then trigger the timeline reload.
+        controller.modeSegment?.setSelected(true, forSegment: 1)
+        controller.modeChanged(controller.modeSegment!)
+        try await Task.sleep(nanoseconds: 1_500_000_000)
+        XCTAssertEqual(controller.mode, .file)
+        XCTAssertTrue(controller.trackedFiles.contains("a.md"))
+        controller.filePopup?.selectItem(withTitle: "a.md")
+        controller.fileChanged()
+        try await Task.sleep(nanoseconds: 1_500_000_000)
+        XCTAssertEqual(controller.fileTimeline.count, 2, "two versions of a.md")
+        // Select the OLDEST version (a v1) and restore.
+        let oldest = controller.fileTimeline.last!
+        XCTAssertEqual(oldest.subject, "a v1")
+        let commitCountBefore = (try? await service.repoManager.log(path: base + "/vault/work", max: 20).count) ?? 0
+        controller.filePopup?.selectItem(withTitle: "a.md")
+        controller.table?.selectRowIndexes(IndexSet(integer: controller.fileTimeline.count - 1), byExtendingSelection: false)
+        // Direct invoke of the restore routine (alert path is skipped in tests
+        // by calling the core directly through the same API the button uses).
+        try await service.history.restoreFile(repoPath: base + "/vault/work", file: "a.md", to: oldest.hash)
+        let content = try String(contentsOfFile: base + "/vault/work/a.md", encoding: .utf8)
+        XCTAssertEqual(content, "v1", "file restored to v1 content")
+        let commitCountAfter = (try? await service.repoManager.log(path: base + "/vault/work", max: 20).count) ?? 0
+        XCTAssertEqual(commitCountAfter, commitCountBefore + 1, "restore forms a new commit")
+        try? FileManager.default.removeItem(atPath: base)
+    }
+}

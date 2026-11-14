@@ -19,6 +19,13 @@ final class HistoryWindowController: NSWindowController, NSTableViewDelegate, NS
     }
     var commits: [CommitInfo] = []
     var repoPaths: [String] = []
+    enum HistMode { case commits, file }
+    var mode: HistMode = .commits
+    var trackedFiles: [String] = []
+    var fileTimeline: [CommitInfo] = []
+    var filePopup: NSPopUpButton?
+    var modeSegment: NSSegmentedControl?
+    var restoreFileBtn: NSButton?
     /// Guard: only the newest load may touch the table (stale-switch fix).
     private var loadGeneration = 0
     private var filesGeneration = 0
@@ -43,6 +50,14 @@ final class HistoryWindowController: NSWindowController, NSTableViewDelegate, NS
         popup.target = self
         popup.action = #selector(repoChanged)
         repoPopup = popup
+        let segment = NSSegmentedControl(labels: ["全部提交", "单文件恢复"], trackingMode: .selectOne, target: self, action: #selector(modeChanged(_:)))
+        segment.selectedSegment = 0
+        modeSegment = segment
+        let filePopup = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 320, height: 26), pullsDown: false)
+        filePopup.target = self
+        filePopup.action = #selector(fileChanged)
+        filePopup.isHidden = true
+        self.filePopup = filePopup
 
         let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 636, height: 260))
         scroll.hasVerticalScroller = true
@@ -97,6 +112,11 @@ final class HistoryWindowController: NSWindowController, NSTableViewDelegate, NS
         let restoreBtn = NSButton(title: "恢复选中文件", target: self, action: #selector(restoreFileAction))
         restoreBtn.target = self
         restoreBtn.bezelStyle = .rounded
+        let restoreVersionBtn = NSButton(title: "恢复此文件", target: self, action: #selector(restoreFileToVersion))
+        restoreVersionBtn.target = self
+        restoreVersionBtn.bezelStyle = .rounded
+        restoreVersionBtn.isHidden = true
+        restoreFileBtn = restoreVersionBtn
         let rollback = NSButton(title: "回滚到此版本", target: self, action: #selector(rollbackAction))
         rollback.target = self
         rollback.bezelStyle = .rounded
@@ -109,17 +129,25 @@ final class HistoryWindowController: NSWindowController, NSTableViewDelegate, NS
         filesScroll.translatesAutoresizingMaskIntoConstraints = false
         rollback.translatesAutoresizingMaskIntoConstraints = false
         host.addSubview(popup)
+        host.addSubview(segment)
+        host.addSubview(filePopup)
         host.addSubview(scroll)
         host.addSubview(filesScroll)
         host.addSubview(filesLabel)
         host.addSubview(restoreBtn)
+        host.addSubview(restoreVersionBtn)
         host.addSubview(rollback)
         let m: CGFloat = 12
         NSLayoutConstraint.activate([
             popup.topAnchor.constraint(equalTo: host.topAnchor, constant: m),
             popup.leadingAnchor.constraint(equalTo: host.leadingAnchor, constant: m),
-            popup.widthAnchor.constraint(greaterThanOrEqualToConstant: 300),
-            scroll.topAnchor.constraint(equalTo: popup.bottomAnchor, constant: 8),
+            popup.widthAnchor.constraint(greaterThanOrEqualToConstant: 240),
+            segment.centerYAnchor.constraint(equalTo: popup.centerYAnchor),
+            segment.leadingAnchor.constraint(equalTo: popup.trailingAnchor, constant: 10),
+            filePopup.topAnchor.constraint(equalTo: popup.bottomAnchor, constant: 6),
+            filePopup.leadingAnchor.constraint(equalTo: host.leadingAnchor, constant: m),
+            filePopup.widthAnchor.constraint(greaterThanOrEqualToConstant: 320),
+            scroll.topAnchor.constraint(equalTo: filePopup.bottomAnchor, constant: 8),
             scroll.leadingAnchor.constraint(equalTo: host.leadingAnchor, constant: m),
             scroll.trailingAnchor.constraint(equalTo: host.trailingAnchor, constant: -m),
             scroll.heightAnchor.constraint(equalToConstant: 240),
@@ -132,6 +160,8 @@ final class HistoryWindowController: NSWindowController, NSTableViewDelegate, NS
             filesLabel.trailingAnchor.constraint(equalTo: host.trailingAnchor, constant: -m),
             restoreBtn.topAnchor.constraint(equalTo: filesLabel.bottomAnchor, constant: 6),
             restoreBtn.leadingAnchor.constraint(equalTo: host.leadingAnchor, constant: m),
+            restoreVersionBtn.centerYAnchor.constraint(equalTo: restoreBtn.centerYAnchor),
+            restoreVersionBtn.leadingAnchor.constraint(equalTo: restoreBtn.trailingAnchor, constant: 8),
             rollback.topAnchor.constraint(equalTo: restoreBtn.bottomAnchor, constant: 8),
             rollback.leadingAnchor.constraint(equalTo: host.leadingAnchor, constant: m),
             rollback.bottomAnchor.constraint(lessThanOrEqualTo: host.bottomAnchor, constant: -m),
@@ -167,7 +197,96 @@ final class HistoryWindowController: NSWindowController, NSTableViewDelegate, NS
             return
         }
         repoPopup?.selectItem(at: 0)
-        reloadCommits()
+        let repo = currentRepo() ?? ""
+        Task {
+            let files = await service!.repoManager.listFiles(path: repo)
+            await MainActor.run {
+                self.trackedFiles = files
+                self.rebuildFilePopup()
+                if self.mode == .file { self.reloadFileTimeline() } else { self.reloadCommits() }
+            }
+        }
+    }
+
+    /// Populate the file picker for the current repo.
+    func rebuildFilePopup() {
+        filePopup?.removeAllItems()
+        for f in trackedFiles {
+            filePopup?.addItem(withTitle: f)
+        }
+        guard !trackedFiles.isEmpty else { return }
+        filePopup?.selectItem(at: 0)
+    }
+
+    /// v2.2.0 mode switch: all commits vs single-file timeline.
+    @objc func modeChanged(_ sender: NSSegmentedControl) {
+        mode = sender.selectedSegment == 1 ? .file : .commits
+        filePopup?.isHidden = mode == .commits
+        restoreFileBtn?.isHidden = mode == .commits
+        table?.deselectAll(nil)
+        if mode == .file {
+            reloadFileTimeline()
+        } else {
+            reloadCommits()
+        }
+    }
+
+    /// File picker changed: reload that file's timeline.
+    @objc func fileChanged() {
+        table?.deselectAll(nil)
+        reloadFileTimeline()
+    }
+
+    /// Version timeline of the selected file.
+    func reloadFileTimeline() {
+        guard let svc = service, let repo = currentRepo(),
+              let file = filePopup?.selectedItem?.title, !file.isEmpty else { return }
+        loadGeneration += 1
+        let generation = loadGeneration
+        Task {
+            let list = (try? await svc.history.fileHistory(repoPath: repo, file: file, limit: 100)) ?? []
+            guard generation == self.loadGeneration else { return }
+            await MainActor.run {
+                guard generation == self.loadGeneration else { return }
+                self.fileTimeline = list
+                self.table?.reloadData()
+                if list.isEmpty {
+                    self.filesLabel?.stringValue = "该文件还没有版本历史"
+                } else {
+                    self.filesLabel?.stringValue = "「" + file + "」的版本时间线（" + String(list.count) + " 个版本），选中后点「恢复此文件」"
+                }
+            }
+        }
+    }
+
+    /// Restore the selected file to the selected timeline version.
+    @objc func restoreFileToVersion() {
+        guard let svc = service, let repo = currentRepo(),
+              let file = filePopup?.selectedItem?.title, !file.isEmpty else { return }
+        let row = table?.selectedRow ?? -1
+        guard row >= 0, row < fileTimeline.count else { return }
+        let target = fileTimeline[row]
+        let alert = NSAlert()
+        alert.messageText = "恢复文件到历史版本"
+        alert.informativeText = "把「" + file + "」恢复到 " + target.shortHash + "（" + target.subject + "）？恢复会形成一次新的提交。"
+        alert.addButton(withTitle: "恢复")
+        alert.addButton(withTitle: "取消")
+        if alert.runModal() == .alertFirstButtonReturn {
+            filesLabel?.stringValue = "正在恢复…"
+            Task {
+                do {
+                    _ = try await svc.history.restoreFile(repoPath: repo, file: file, to: target.hash)
+                    await MainActor.run {
+                        filesLabel?.stringValue = "✓ 已将 " + file + " 恢复到 " + target.shortHash + "（已自动提交）"
+                        self.reloadFileTimeline()
+                    }
+                } catch {
+                    await MainActor.run {
+                        filesLabel?.stringValue = "⚠️ 恢复失败: " + error.localizedDescription
+                    }
+                }
+            }
+        }
     }
 
     func currentRepo() -> String? {
@@ -291,7 +410,7 @@ final class HistoryWindowController: NSWindowController, NSTableViewDelegate, NS
 extension HistoryWindowController: NSTableViewDataSource {
     func numberOfRows(in tableView: NSTableView) -> Int {
         if tableView === filesTable { return changedFiles.count }
-        return commits.count
+        return mode == .file ? fileTimeline.count : commits.count
     }
 }
 
@@ -312,14 +431,16 @@ extension HistoryWindowController /* delegate methods */ {
             ])
             return cell
         }
+        if mode == .file {
+            let c = fileTimeline[row]
+            let text: String = id == "hash" ? c.shortHash : (id == "date" ? Self.dateText(c.date) : c.subject)
+            return Self.makeCell(text)
+        }
         let c = commits[row]
         let text: String
         switch id {
         case "hash": text = c.shortHash
-        case "date":
-            let f = DateFormatter()
-            f.dateFormat = "MM-dd HH:mm:ss"
-            text = f.string(from: c.date)
+        case "date": text = Self.dateText(c.date)
         default: text = c.subject
         }
         let cell = NSTableCellView()
@@ -337,6 +458,27 @@ extension HistoryWindowController /* delegate methods */ {
     }
 
     func tableViewSelectionDidChange(_ notification: Notification) {
+        if mode == .file { return }  // file mode: panel shows timeline hint instead
         loadChangedFiles()
+    }
+
+    static func dateText(_ date: Date) -> String {
+        let f = DateFormatter()
+        f.dateFormat = "MM-dd HH:mm:ss"
+        return f.string(from: date)
+    }
+
+    static func makeCell(_ text: String) -> NSView {
+        let cell = NSTableCellView()
+        let tf = NSTextField(labelWithString: text)
+        tf.font = .systemFont(ofSize: 12)
+        tf.lineBreakMode = .byTruncatingTail
+        tf.translatesAutoresizingMaskIntoConstraints = false
+        cell.addSubview(tf)
+        NSLayoutConstraint.activate([
+            tf.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 4),
+            tf.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
+        ])
+        return cell
     }
 }
