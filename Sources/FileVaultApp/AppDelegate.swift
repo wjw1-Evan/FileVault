@@ -7,6 +7,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var statusItem: NSStatusItem?
     private var timer: Timer?
     var statusCache: [String: SyncStatus] = [:]
+    var healthCache: [String: String] = [:]
+    var lastHealthFetch = Date.distantPast
     weak var settingsWindow: SettingsWindowController?
     weak var historyWindow: HistoryWindowController?
 
@@ -91,68 +93,103 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if !force && signature == lastMenuSignature { return }
         lastMenuSignature = signature
         menu.removeAllItems()
-        // Status headline.
-        let title = Self.headline(for: svc)
-        let head = NSMenuItem(title: title, action: nil, keyEquivalent: "")
-        head.isEnabled = false
-        menu.addItem(head)
-        menu.addItem(.separator())
-        // One item per root with per-repo status submenu.
-        for root in svc.rootsSnapshot() {
-            let last = (root as NSString).lastPathComponent
-            let rootItem = NSMenuItem(title: "📂 " + last, action: nil, keyEquivalent: "")
-            let sub = NSMenu()
-            let openItem = NSMenuItem(title: "在 Finder 中打开", action: #selector(openRootInFinder(_:)), keyEquivalent: "")
-            openItem.target = self
-            openItem.representedObject = root
-            sub.addItem(openItem)
-            sub.addItem(.separator())
-            let repos = svc.repoManager.firstLevelFolders(root: root)
-            for r in repos {
-                let st = statusCache[r.path] ?? .noRemote
-                let symbol: String
-                switch st {
-                case .noRemote: symbol = "·"
-                case .synced: symbol = "✓"
-                case .pendingPush: symbol = "↑"
-                case .pushing: symbol = "…"
-                case .failed: symbol = "⚠"
-                }
-                sub.addItem(NSMenuItem(title: "\(symbol) \(r.name)", action: nil, keyEquivalent: ""))
-            }
-            if repos.isEmpty {
-                sub.addItem(NSMenuItem(title: "（无子文件夹）", action: nil, keyEquivalent: ""))
-            }
-            rootItem.submenu = sub
-            menu.addItem(rootItem)
+        for item in Self.buildMenuItems(service: svc, statuses: statusCache, pendingUpdate: pendingUpdate, healthCache: healthCache, target: self) {
+            menu.addItem(item)
         }
-        menu.addItem(.separator())
-        let pauseTitle = svc.pause.isGloballyPaused ? "▶ 恢复自动提交" : "⏸ 暂停自动提交"
-        let pauseItem = NSMenuItem(title: pauseTitle, action: #selector(toggleGlobalPause), keyEquivalent: "")
-        pauseItem.target = self
-        menu.addItem(pauseItem)
-        let commitItem = NSMenuItem(title: "⤴ 立即提交全部", action: #selector(commitAllNow), keyEquivalent: "")
-        commitItem.target = self
-        menu.addItem(commitItem)
-        let historyItem = NSMenuItem(title: "🕘 历史版本…", action: #selector(openHistory), keyEquivalent: "")
-        historyItem.target = self
-        menu.addItem(historyItem)
-        let settingsItem = NSMenuItem(title: "⚙️ 设置…", action: #selector(openSettings), keyEquivalent: "")
-        settingsItem.target = self
-        menu.addItem(settingsItem)
-        let updateTitle = pendingUpdate != nil ? "⬆️ 下载并安装更新 \(pendingUpdate!.version)…" : "检查更新…"
-        let updateItem = NSMenuItem(title: updateTitle, action: #selector(checkForUpdateManually), keyEquivalent: "")
-        updateItem.target = self
-        menu.addItem(updateItem)
-        menu.addItem(.separator())
-        let quitItem = NSMenuItem(title: "退出 FileVault", action: #selector(quitApp), keyEquivalent: "q")
-        quitItem.target = self
-        menu.addItem(quitItem)
         updateStatusIcon(for: svc)
     }
 
+    /// Section header: small, gray, disabled.
+    static func sectionHeader(_ title: String) -> NSMenuItem {
+        let it = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+        it.isEnabled = false
+        let attr: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 11, weight: .semibold),
+            .foregroundColor: NSColor.secondaryLabelColor,
+        ]
+        it.attributedTitle = NSAttributedString(string: title, attributes: attr)
+        it.indentationLevel = 0
+        return it
+    }
+
+    /// Builds the whole status menu (pure — unit-testable).
+    static func buildMenuItems(service: FileVaultService, statuses: [String: SyncStatus],
+                               pendingUpdate: ReleaseInfo?, healthCache: [String: String], target: AnyObject?) -> [NSMenuItem] {
+        var items: [NSMenuItem] = []
+        let paused = service.pause.isGloballyPaused
+        let roots = service.rootsSnapshot()
+        var repoCount = 0
+        for root in roots { repoCount += service.repoManager.firstLevelFolders(root: root).count }
+
+        let headline = NSMenuItem(title: "FileVault · \(repoCount) 个仓库受守护", action: nil, keyEquivalent: "")
+        headline.isEnabled = false
+        items.append(headline)
+        items.append(.separator())
+
+        items.append(sectionHeader("受保护的目录"))
+        for root in roots {
+            let folders = service.repoManager.firstLevelFolders(root: root)
+            let rootItem = NSMenuItem(title: "📂 \((root as NSString).lastPathComponent)（\(folders.count)）",
+                                      action: nil, keyEquivalent: "")
+            let sub = NSMenu()
+            let openItem = NSMenuItem(title: "在 Finder 中打开根目录", action: #selector(AppDelegate.openRootInFinder(_:)), keyEquivalent: "")
+            openItem.target = target
+            openItem.representedObject = root
+            sub.addItem(openItem)
+            sub.addItem(.separator())
+            for r in folders {
+                let st = statuses[r.path] ?? .noRemote
+                let glyph = SettingsWindowController.repoGlyph(st)
+                let health = healthCache[r.path] ?? ""
+                let row = NSMenuItem(title: "\(r.name)  ·  \(health.isEmpty ? st.rawValue : health)",
+                                     action: #selector(AppDelegate.openRepoInFinder(_:)), keyEquivalent: "")
+                row.target = target
+                row.representedObject = r.path
+                row.image = NSImage(systemSymbolName: glyph.symbol, accessibilityDescription: st.rawValue)?
+                    .withSymbolConfiguration(.init(paletteColors: [glyph.color]))
+                sub.addItem(row)
+            }
+            rootItem.submenu = sub
+            items.append(rootItem)
+        }
+
+        items.append(.separator())
+        items.append(sectionHeader("操作"))
+        let pauseTitle = paused ? "▶ 恢复自动提交" : "⏸ 暂停自动提交"
+        let pauseItem = NSMenuItem(title: pauseTitle, action: #selector(AppDelegate.toggleGlobalPause), keyEquivalent: "p")
+        pauseItem.target = target
+        pauseItem.keyEquivalentModifierMask = [.command, .shift]
+        items.append(pauseItem)
+        let commitItem = NSMenuItem(title: "⤴ 立即提交全部", action: #selector(AppDelegate.commitAllNow), keyEquivalent: "")
+        commitItem.target = target
+        items.append(commitItem)
+        let historyItem = NSMenuItem(title: "🕘 历史版本…", action: #selector(AppDelegate.openHistory), keyEquivalent: "")
+        historyItem.target = target
+        items.append(historyItem)
+
+        items.append(.separator())
+        let settingsItem = NSMenuItem(title: "⚙️ 设置…", action: #selector(AppDelegate.openSettings), keyEquivalent: ",")
+        settingsItem.target = target
+        items.append(settingsItem)
+        let updateTitle = pendingUpdate != nil ? "⬆️ 下载并安装更新 \(pendingUpdate!.version)…" : "检查更新…"
+        let updateItem = NSMenuItem(title: updateTitle, action: #selector(AppDelegate.checkForUpdateManually), keyEquivalent: "")
+        updateItem.target = target
+        items.append(updateItem)
+
+        items.append(.separator())
+        let quitItem = NSMenuItem(title: "退出 FileVault", action: #selector(AppDelegate.quitApp), keyEquivalent: "q")
+        quitItem.target = target
+        items.append(quitItem)
+        return items
+    }
+
+    /// Open a managed REPO folder in Finder (clickable repo rows).
+    @objc func openRepoInFinder(_ sender: NSMenuItem) {
+        guard let path = sender.representedObject as? String else { return }
+        NSWorkspace.shared.open(URL(fileURLWithPath: path))
+    }
+
     /// Menu bar icon: template SF Symbol so macOS tints it for light/dark bars.
-    /// Replaces the old emoji-title approach (invisible "·" when no remotes).
     func updateStatusIcon(for svc: FileVaultService) {
         guard let button = statusItem?.button else { return }
         let statuses = Array(statusCache.values)
@@ -165,7 +202,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             image = symbol
             image.size = size
         } else {
-            // Defensive fallback: solid dot.
             image = NSImage(size: size)
             image.lockFocus()
             NSColor.black.setFill()
@@ -178,16 +214,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         button.toolTip = Self.headline(for: svc)
     }
 
-    /// Refresh the per-repo sync status cache from SyncManager (actor).
+    /// Refresh the per-repo sync status cache (health throttled to 60 s).
     func refreshStatuses() async {
         guard let svc = service else { return }
         var cache: [String: SyncStatus] = [:]
-        for root in svc.rootsSnapshot() {
+        let roots = svc.rootsSnapshot()
+        for root in roots {
             for r in svc.repoManager.firstLevelFolders(root: root) {
                 cache[r.path] = await svc.sync.status(for: r.path)
             }
         }
         statusCache = cache
+        if Date().timeIntervalSince(lastHealthFetch) > 60 {
+            lastHealthFetch = Date()
+            var hc: [String: String] = [:]
+            for root in roots {
+                for r in svc.repoManager.firstLevelFolders(root: root) {
+                    if let h = try? await svc.repoManager.health(path: r.path) {
+                        hc[r.path] = "\(h.commitCount) 次 · \(h.sizeText)"
+                    }
+                }
+            }
+            healthCache = hc
+        }
     }
 
     /// SF Symbol for the current overall state (FR-08). Always a visible glyph.
