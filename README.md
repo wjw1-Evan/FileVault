@@ -11,7 +11,7 @@ FileVault 常驻 macOS 菜单栏，对一个受管根目录下的**第一层子�
 1. **零配置起步** — 首次启动自动检测 Git 环境；缺失时自动安装（内嵌 git 优先，其次 Xcode CLT / Homebrew），全程无需命令行。
 2. **一级文件夹独立仓库** — 添加一个受管根目录，其下每个第一层子文件夹各自成为独立 Git 仓库；已有 `.git` 的子目录被原样接管复用，绝不破坏。
 3. **自动版本管理** — FSEvents 监控文件变动，5 秒防抖聚合后自动 `add + commit`，提交信息自动总结变更（如 `auto: 3 处变更 (+120 -40)，新增 a.md，修改 b.md`）。
-4. **远程仓库绑定** — 每个子仓库可单独配置远程地址（GitHub/GitLab/Azure DevOps 等）与**身份验证**（自动 gh 凭证助手 / 用户名+访问令牌入钥匙串 / SSH 密钥），开启「提交后自动推送」，本地优先、失败自动重试。
+4. **远程仓库绑定** — 每个子仓库可单独配置远程地址（GitHub/GitLab/Azure DevOps 等）与**身份验证**（自动 gh 凭证助手 / 用户名+访问令牌入钥匙串 / SSH 密钥），开启「提交后自动推送」，本地优先、失败自动重试；**凭证过期/认证失败主动巡检提醒**（每 6 小时，去重不骚扰）。
 5. **菜单栏常驻** — 状态图标实时反映整体状态（空闲/同步中/待推送/异常），菜单列出每个文件夹的独立状态（✓ 已同步 / ↑N 待推送 / ⚠ 失败）。
 6. **历史时间线** — 查看每个仓库的提交历史，了解文件如何一步步演进。
 6.5 **快速打开** — 菜单栏与设置窗口均可一键在 Finder 中打开已添加的目录。
@@ -46,7 +46,7 @@ FileVault 常驻 macOS 菜单栏，对一个受管根目录下的**第一层子�
 
 ## 下载安装
 
-**最新发布：[v2.2.0](https://github.com/wjw1-Evan/FileVault/releases/tag/v2.2.0)** — [FileVault-2.2.0.zip](https://github.com/wjw1-Evan/FileVault/releases/download/v2.2.0/FileVault-2.2.0.zip)（sha256 `9b4ce008…925e`）
+**最新发布：[v2.2.3](https://github.com/wjw1-Evan/FileVault/releases/tag/v2.2.3)** — [FileVault-2.2.3.zip](https://github.com/wjw1-Evan/FileVault/releases/download/v2.2.3/FileVault-2.2.3.zip)（sha256 `d210cb9f…774e`）
 
 解压后将 `FileVault.app` 拖入「应用程序」，首次打开右键 → 打开（ad-hoc 签名提示未公证），菜单栏即可见图标。
 

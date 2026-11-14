@@ -64,4 +64,20 @@ final class DebouncerTests: XCTestCase {
         wait(for: [exp], timeout: 1)
         d.cancelAll()
     }
+
+
+    /// Audit v2.2.2: maxwait path must FIRE (not deadlock) when a touch lands
+    /// after maxWait has elapsed — touch holds the lock and must not re-acquire.
+    func testTouchAfterMaxWaitFiresWithoutDeadlock() {
+        let exp = expectation(description: "maxwait touch fires")
+        let d = Debouncer(quietInterval: 0.15, maxWait: 0.2) { _ in exp.fulfill() }
+        d.touch("dead")
+        // First touch schedules; wait past maxWait, then touch again -> the
+        // elapsed branch fires inline. Before the fix this DEADLOCKED here.
+        DispatchQueue.global().asyncAfter(deadline: .now() + 0.5) {
+            d.touch("dead")   // elapsed 0.5 > maxWait 0.2 -> fireNowLocked path
+        }
+        wait(for: [exp], timeout: 3)
+        d.cancelAll()
+    }
 }
