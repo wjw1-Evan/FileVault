@@ -110,8 +110,8 @@ final class HistoryWindowController: NSWindowController {
         alert.informativeText = "把「\((repo as NSString).lastPathComponent)」整个回滚到 \(target.shortHash)（\(target.subject)）？此操作会丢弃之后的提交。"
         alert.addButton(withTitle: "回滚")
         alert.addButton(withTitle: "取消")
-        let run_holder = alert.runModal()
-        if run_holder == .alertFirstButtonReturn {
+        let modalResult = alert.runModal()
+        if modalResult == .alertFirstButtonReturn {
             Task {
                 try? await svc.history.resetRepo(repoPath: repo, to: target.hash)
                 await MainActor.run { self.reloadCommits() }

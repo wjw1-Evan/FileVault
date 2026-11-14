@@ -124,8 +124,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         panel.canChooseFiles = false
         panel.canCreateDirectories = false
         panel.message = "选择要保护的根目录（第一层子文件夹将被独立版本管理）"
-        let result_holder = panel.runModal()
-        if result_holder == .OK, let url = panel.url {
+        let modalResult = panel.runModal()
+        if modalResult == .OK, let url = panel.url {
             Task {
                 try? await svc.addRoot(path: url.path)
                 await MainActor.run { self.rebuild() }
