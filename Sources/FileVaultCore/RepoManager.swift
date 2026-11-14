@@ -234,12 +234,34 @@ public final class RepoManager: @unchecked Sendable {
         }
     }
 
-    /// Get remote origin URL, nil when not configured.
+    /// Effective remote URL — the source of truth is the repo's OWN git config
+    /// (v2.2.4): prefers `origin`, falls back to any remote the user configured
+    /// in their own source-control tooling (terminal / VS Code / Xcode).
     public func remoteURL(path: String) async -> String? {
-        let r = try? await runner.run(["remote", "get-url", "origin"], cwd: path)
-        guard let r, r.succeeded else { return nil }
-        let url = r.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
-        return url.isEmpty ? nil : url
+        if let r = try? await runner.run(["remote", "get-url", "origin"], cwd: path),
+           r.succeeded {
+            let url = r.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !url.isEmpty { return url }
+        }
+        return await firstAnyRemote(path: path)
+    }
+
+    /// All remotes configured in this repo as (name, url) pairs.
+    public func allRemotes(path: String) async -> [(name: String, url: String)] {
+        guard let names = try? await runner.run(["remote"], cwd: path), names.succeeded else { return [] }
+        var out: [(String, String)] = []
+        for name in names.stdout.split(separator: "\n").map(String.init).sorted() {
+            guard let u = try? await runner.run(["remote", "get-url", name], cwd: path), u.succeeded else { continue }
+            out.append((name, u.stdout.trimmingCharacters(in: .whitespacesAndNewlines)))
+        }
+        return out
+    }
+
+    private func firstAnyRemote(path: String) async -> String? {
+        for (_, url) in await allRemotes(path: path) where !url.isEmpty {
+            return url
+        }
+        return nil
     }
 
     /// Remove remote origin.

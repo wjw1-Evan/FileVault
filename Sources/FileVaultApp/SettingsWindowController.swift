@@ -138,7 +138,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         toggles.spacing = 16
         if LaunchAtLogin.available {
             let login = NSButton(checkboxWithTitle: "登录时启动", target: self, action: #selector(toggleLaunchAtLogin(_:)))
-            login.state = LaunchAtLogin.isEnabled ? .on : .off
+            login.state = (LaunchAtLogin.isEnabled || general.launchAtLoginRequested) ? .on : .off
             toggles.addArrangedSubview(login)
         }
         let notif = NSButton(checkboxWithTitle: "推送失败通知", target: self, action: #selector(generalToggleChanged(_:)))
@@ -441,6 +441,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     @objc func toggleLaunchAtLogin(_ sender: NSButton) {
         do {
             try LaunchAtLogin.setEnabled(sender.state == .on)
+            service?.updateGeneral { $0.launchAtLoginRequested = sender.state == .on }
         } catch {
             let alert = NSAlert()
             alert.messageText = "设置登录自启失败"
