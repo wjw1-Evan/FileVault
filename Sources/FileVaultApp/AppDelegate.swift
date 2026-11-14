@@ -410,6 +410,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let a = NSAlert()
         a.messageText = title
         a.informativeText = body
-        a.runModal()
+        FVDesign.activateAndRunModal(a)
     }
 }
