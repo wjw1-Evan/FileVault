@@ -38,9 +38,13 @@ FileVault 常驻 macOS 菜单栏，对一个受管根目录下的**第一层子�
 - Apple Silicon / Intel
 - 无需预装 Git（应用会自动准备）
 
+## 自动更新
+
+应用内置更新器（FR-20）：启动后静默检查 GitHub Releases（每日一次），发现新版本发系统通知并在菜单标记；菜单「检查更新…」手动触发。安装流程：下载 → sha256 校验（与 API digest 比对）→ 原子替换 bundle（旧版保留 `.old` 可回滚）→ 自动重启。仅 `.app` 包内运行时可用。
+
 ## 下载安装
 
-**最新发布：[v1.0.0](https://github.com/wjw1-Evan/FileVault/releases/tag/v1.0.0)** — [FileVault-1.0.0.zip](https://github.com/wjw1-Evan/FileVault/releases/download/v1.0.0/FileVault-1.0.0.zip)（0.63MB，sha256 `c47d6048…a1fd4`）
+**最新发布：[v1.1.0](https://github.com/wjw1-Evan/FileVault/releases/tag/v1.1.0)** — [FileVault-1.1.0.zip](https://github.com/wjw1-Evan/FileVault/releases/download/v1.1.0/FileVault-1.1.0.zip)（0.63MB，sha256 `f1f8be8c…c727d`）
 
 解压后将 `FileVault.app` 拖入「应用程序」，首次打开右键 → 打开（ad-hoc 签名提示未公证），菜单栏即可见图标。
 

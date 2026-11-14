@@ -79,6 +79,7 @@
 - 历史全文搜索（按内容搜索历史版本）
 - 统计面板（写作量/变更量曲线）
 - gh CLI 一键创建 GitHub 私有仓库并绑定
+- ~~自动更新~~（已提前至 v1.1.0 实现，见 FR-20）
 
 ## 6. 非功能需求
 
@@ -110,3 +111,11 @@
 - 本 PRD 与架构/路线图/风险竞品文档
 - SwiftPM 实现：`FileVaultCore`（核心逻辑库，全量自动化测试）+ `FileVaultApp`（菜单栏应用，支持 `--smoke`/`--help`）
 - GitHub 仓库：`wjw1-Evan/FileVault`（Private），规划文档与代码首提交已推送
+
+## 9.5 FR-20 自动更新（v1.1.0 新增）
+
+- 检查：启动后 20s 静默检查 + 菜单手动触发；数据源 `gh api repos/…/releases/latest`
+- 比较：语义化版本（tag 去 v 前缀）
+- 安装：`gh release download` → sha256 与资产 digest 比对 → ditto 解压 → 旧 bundle 转 `.old` → 新 bundle 就位 → `open` 重启
+- 测试：9 项（版本比较表/解析/校验拒绝/替换仿真）+ 真实仓库端到端验证
+- 路线：用户量扩大后迁移 Sparkle（EdDSA 签名 + appcast）
