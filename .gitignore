@@ -3,3 +3,5 @@
 .v2c/
 *.o
 *.swp
+build/
+dist/

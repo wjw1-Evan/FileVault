@@ -44,7 +44,33 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         scroll.documentView = grid
         window?.contentView = scroll
         self.grid = grid
+        // Login-item toggle (FR: launch at login; bundled builds only).
+        if LaunchAtLogin.available {
+            let toggle = NSButton(checkboxWithTitle: "登录时启动 FileVault", target: self, action: #selector(toggleLaunchAtLogin(_:)))
+            toggle.state = LaunchAtLogin.isEnabled ? .on : .off
+            let header = NSGridView(numberOfColumns: 1, rows: 0)
+            header.addRow(with: [toggle])
+            header.addRow(with: [NSGridCell.emptyContentView])
+            let wrapper = NSGridView(numberOfColumns: 2, rows: 0)
+            wrapper.addRow(with: [header, NSView()])
+            let scrollHost = NSScrollView(frame: NSRect(x: 0, y: 0, width: 560, height: 480))
+            scrollHost.hasVerticalScroller = true
+            scrollHost.documentView = grid
+            window?.contentView = wrapper
+        }
         rebuild()
+    }
+
+    @objc func toggleLaunchAtLogin(_ sender: NSButton) {
+        do {
+            try LaunchAtLogin.setEnabled(sender.state == .on)
+        } catch {
+            let alert = NSAlert()
+            alert.messageText = "设置登录自启失败"
+            alert.informativeText = error.localizedDescription
+            alert.runModal()
+            sender.state = LaunchAtLogin.isEnabled ? .on : .off
+        }
     }
 
     /// Rebuild the settings content: roots + per-repo remote config rows.

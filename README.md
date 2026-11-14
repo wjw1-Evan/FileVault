@@ -42,10 +42,23 @@ FileVault 常驻 macOS 菜单栏，对一个受管根目录下的**第一层子�
 
 ```bash
 swift build          # 构建
-swift test           # 运行全部测试
+swift test           # 运行全部测试（38 项）
 .build/debug/FileVaultApp            # 启动菜单栏应用
 .build/debug/FileVaultApp --smoke    # 无 UI 冒烟自检
 swift run FileVaultApp --help        # 命令行参数
 ```
+
+## 打包分发
+
+```bash
+./scripts/make_app.sh                # release 构建 + 组装 FileVault.app（含图标、ad-hoc 签名）
+hdiutil create -volname FileVault -srcfolder build/FileVault.app -format UDZO dist/FileVault.dmg
+# 或（沙箱环境替代方案）：
+ditto -c -k --keepParent build/FileVault.app dist/FileVault-1.0.0.zip
+```
+
+- 产物：`FileVault.app`（LSUIElement 菜单栏模式、bundle 通知可用、设置内可开启「登录时启动」）
+- Release 实测：RSS 62MB、空闲 CPU 0.0%、二进制 0.8MB
+- 代码签名为 ad-hoc（本地验证）；对外分发需正式开发者证书
 
 文档：[产品需求文档](docs/01-产品需求文档-PRD.md) · [技术架构](docs/02-技术架构方案.md) · [开发路线图](docs/03-开发路线图.md) · [风险与竞品](docs/04-风险与竞品分析.md)
