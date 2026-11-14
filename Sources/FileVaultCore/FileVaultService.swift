@@ -97,9 +97,11 @@ public final class FileVaultService: @unchecked Sendable {
     /// Stop watching and forget a root (repos on disk are left untouched).
     public func removeRoot(path: String) async {
         let p = resolved(path)
+        lock.lock()
         watchers[p]?.stop()
         watchers.removeValue(forKey: p)
         roots.removeAll { $0 == p }
+        lock.unlock()
         var cfg = configStore.load()
         cfg.roots.removeAll { $0.path == p }
         configStore.save(cfg)
@@ -111,11 +113,18 @@ public final class FileVaultService: @unchecked Sendable {
         if paused {
             pause.setPaused(true, forRoot: p)
         }
-        guard watchers[p] == nil else { return }
+        lock.lock()
+        let alreadyAttached = watchers[p] != nil
+        if !alreadyAttached {
+            roots.append(p)
+        }
+        lock.unlock()
+        guard !alreadyAttached else { return }
         _ = try await repoManager.ensureRepos(root: p)
-        roots.append(p)
         let w = WatcherEngine(rootPath: p, source: FSEventsChangeSource())
+        lock.lock()
         watchers[p] = w
+        lock.unlock()
         w.start(onActivity: { [weak self] subfolder in
             self?.commitEngine.handleActivity(root: p, subfolder: subfolder)
         }, onRootStructureChanged: { [weak self] in
