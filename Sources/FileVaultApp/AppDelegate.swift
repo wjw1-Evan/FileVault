@@ -257,7 +257,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("fv-update-\(UUID().uuidString.prefix(6))")
             let zip = try await SelfUpdater.download(info: offer, into: tmp)
             try SelfUpdater.verify(zipURL: zip, expectedSHA256: offer.sha256)
-            try SelfUpdater.replace(bundleURL: Bundle.main.bundleURL, newZipURL: zip, relaunch: true)
+            try SelfUpdater.replace(bundleURL: Bundle.main.bundleURL, newZipURL: zip, relaunch: false)
+            // Exit so the relaunch actually starts the NEW binary (otherwise
+            // LaunchServices would just activate this still-running instance).
+            await MainActor.run { NSApp.terminate(nil) }
+            exit(0)
         } catch {
             await MainActor.run { Self.alert("自动更新失败", error.localizedDescription) }
         }
