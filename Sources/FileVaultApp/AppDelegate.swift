@@ -50,6 +50,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             }
         }
+        // Login-launch self-healing (v2.3.0): updates replace the bundle, which
+        // invalidates ad-hoc SMAppService registration — re-register when the
+        // user's intent is ON but macOS lost it.
+        if LaunchAtLogin.available {
+            let want = svc.configStore.load().general.launchAtLoginRequested
+            let enabledNow = LaunchAtLogin.isEnabled
+            if want && !enabledNow {
+                try? LaunchAtLogin.setEnabled(true)
+            } else if enabledNow && !want {
+                // Adopt existing registration as intent (upgrade bridge).
+                svc.updateGeneral { $0.launchAtLoginRequested = true }
+            }
+        }
         // FR-20: silent update check shortly after launch (respects the toggle).
         Task {
             try? await Task.sleep(nanoseconds: 20_000_000_000)

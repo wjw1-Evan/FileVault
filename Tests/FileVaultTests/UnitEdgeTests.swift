@@ -102,10 +102,13 @@ final class GeneralSettingsTests: XCTestCase {
         cfg.general.debounceSeconds = 10
         cfg.general.largeFileThresholdMB = 512
         store1.save(cfg)
+        cfg.general.launchAtLoginRequested = true
+        store1.save(cfg)
         let again = ConfigStore(directory: dir).load()
         XCTAssertFalse(again.general.notificationsEnabled)
         XCTAssertEqual(again.general.debounceSeconds, 10)
         XCTAssertEqual(again.general.largeFileThresholdMB, 512)
+        XCTAssertTrue(again.general.launchAtLoginRequested, "login intent persists")
         try? FileManager.default.removeItem(atPath: dir.path)
     }
 

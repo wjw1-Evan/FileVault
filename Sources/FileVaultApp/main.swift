@@ -1,5 +1,6 @@
 import Foundation
 import AppKit
+import ServiceManagement
 import FileVaultCore
 
 // Argument handling
@@ -21,6 +22,20 @@ if args.contains("--help") {
 if args.contains("--smoke") {
     let ok = SmokeTest.run()
     exit(ok ? 0 : 1)
+}
+
+// Diagnostic: inspect/flip the login-item registration (FR: auto-launch).
+if args.contains("--launch-status") || args.contains("--launch-register") || args.contains("--launch-unregister") {
+    let svc = SMAppService.mainApp
+    print("status(before): \(svc.status)")
+    if args.contains("--launch-register") {
+        do { try svc.register(); print("register: ok") } catch { print("register ERROR: \(error)") }
+    }
+    if args.contains("--launch-unregister") {
+        do { try svc.unregister(); print("unregister: ok") } catch { print("unregister ERROR: \(error)") }
+    }
+    print("status(after): \(svc.status)")
+    exit(0)
 }
 
 // Diagnostic: render the dashboard to a PNG.
