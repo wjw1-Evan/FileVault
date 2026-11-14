@@ -232,7 +232,7 @@ let nameLabel = NSTextField(labelWithString: (root as NSString).lastPathComponen
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
         panel.message = "选择要保护的根目录（第一层子文件夹将被独立版本管理）"
-        if panel.runModal() == .OK, let url = panel.url, let svc = service {
+        if FVDesign.activateAndRunPanel(panel) == .OK, let url = panel.url, let svc = service {
             Task {
                 try? await svc.addRoot(path: url.path)
                 await MainActor.run { self.refresh() }

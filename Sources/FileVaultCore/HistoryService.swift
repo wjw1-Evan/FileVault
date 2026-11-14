@@ -46,3 +46,24 @@ public extension HistoryService {
         return r.stdout.split(separator: "\n").map(String.init).filter { !$0.isEmpty }
     }
 }
+
+public extension HistoryService {
+    /// Version timeline of ONE file: commits that touched it, newest first (v2.2.0).
+    func fileHistory(repoPath: String, file: String, limit: Int = 100) async throws -> [CommitInfo] {
+        let r = try await repoManager.runner.run(
+            ["log", "--follow", "--pretty=format:%H|%h|%s|%aI", "-n", String(limit), "--", file],
+            cwd: repoPath
+        )
+        guard r.succeeded else {
+            throw GitCommandError(command: "log --follow", exitCode: r.exitCode, stderr: r.stderr)
+        }
+        return r.stdout.split(separator: "\n").compactMap { line in
+            let parts = line.split(separator: "|", maxSplits: 3, omittingEmptySubsequences: false)
+            guard parts.count == 4 else { return nil }
+            let f = ISO8601DateFormatter()
+            let d = f.date(from: String(parts[3])) ?? Date(timeIntervalSince1970: 0)
+            return CommitInfo(hash: String(parts[0]), shortHash: String(parts[1]),
+                              subject: String(parts[2]), date: d)
+        }
+    }
+}

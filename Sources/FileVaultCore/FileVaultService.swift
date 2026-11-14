@@ -17,6 +17,7 @@ public final class FileVaultService: @unchecked Sendable {
     public let onFailure = EventCallbackBox()
     public let sshChecker = SshKeyChecker()
     var debouncer: Debouncer!
+    public private(set) var authMonitor: AuthMonitor?
     private let lock = NSLock()
 
     public init(configDirectory: URL? = nil, locator: GitLocator = SystemGitLocator()) {
@@ -64,6 +65,15 @@ public final class FileVaultService: @unchecked Sendable {
         for root in cfg.roots {
             try await attachRoot(path: root.path, paused: root.paused)
         }
+        // v2.2.3: periodic auth/connectivity probing with dedup notifications.
+        authMonitor = AuthMonitor(repos: repos, sync: sync)
+        authMonitor?.onAuthIssue.handler = { [weak self] repoPath, message in
+            self?.onFailure("远程仓库身份验证失败", "\((repoPath as NSString).lastPathComponent)：\(message)")
+        }
+        let rootsForAuth = rootsSnapshot()
+        Task { [weak self] in
+            await self?.authMonitor?.runLoop(rootsProvider: { [weak self] in self?.rootsSnapshot() ?? rootsForAuth })
+        }
         // FR-19: weekly gc maintenance, deferred out of the cold-start path.
         let rootsForMaintenance = rootsSnapshot()
         Task {
@@ -97,9 +107,11 @@ public final class FileVaultService: @unchecked Sendable {
     /// Stop watching and forget a root (repos on disk are left untouched).
     public func removeRoot(path: String) async {
         let p = resolved(path)
+        lock.lock()
         watchers[p]?.stop()
         watchers.removeValue(forKey: p)
         roots.removeAll { $0 == p }
+        lock.unlock()
         var cfg = configStore.load()
         cfg.roots.removeAll { $0.path == p }
         configStore.save(cfg)
@@ -111,11 +123,18 @@ public final class FileVaultService: @unchecked Sendable {
         if paused {
             pause.setPaused(true, forRoot: p)
         }
-        guard watchers[p] == nil else { return }
+        lock.lock()
+        let alreadyAttached = watchers[p] != nil
+        if !alreadyAttached {
+            roots.append(p)
+        }
+        lock.unlock()
+        guard !alreadyAttached else { return }
         _ = try await repoManager.ensureRepos(root: p)
-        roots.append(p)
         let w = WatcherEngine(rootPath: p, source: FSEventsChangeSource())
+        lock.lock()
         watchers[p] = w
+        lock.unlock()
         w.start(onActivity: { [weak self] subfolder in
             self?.commitEngine.handleActivity(root: p, subfolder: subfolder)
         }, onRootStructureChanged: { [weak self] in
