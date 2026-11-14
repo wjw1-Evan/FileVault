@@ -23,6 +23,34 @@ if args.contains("--smoke") {
     exit(ok ? 0 : 1)
 }
 
+// Diagnostic: render the update progress window to a PNG.
+if let idx = args.firstIndex(of: "--render-update-progress"), args.indices.contains(idx + 1) {
+    let outPath = args[idx + 1]
+    let app = NSApplication.shared
+    app.setActivationPolicy(.accessory)
+    Task { @MainActor in
+        let controller = UpdateProgressWindowController()
+        controller.showWindow(nil)
+        controller.window?.makeKeyAndOrderFront(nil)
+        controller.setStage("下载更新…", fraction: 0.42, detail: "277 KB / 660 KB")
+        try? await Task.sleep(nanoseconds: 1_000_000_000)
+        RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.3))
+        if let win = controller.window {
+            let img = CGWindowListCreateImage(.null, .optionIncludingWindow, CGWindowID(win.windowNumber), [.bestResolution])
+            if let img {
+                let rep = NSBitmapImageRep(cgImage: img)
+                if let png = rep.representation(using: .png, properties: [:]) {
+                    try? png.write(to: URL(fileURLWithPath: outPath))
+                    print("rendered: \(outPath)")
+                }
+            }
+        }
+        exit(0)
+    }
+    app.run()
+    exit(0)
+}
+
 // Diagnostic: render the real settings window to a PNG (visual design review).
 if let idx = args.firstIndex(of: "--render-settings"), args.indices.contains(idx + 1) {
     let outPath = args[idx + 1]

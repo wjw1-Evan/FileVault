@@ -329,20 +329,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         await installIfConfirmed(offer: offer, confirmed: !silent)
     }
 
-    /// Download, verify and swap the bundle. App relaunches via `open`.
+    /// Download (with progress bar), verify and swap the bundle.
     func installIfConfirmed(offer: ReleaseInfo, confirmed: Bool) async {
         guard confirmed, Bundle.main.bundleURL.pathExtension == "app" else { return }
+        let progress = UpdateProgressWindowController()
+        await MainActor.run {
+            progress.showWindow(nil)
+            progress.setStage("准备更新…", fraction: nil)
+        }
         do {
-            let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("fv-update-\(UUID().uuidString.prefix(6))")
-            let zip = try await SelfUpdater.download(info: offer, into: tmp)
+            let zip = try await UpdateDownloader.download(info: offer) { fraction, received, total in
+                DispatchQueue.main.async {
+                    progress.setStage("下载更新…", fraction: fraction,
+                                      detail: ByteCountFormatter.string(fromByteCount: received, countStyle: .file) + " / " + ByteCountFormatter.string(fromByteCount: total, countStyle: .file))
+                }
+            }
+            await MainActor.run { progress.setStage("校验完整性…", fraction: nil) }
             try SelfUpdater.verify(zipURL: zip, expectedSHA256: offer.sha256)
+            await MainActor.run { progress.setStage("安装新版本…", fraction: nil) }
             try SelfUpdater.replace(bundleURL: Bundle.main.bundleURL, newZipURL: zip, relaunch: false)
-            // Exit so the relaunch actually starts the NEW binary (otherwise
-            // LaunchServices would just activate this still-running instance).
+            await MainActor.run { progress.setStage("重启应用…", fraction: nil) }
+            try? await Task.sleep(nanoseconds: 600_000_000)
+            // Exit so the relaunch actually starts the NEW binary.
             await MainActor.run { NSApp.terminate(nil) }
             exit(0)
         } catch {
-            await MainActor.run { Self.alert("自动更新失败", error.localizedDescription) }
+            await MainActor.run {
+                progress.closeWindow()
+                Self.alert("自动更新失败", error.localizedDescription)
+            }
         }
     }
 

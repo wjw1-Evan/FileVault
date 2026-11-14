@@ -39,7 +39,8 @@ final class UpdateCheckTests: XCTestCase {
     func testParseReleasePayload() throws {
         let json = """
         {"tag_name": "v1.2.0", "body": "notes here",
-         "assets": [{"name": "FileVault-1.2.0.zip", "digest": "sha256:deadbeef"},
+         "assets": [{"name": "FileVault-1.2.0.zip", "digest": "sha256:deadbeef",
+                     "id": 424242, "size": 659608},
                     {"name": "other.tar.gz"}]}
         """
         let info = try GhReleaseFetcher.parseRelease(Data(json.utf8))
@@ -47,6 +48,8 @@ final class UpdateCheckTests: XCTestCase {
         XCTAssertEqual(info.assetName, "FileVault-1.2.0.zip")
         XCTAssertEqual(info.sha256, "deadbeef")
         XCTAssertEqual(info.notes, "notes here")
+        XCTAssertEqual(info.assetID, 424242, "asset id needed for authenticated download")
+        XCTAssertEqual(info.assetSize, 659608, "asset size needed for progress")
     }
 
     func testParseReleaseWithoutZipAsset() {

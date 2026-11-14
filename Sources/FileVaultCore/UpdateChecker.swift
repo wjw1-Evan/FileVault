@@ -7,13 +7,18 @@ public struct ReleaseInfo: Equatable, Sendable {
     public var notes: String
     public var assetName: String     // "FileVault-1.1.0.zip"
     public var sha256: String?       // asset digest from the API (when present)
+    public var assetID: Int64        // GitHub asset id (for authenticated download)
+    public var assetSize: Int64      // bytes (for progress)
 
-    public init(version: String, tagName: String, notes: String, assetName: String, sha256: String?) {
+    public init(version: String, tagName: String, notes: String, assetName: String, sha256: String?,
+                assetID: Int64 = 0, assetSize: Int64 = 0) {
         self.version = version
         self.tagName = tagName
         self.notes = notes
         self.assetName = assetName
         self.sha256 = sha256
+        self.assetID = assetID
+        self.assetSize = assetSize
     }
 }
 
@@ -82,12 +87,16 @@ public struct GhReleaseFetcher: ReleaseFetching {
         guard let name = asset?["name"] as? String else { throw UpdateError.noAsset }
         let notes = (obj["body"] as? String) ?? ""
         let digest = asset?["digest"] as? String
+        let assetID = (asset?["id"] as? NSNumber)?.int64Value ?? 0
+        let assetSize = (asset?["size"] as? NSNumber)?.int64Value ?? 0
         return ReleaseInfo(
             version: Self.version(fromTag: tag),
             tagName: tag,
             notes: notes,
             assetName: name,
-            sha256: digest?.hasPrefix("sha256:") == true ? String(digest!.dropFirst(7)) : digest
+            sha256: digest?.hasPrefix("sha256:") == true ? String(digest!.dropFirst(7)) : digest,
+            assetID: assetID,
+            assetSize: assetSize
         )
     }
 

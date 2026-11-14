@@ -141,3 +141,26 @@ final class SettingsRenderTests: XCTestCase {
         try? FileManager.default.removeItem(atPath: base)
     }
 }
+
+
+/// Progress window render (FR-20 v1.2.2: visible download progress).
+final class UpdateProgressRenderTests: XCTestCase {
+    @MainActor
+    func testRenderUpdateProgressWindow() {
+        let controller = UpdateProgressWindowController()
+        controller.showWindow(nil)
+        controller.window?.makeKeyAndOrderFront(nil)
+        controller.setStage("下载更新…", fraction: 0.42, detail: "277 KB / 660 KB")
+        RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.3))
+        guard let content = controller.window?.contentView else {
+            return XCTFail("no content view")
+        }
+        let rep = content.bitmapImageRepForCachingDisplay(in: content.bounds)!
+        content.cacheDisplay(in: content.bounds, to: rep)
+        let png = rep.representation(using: .png, properties: [:])
+        XCTAssertNotNil(png)
+        XCTAssertGreaterThan(png!.count, 5_000)
+        try? png!.write(to: URL(fileURLWithPath: "/tmp/update_progress_render.png"))
+        controller.closeWindow()
+    }
+}
