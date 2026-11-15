@@ -63,9 +63,11 @@ FileVault **永久免费**：无试用期、无激活码、无账号、无订阅
 
 ## 下载安装
 
-**最新发布：[v4.0.0](https://github.com/wjw1-Evan/FileVault/releases/tag/v4.0.0)** — [FileVault-4.0.0.zip](https://github.com/wjw1-Evan/FileVault/releases/download/v4.0.0/FileVault-4.0.0.zip)（sha256 `c4e54075…fa02149`）
+**最新发布：[v4.0.1](https://github.com/wjw1-Evan/FileVault/releases/tag/v4.0.1)** — [FileVault-4.0.1.zip](https://github.com/wjw1-Evan/FileVault/releases/download/v4.0.1/FileVault-4.0.1.zip)（sha256 `0efa65d4…b3e05be8`）
 
-> ⚠️ v4.0.0 是**破坏性升级**：管理单元改为「整个文件夹 = 一个仓库」，v3.x 按子文件夹建立的旧仓库不会自动迁移。需要旧版请下载 [v3.4.2](https://github.com/wjw1-Evan/FileVault/releases/tag/v3.4.2)。
+> 安装包**已内嵌 git 2.56.1**：不需要预装 Xcode / Command Line Tools / Homebrew，首次启动也不联网下载。若使用精简包，则会按 5 个镜像地址自动下载并做 sha256 校验（见 [docs/07](docs/07-Git自动安装与镜像源.md)）。
+>
+> ⚠️ 从 v4.0.0 起是**破坏性升级**：管理单元为「整个文件夹 = 一个仓库」，v3.x 按子文件夹建立的旧仓库不会自动迁移。需要旧版请下载 [v3.4.2](https://github.com/wjw1-Evan/FileVault/releases/tag/v3.4.2)。
 
 解压后将 `FileVault.app` 拖入「应用程序」，首次打开右键 → 打开（ad-hoc 签名提示未公证），菜单栏即可见图标。
 
@@ -73,7 +75,7 @@ FileVault **永久免费**：无试用期、无激活码、无账号、无订阅
 
 ```bash
 swift build          # 构建
-swift test           # 运行全部测试（222 项）
+swift test           # 运行全部测试（247 项）
 .build/debug/FileVaultApp            # 启动菜单栏应用
 .build/debug/FileVaultApp --smoke    # 无 UI 冒烟自检
 swift run FileVaultApp --help        # 命令行参数
@@ -82,7 +84,8 @@ swift run FileVaultApp --help        # 命令行参数
 ## 打包分发
 
 ```bash
-./scripts/make_app.sh                # release 构建 + 组装 FileVault.app（含图标、ad-hoc 签名）
+./scripts/vendor-git.sh --arch all   # 可选：预取内嵌 git（下载 + sha256 校验 + 剔除 GCM，见 docs/07）
+./scripts/make_app.sh                # release 构建 + 组装 FileVault.app（含图标、内嵌 git、ad-hoc 签名）
 hdiutil create -volname FileVault -srcfolder build/FileVault.app -format UDZO dist/FileVault.dmg
 # 或（沙箱环境替代方案）：
 ditto -c -k --keepParent build/FileVault.app dist/FileVault-1.0.0.zip
