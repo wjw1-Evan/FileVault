@@ -38,6 +38,31 @@ public final class AuthMonitor: @unchecked Sendable {
     public nonisolated let onAuthIssue = EventCallbackBox()
     private var alerted: Set<String> = []
     private let lock = NSLock()
+    /// Global cooperative-safe probe limiter: bounds concurrent probes across
+    /// ALL monitor instances WITHOUT blocking pool threads (a semaphore wait
+    /// would starve the Swift cooperative pool — audit v2.4.3).
+    private actor ProbeLimiter {
+        static let shared = ProbeLimiter()
+        private var waiting: [CheckedContinuation<Void, Never>] = []
+        private var active = 0
+        private let max = 2
+        func enter() async {
+            if active < max {
+                active += 1
+                return
+            }
+            await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+                waiting.append(cont)
+            }
+        }
+        func exit() {
+            active = Swift.max(0, active - 1)
+            if !waiting.isEmpty {
+                waiting.removeFirst().resume()
+                active += 1
+            }
+        }
+    }
 
     public init(repos: RepoManager, sync: SyncManager, interval: TimeInterval = 6 * 3600) {
         self.repos = repos
@@ -46,7 +71,11 @@ public final class AuthMonitor: @unchecked Sendable {
     }
 
     /// Long-running probe loop (call from a detached Task at service start).
-    public func runLoop(rootsProvider: @escaping @Sendable () -> [String]) async {
+    /// The FIRST probe is deferred: probing during the startup burst saturates
+    /// the libdispatch thread pool with blocked ls-remotes (audit v2.2.4).
+    public func runLoop(rootsProvider: @escaping @Sendable () -> [String],
+                        initialDelay: TimeInterval = 60) async {
+        try? await Task.sleep(nanoseconds: UInt64(initialDelay * 1_000_000_000))
         while !Task.isCancelled {
             await checkAll(rootsProvider: rootsProvider)
             try? await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
@@ -62,7 +91,9 @@ public final class AuthMonitor: @unchecked Sendable {
                     lock.lock(); alerted.remove(r.path); lock.unlock()
                     continue
                 }
+                await AuthMonitor.ProbeLimiter.shared.enter()
                 let conn = await sync.testConnectivity(repoPath: r.path)
+                await AuthMonitor.ProbeLimiter.shared.exit()
                 lock.lock()
                 let alreadyAlerted = alerted.contains(r.path)
                 if !conn.ok {

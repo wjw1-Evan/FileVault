@@ -38,25 +38,11 @@ final class HistoryWindowController: NSWindowController, NSTableViewDelegate, NS
     // MARK: - Build
 
     func buildUI() {
-        let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 636, height: 560))
-        scroll.hasVerticalScroller = true
-        scroll.drawsBackground = true
-        scroll.backgroundColor = .windowBackgroundColor
-        let page = NSStackView()
-        page.orientation = .vertical
-        page.alignment = .leading
-        page.spacing = 10
-        page.edgeInsets = NSEdgeInsets(top: 12, left: FVDesign.margin, bottom: 12, right: FVDesign.margin)
-        page.translatesAutoresizingMaskIntoConstraints = false
-        scroll.documentView = page
-        window?.contentView = scroll
-        let pTop = page.topAnchor.constraint(equalTo: scroll.contentView.topAnchor)
-        let pLead = page.leadingAnchor.constraint(equalTo: scroll.contentView.leadingAnchor)
-        let pTrail = page.trailingAnchor.constraint(equalTo: scroll.contentView.trailingAnchor)
-        let pBottom = page.bottomAnchor.constraint(greaterThanOrEqualTo: scroll.contentView.bottomAnchor)
-        for c in [pTop, pLead, pTrail, pBottom] { c.isActive = true }
+        // Flexible-middle layout: the commit table absorbs window resize
+        // (width AND height); other rows are fixed.
+        let host = NSView()
+        window?.contentView = host
 
-        // Row 1: two-level pickers.
         let rootPopup = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 190, height: 26), pullsDown: false)
         rootPopup.target = self
         rootPopup.action = #selector(rootChanged)
@@ -65,25 +51,30 @@ final class HistoryWindowController: NSWindowController, NSTableViewDelegate, NS
         repoPopup.target = self
         repoPopup.action = #selector(repoChanged)
         self.repoPopup = repoPopup
-        let pickers = NSStackView(views: [rootPopup, repoPopup])
-        pickers.orientation = .horizontal
-        pickers.spacing = 8
-        page.addArrangedSubview(pickers)
+        let controlsRow = NSStackView(views: [rootPopup, repoPopup])
+        controlsRow.orientation = .horizontal
+        controlsRow.spacing = 8
+        controlsRow.translatesAutoresizingMaskIntoConstraints = false
+        host.addSubview(controlsRow)
 
-        // Row 2: commit table (fixed height; the page scrolls).
-        let tableScroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 612, height: 220))
+        let tableScroll = NSScrollView()
         tableScroll.hasVerticalScroller = true
-        tableScroll.drawsBackground = false
-        let tv = NSTableView(frame: tableScroll.bounds)
+        tableScroll.drawsBackground = true
+        tableScroll.backgroundColor = .windowBackgroundColor
+        let tv = NSTableView(frame: NSRect(x: 0, y: 0, width: 610, height: 240))
         let hashCol = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("hash"))
         hashCol.title = "版本"
         hashCol.width = 78
+        hashCol.minWidth = 60
         let subjectCol = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("subject"))
         subjectCol.title = "提交信息"
         subjectCol.width = 330
+        subjectCol.minWidth = 160
+        subjectCol.resizingMask = .autoresizingMask
         let dateCol = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("date"))
         dateCol.title = "时间"
-        dateCol.width = 140
+        dateCol.width = 130
+        dateCol.minWidth = 90
         tv.addTableColumn(hashCol)
         tv.addTableColumn(subjectCol)
         tv.addTableColumn(dateCol)
@@ -91,25 +82,27 @@ final class HistoryWindowController: NSWindowController, NSTableViewDelegate, NS
         tv.delegate = self
         tv.usesAlternatingRowBackgroundColors = true
         tv.rowHeight = 24
+        tv.columnAutoresizingStyle = .uniformColumnAutoresizingStyle
         table = tv
         tableScroll.documentView = tv
         tv.sizeLastColumnToFit()
-        page.addArrangedSubview(tableScroll)
-        tableScroll.widthAnchor.constraint(equalToConstant: 612).isActive = true
-        tableScroll.heightAnchor.constraint(equalToConstant: 220).isActive = true
+        tableScroll.translatesAutoresizingMaskIntoConstraints = false
+        host.addSubview(tableScroll)
 
-        // Row 3: changed files of the selected commit — restore inline per row.
-        let filesHeader = FVDesign.header("此提交包含的文件（点「恢复」回到该时点）")
-        page.addArrangedSubview(filesHeader)
-        let filesScroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 612, height: 110))
+        let filesHeader = NSTextField(labelWithString: "此提交包含的文件（点「恢复」回到该时点）")
+        filesHeader.font = .systemFont(ofSize: 13, weight: .semibold)
+        filesHeader.translatesAutoresizingMaskIntoConstraints = false
+        host.addSubview(filesHeader)
+        let filesScroll = NSScrollView()
         filesScroll.hasVerticalScroller = true
-        let ftv = NSTableView(frame: filesScroll.bounds)
+        let ftv = NSTableView(frame: NSRect(x: 0, y: 0, width: 610, height: 110))
         let stCol = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("status"))
         stCol.title = "变更"
         stCol.width = 52
         let fCol = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("file"))
         fCol.title = "文件"
-        fCol.width = 400
+        fCol.width = 420
+        fCol.resizingMask = .autoresizingMask
         let rCol = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("restore"))
         rCol.title = "操作"
         rCol.width = 110
@@ -119,32 +112,52 @@ final class HistoryWindowController: NSWindowController, NSTableViewDelegate, NS
         ftv.dataSource = self
         ftv.delegate = self
         ftv.rowHeight = 26
+        ftv.columnAutoresizingStyle = .uniformColumnAutoresizingStyle
         filesTable = ftv
         filesScroll.documentView = ftv
         ftv.sizeLastColumnToFit()
-        page.addArrangedSubview(filesScroll)
-        filesScroll.widthAnchor.constraint(equalToConstant: 612).isActive = true
-        filesScroll.heightAnchor.constraint(equalToConstant: 110).isActive = true
+        filesScroll.translatesAutoresizingMaskIntoConstraints = false
+        host.addSubview(filesScroll)
 
-        // Row 4: feedback + repo rollback.
         let filesLabel = NSTextField(labelWithString: "选择一个提交，查看并恢复它包含的文件")
         filesLabel.font = FVDesign.captionFont
         filesLabel.textColor = .secondaryLabelColor
         filesLabel.lineBreakMode = .byTruncatingTail
         filesLabel.translatesAutoresizingMaskIntoConstraints = false
-        filesLabel.widthAnchor.constraint(equalToConstant: 612).isActive = true
-        self.filesLabel = filesLabel
-        page.addArrangedSubview(filesLabel)
+        host.addSubview(filesLabel)
+
         let rollback = NSButton(title: "回滚整个文件夹到此版本", target: self, action: #selector(rollbackAction))
         rollback.target = self
         rollback.bezelStyle = .rounded
-        page.addArrangedSubview(rollback)
+        rollback.translatesAutoresizingMaskIntoConstraints = false
+        host.addSubview(rollback)
 
-        window?.setContentSize(NSSize(width: 636, height: 560))
+        let m: CGFloat = 12
+        let c1 = controlsRow.topAnchor.constraint(equalTo: host.topAnchor, constant: m)
+        let c2 = controlsRow.leadingAnchor.constraint(equalTo: host.leadingAnchor, constant: m)
+        let c3 = controlsRow.trailingAnchor.constraint(lessThanOrEqualTo: host.trailingAnchor, constant: -m)
+        let c4 = tableScroll.topAnchor.constraint(equalTo: controlsRow.bottomAnchor, constant: 10)
+        let c5 = tableScroll.leadingAnchor.constraint(equalTo: host.leadingAnchor, constant: m)
+        let c6 = tableScroll.trailingAnchor.constraint(equalTo: host.trailingAnchor, constant: -m)
+        let c7 = tableScroll.bottomAnchor.constraint(equalTo: filesHeader.topAnchor, constant: -10)
+        let c8 = tableScroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 180)
+        let c9 = filesHeader.leadingAnchor.constraint(equalTo: host.leadingAnchor, constant: m)
+        let c10 = filesHeader.trailingAnchor.constraint(lessThanOrEqualTo: host.trailingAnchor, constant: -m)
+        let c11 = filesScroll.topAnchor.constraint(equalTo: filesHeader.bottomAnchor, constant: 6)
+        let c12 = filesScroll.leadingAnchor.constraint(equalTo: host.leadingAnchor, constant: m)
+        let c13 = filesScroll.trailingAnchor.constraint(equalTo: host.trailingAnchor, constant: -m)
+        let c14 = filesScroll.heightAnchor.constraint(equalToConstant: 110)
+        let c15 = filesLabel.topAnchor.constraint(equalTo: filesScroll.bottomAnchor, constant: 6)
+        let c16 = filesLabel.leadingAnchor.constraint(equalTo: host.leadingAnchor, constant: m)
+        let c17 = filesLabel.trailingAnchor.constraint(lessThanOrEqualTo: host.trailingAnchor, constant: -m)
+        let c18 = rollback.topAnchor.constraint(equalTo: filesLabel.bottomAnchor, constant: 8)
+        let c19 = rollback.leadingAnchor.constraint(equalTo: host.leadingAnchor, constant: m)
+        let c20 = rollback.bottomAnchor.constraint(equalTo: host.bottomAnchor, constant: -m)
+        for c in [c1, c2, c3, c4, c5, c6, c7, c8, c9, c10, c11, c12, c13, c14,
+                  c15, c16, c17, c18, c19, c20] { c.isActive = true }
+        window?.setContentSize(NSSize(width: 660, height: 560))
         reloadRepos()
     }
-
-    // MARK: - Data
 
     override func showWindow(_ sender: Any?) {
         super.showWindow(sender)
@@ -192,6 +205,7 @@ final class HistoryWindowController: NSWindowController, NSTableViewDelegate, NS
             repoPopup?.addItem(withTitle: f.name)
             repoPopup?.lastItem?.image = FVDesign.lineIcon("folder")
         }
+        loadGeneration += 1  // invalidate stale async loads from the previous root
         guard !currentFolders.isEmpty else {
             commits = []
             table?.reloadData()

@@ -32,6 +32,8 @@ public final class FSEventsChangeSource: ChangeSource {
         }
         started = true
         lifecycleLock.unlock()
+        // FSEvents C calls happen OUTSIDE the lifecycle lock (they wait on the
+        // stream queue; holding the lock here deadlocked the suite).
         let box = EventBox(handler: onEvent)
         let info = Unmanaged.passRetained(box).toOpaque()
         var context = FSEventStreamContext(
@@ -81,17 +83,17 @@ public final class FSEventsChangeSource: ChangeSource {
     }
 
     public func stop() {
+        // Capture + clear under the lock; C calls outside (they wait on the
+        // stream queue and would deadlock against in-flight callbacks).
         lifecycleLock.lock()
-        guard let stream else {
-            lifecycleLock.unlock()
-            return
-        }
-        FSEventStreamStop(stream)
-        FSEventStreamInvalidate(stream)
-        FSEventStreamRelease(stream)
+        let stream = self.stream
         self.stream = nil
         started = false
         lifecycleLock.unlock()
+        guard let stream else { return }
+        FSEventStreamStop(stream)
+        FSEventStreamInvalidate(stream)
+        FSEventStreamRelease(stream)
     }
 }
 

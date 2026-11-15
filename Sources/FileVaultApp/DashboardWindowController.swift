@@ -7,6 +7,7 @@ final class DashboardWindowController: NSWindowController, NSWindowDelegate {
     var statusLabel: NSTextField?
     var activityStack: NSStackView?
     var rootsStack: NSStackView?
+    var pageStack: NSStackView?
     private var refreshTimer: Timer?
 
     init(service: FileVaultService?) {
@@ -42,6 +43,7 @@ final class DashboardWindowController: NSWindowController, NSWindowDelegate {
         stack.spacing = 12
         stack.edgeInsets = NSEdgeInsets(top: 16, left: FVDesign.margin, bottom: 16, right: FVDesign.margin)
         stack.translatesAutoresizingMaskIntoConstraints = false
+        pageStack = stack
         scroll.documentView = stack
         window?.contentView = scroll
         let dTop = stack.topAnchor.constraint(equalTo: scroll.contentView.topAnchor)
@@ -63,7 +65,7 @@ header.addArrangedSubview(FVDesign.header("FileVault — 文件时光机"))
         statusLabel = status
         header.addArrangedSubview(status)
         stack.addArrangedSubview(header)
-        header.widthAnchor.constraint(equalToConstant: FVDesign.cardWidth).isActive = true
+        header.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -28).isActive = true
 
         // Recent activity card.
         let activity = FVDesign.card()
@@ -75,7 +77,7 @@ header.addArrangedSubview(FVDesign.header("FileVault — 文件时光机"))
         self.activityStack = activityStack
         activity.addArrangedSubview(activityStack)
         stack.addArrangedSubview(activity)
-        activity.widthAnchor.constraint(equalToConstant: FVDesign.cardWidth).isActive = true
+        activity.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -28).isActive = true
 
         // Roots card.
         let roots = FVDesign.card()
@@ -87,7 +89,7 @@ header.addArrangedSubview(FVDesign.header("FileVault — 文件时光机"))
         self.rootsStack = rootsStack
         roots.addArrangedSubview(rootsStack)
         stack.addArrangedSubview(roots)
-        roots.widthAnchor.constraint(equalToConstant: FVDesign.cardWidth).isActive = true
+        roots.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -28).isActive = true
 
         // Footer actions.
         let actions = NSStackView()

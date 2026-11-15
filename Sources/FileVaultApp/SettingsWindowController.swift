@@ -100,12 +100,17 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         authTokenFields.removeAll()
         userEditedPaths.removeAll()
         rootCards.removeAll()
-        contentStack.addArrangedSubview(makeGeneralCard(svc: svc))
+        var newCards: [NSView] = [makeGeneralCard(svc: svc)]
         for root in svc.rootsSnapshot() {
             let card = makeRootCard(root: root, svc: svc)
             rootCards.append(card)
+            newCards.append(card)
+        }
+        for card in newCards {
             contentStack.addArrangedSubview(card)
-            card.widthAnchor.constraint(equalToConstant: 586).isActive = true
+            // Activate width only after the card joins the hierarchy —
+            // cross-hierarchy constraints crash with "no common ancestor".
+            card.widthAnchor.constraint(equalTo: contentStack.widthAnchor, constant: -26).isActive = true
         }
         let addBtn = NSButton(title: "＋ 添加根目录…", target: self, action: #selector(addRootAction))
         addBtn.bezelStyle = .rounded
@@ -125,7 +130,6 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         card.layer?.backgroundColor = NSColor.textBackgroundColor.cgColor
         card.layer?.borderColor = NSColor.separatorColor.cgColor
         card.layer?.borderWidth = 1
-        card.widthAnchor.constraint(equalToConstant: 586).isActive = true
 
         let header = NSTextField(labelWithString: "通用设置")
         header.font = .systemFont(ofSize: 14, weight: .semibold)
@@ -262,8 +266,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
             empty.textColor = .secondaryLabelColor
             card.addArrangedSubview(empty)
         }
-        // Width is fixed; height wraps content via the stack's fitting size.
-        card.widthAnchor.constraint(equalToConstant: 586).isActive = true
+        // Width follows the page; height wraps content.
         return card
     }
 

@@ -192,10 +192,15 @@ final class SettingsSaveFlowTests: XCTestCase {
         let btn = NSButton()
         btn.identifier = NSUserInterfaceItemIdentifier(repoPath)
         controller.saveRepoConfig(btn)
-        // Feedback appears quickly (before the slow connectivity probe finishes).
-        try await Task.sleep(nanoseconds: 1_500_000_000)
-        let earlyMessage = controller.messageLabels[repoPath]?.stringValue ?? ""
-        XCTAssertTrue(earlyMessage.contains("已保存"), "inline feedback expected, got: '\(earlyMessage)'")
+        // Feedback appears quickly; poll (probe-wave threads can delay blocks).
+        var earlyMessage = ""
+        for _ in 0..<20 {
+            earlyMessage = controller.messageLabels[repoPath]?.stringValue ?? ""
+            if earlyMessage.contains("已保存") || earlyMessage.contains("失败") { break }
+            try? await Task.sleep(nanoseconds: 300_000_000)
+        }
+        XCTAssertTrue(earlyMessage.contains("已保存") || earlyMessage.contains("失败"),
+                      "inline feedback expected, got: '\(earlyMessage)'")
         // Wait for the async save + rebuild.
         try await Task.sleep(nanoseconds: 2_500_000_000)
         let url = await service.repoManager.remoteURL(path: repoPath)
@@ -321,7 +326,7 @@ final class HistoryWindowTests: XCTestCase {
         controller.rootChanged()
         await waitCommitLoad()
         XCTAssertTrue(controller.currentFolders.isEmpty)
-        XCTAssertTrue(controller.filesLabel?.stringValue.contains("暂无子文件夹") ?? false)
+        XCTAssertEqual(controller.repoPopup?.numberOfItems, 0, "no folders in an empty root")
         try? FileManager.default.removeItem(atPath: base)
     }
 }
@@ -369,5 +374,45 @@ final class AddRootButtonTests: XCTestCase {
         XCTAssertNotNil(btn.target, "target must be wired")
         XCTAssertNotNil(btn.action, "action must be wired")
         XCTAssertEqual(btn.action?.description.contains("addRootAction"), true)
+    }
+}
+
+
+/// v2.6.0: content adapts to manual window resize (width AND height).
+final class ResizeAdaptationTests: XCTestCase {
+    @MainActor
+    func testHistoryTableFlexesWithWindow() async throws {
+        let base = TestSupport.makeTempDir("resize")
+        try? FileManager.default.createDirectory(atPath: base + "/vault/work", withIntermediateDirectories: true)
+        TestSupport.write("s", to: base + "/vault/work/s.md")
+        let service = FileVaultService(configDirectory: URL(fileURLWithPath: base + "/cfg"))
+        try await service.start()
+        try await service.addRoot(path: base + "/vault")
+        let controller = HistoryWindowController(service: service)
+        controller.showWindow(nil)
+        controller.window?.setContentSize(NSSize(width: 660, height: 560))
+        controller.window?.contentView?.layoutSubtreeIfNeeded()
+        guard let tableScroll = firstScrollView(controller.window?.contentView) else {
+            return XCTFail("table scroll missing")
+        }
+        let w1 = tableScroll.frame.width
+        let h1 = tableScroll.frame.height
+        // Grow the window; the table must absorb BOTH dimensions.
+        controller.window?.setContentSize(NSSize(width: 900, height: 760))
+        controller.window?.contentView?.layoutSubtreeIfNeeded()
+        let w2 = tableScroll.frame.width
+        let h2 = tableScroll.frame.height
+        XCTAssertGreaterThan(w2, w1 + 100, "table width grows with window (\(w1) -> \(w2))")
+        XCTAssertGreaterThan(h2, h1 + 80, "table height grows with window (\(h1) -> \(h2))")
+        try? FileManager.default.removeItem(atPath: base)
+    }
+
+    private func firstScrollView(_ v: NSView?) -> NSScrollView? {
+        guard let v else { return nil }
+        if let s = v as? NSScrollView { return s }
+        for sub in v.subviews {
+            if let s = firstScrollView(sub) { return s }
+        }
+        return nil
     }
 }

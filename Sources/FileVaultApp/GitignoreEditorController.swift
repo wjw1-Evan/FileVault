@@ -13,10 +13,11 @@ final class GitignoreEditorController: NSWindowController, NSTextViewDelegate {
         self.repos = repos
         let win = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 520, height: 380),
-            styleMask: [.titled, .closable],
+            styleMask: [.titled, .closable, .resizable],
             backing: .buffered, defer: false
         )
         win.title = "忽略规则 — " + (repoPath as NSString).lastPathComponent
+        win.minSize = NSSize(width: 480, height: 320)
         super.init(window: win)
         buildUI()
     }
