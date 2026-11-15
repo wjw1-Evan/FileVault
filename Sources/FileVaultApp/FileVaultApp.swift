@@ -12,6 +12,13 @@ struct FileVaultApp: App {
         handleEarlyExitFlags()
         _ = NSApplication.shared
         NSApplication.shared.setActivationPolicy(.accessory)
+        // Diagnostic hook: screenshot tooling renders a forced appearance without
+        // touching the user's system setting (FV_FORCE_APPEARANCE=dark|light).
+        switch ProcessInfo.processInfo.environment["FV_FORCE_APPEARANCE"] {
+        case "dark": NSApplication.shared.appearance = NSAppearance(named: .darkAqua)
+        case "light": NSApplication.shared.appearance = NSAppearance(named: .aqua)
+        default: break
+        }
         Task { @MainActor in
             AppState.shared.start()
             await AppState.shared.runDiagnosticsIfRequested()
@@ -28,26 +35,34 @@ struct FileVaultApp: App {
                 OpenerHook()
             }
         }
-        .menuBarExtraStyle(.menu)
+        .menuBarExtraStyle(.window)
 
         Window("FileVault", id: "dashboard") {
             DashboardView()
                 .environmentObject(app)
-                .frame(minWidth: 620, minHeight: 560)
         }
+        .defaultSize(width: 800, height: 780)
 
         Window("FileVault 设置", id: "settings") {
             SettingsView()
                 .environmentObject(app)
-                .frame(minWidth: 660, minHeight: 560)
         }
+        .defaultSize(width: 780, height: 760)
 
         Window("FileVault 历史", id: "history") {
             HistoryView()
                 .environmentObject(app)
-                .frame(minWidth: 660, minHeight: 520)
         }
+        .defaultSize(width: 1000, height: 640)
 
+        #if DEBUG
+        // Dev-only: lets --render-menu capture the panel as a PNG.
+        Window("FileVault 菜单", id: "menu-preview") {
+            MenuPreviewView()
+                .environmentObject(app)
+        }
+        .defaultSize(width: 420, height: 700)
+        #endif
     }
 
     /// Flags that must act before any UI exists.
@@ -66,7 +81,7 @@ struct FileVaultApp: App {
               --launch-register   Register the app as a login item
               --launch-unregister Unregister the login item
               --open-ui a,b,c     Open windows (settings,dashboard,history) in the running app
-              --render-* <path>   Render a window to PNG and exit
+              --render-* <path>   Render a window to PNG and exit (debug: menu too)
               --help              Show this help
             """)
             exit(0)
@@ -89,9 +104,12 @@ struct FileVaultApp: App {
         }
         // Render diagnostics: map --render-settings/--render-history/
         // --render-dashboard to an open+capture request.
-        let map = ["--render-settings": ("settings", "FileVault 设置"),
+        var map = ["--render-settings": ("settings", "FileVault 设置"),
                    "--render-history": ("history", "FileVault 历史"),
                    "--render-dashboard": ("dashboard", "FileVault")]
+        #if DEBUG
+        map["--render-menu"] = ("menu-preview", "FileVault 菜单")
+        #endif
         for (flag, pair) in map {
             if let idx = args.firstIndex(of: flag), args.indices.contains(idx + 1) {
                 AppState.shared.renderRequest = AppState.RenderRequest(

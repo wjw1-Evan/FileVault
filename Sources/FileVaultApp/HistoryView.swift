@@ -107,7 +107,13 @@ final class HistoryModel: ObservableObject {
         statusText = "正在加载提交历史…"
         Task { [weak self] in
             guard let self else { return }
-            let list = (try? await svc.history.commits(repoPath: repo, limit: 100)) ?? []
+            let raw = (try? await svc.history.commits(repoPath: repo, limit: 100)) ?? []
+            // Legacy commits may carry git's octal-escaped paths; decode once here
+            // so the list, detail header and restore status all read clean.
+            let list = raw.map { c in
+                CommitInfo(hash: c.hash, shortHash: c.shortHash,
+                           subject: c.subject.fvDecodingGitEscapes, date: c.date)
+            }
             guard generation == self.loadGeneration else { return }
             if list.isEmpty {
                 self.commits = []
@@ -192,52 +198,29 @@ final class HistoryModel: ObservableObject {
     }
 }
 
-/// History window: repo pickers + commit list + per-file inline restore.
+/// History window: repo sidebar, commit list, and a detail pane with per-file restore.
 struct HistoryView: View {
     @EnvironmentObject var app: AppState
     @Environment(\.openWindow) private var openWindow
     @StateObject private var model = HistoryModel()
     @State private var confirmRollback = false
 
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 8) {
-                Picker("", selection: Binding(
-                    get: { model.selectedRoot ?? "" },
-                    set: { model.rootChanged($0) })) {
-                    ForEach(model.roots, id: \.self) { root in
-                        Label((root as NSString).lastPathComponent, systemImage: "folder")
-                            .tag(root)
-                    }
-                }
-                .frame(width: 200)
-                Picker("", selection: Binding(
-                    get: { model.selectedRepo ?? "" },
-                    set: { model.repoChanged($0) })) {
-                    ForEach(model.folders) { f in
-                        Label(f.name, systemImage: "folder").tag(f.path)
-                    }
-                }
-                .frame(width: 190)
-                Spacer()
-            }
-            .padding([.top, .leading, .trailing], 12)
+    private var selectedCommit: CommitInfo? {
+        guard let hash = model.selectedCommitHash else { return nil }
+        return model.commits.first { $0.hash == hash }
+    }
 
-            commitTable
-                .padding(.horizontal, 12)
-            Text("此提交包含的文件（点「恢复」回到该时点）")
-                .font(.headline)
-                .padding(.horizontal, 12)
-            filesTable
-                .padding(.horizontal, 12)
-            Text(model.statusText)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .padding(.horizontal, 12)
-            Button("回滚整个文件夹到此版本", role: .destructive) { confirmRollback = true }
-                .padding([.leading, .bottom], 12)
+    var body: some View {
+        HSplitView {
+            sidebar
+                .frame(minWidth: 190, idealWidth: 210, maxWidth: 270)
+            commitPane
+                .frame(minWidth: 280, idealWidth: 330, maxWidth: 460)
+            detailPane
+                .frame(minWidth: 320, maxWidth: .infinity)
         }
-        .frame(minWidth: 660, minHeight: 520)
+        .frame(minWidth: 880, minHeight: 560)
+        .fvCanvas()
         .task { model.bind(app) }
         .onDisappear { model.unbind() }
         .confirmationDialog("回滚确认", isPresented: $confirmRollback, titleVisibility: .visible) {
@@ -248,28 +231,256 @@ struct HistoryView: View {
         }
     }
 
-    private var commitTable: some View {
-        Table(model.commits, selection: Binding(
-            get: { model.selectedCommitHash ?? "" },
-            set: { model.selectCommit($0) })) {
-            TableColumn("版本") { c in Text(c.shortHash).monospacedDigit() }.width(80)
-            TableColumn("提交信息") { c in Text(c.subject).lineLimit(1) }
-            TableColumn("时间") { c in
-                Text(c.date.formatted(.dateTime.month().day().hour().minute().second()))
-                    .monospacedDigit()
-            }.width(130)
+    // MARK: Sidebar
+
+    private var sidebar: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("根目录")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(.tertiary)
+                Picker("", selection: Binding(
+                    get: { model.selectedRoot ?? "" },
+                    set: { model.rootChanged($0) })) {
+                    ForEach(model.roots, id: \.self) { root in
+                        Text((root as NSString).lastPathComponent).tag(root)
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.menu)
+                .controlSize(.small)
+            }
+            .padding(.horizontal, 12)
+            .padding(.top, 14)
+            .padding(.bottom, 8)
+
+            FVHairline(leading: 12)
+
+            if model.folders.isEmpty {
+                FVEmptyState(symbol: "folder",
+                             title: "没有子文件夹",
+                             message: "在根目录下新建文件夹后，这里会列出对应的版本库。")
+            } else {
+                List(selection: Binding(
+                    get: { model.selectedRepo },
+                    set: { if let value = $0 { model.repoChanged(value) } })) {
+                    Section {
+                        ForEach(model.folders) { folder in
+                            HStack(spacing: 7) {
+                                Image(systemName: "folder.fill")
+                                    .font(.system(size: 11))
+                                    .foregroundStyle(.orange.opacity(0.85))
+                                Text(folder.name)
+                                    .font(.system(size: 12))
+                                    .lineLimit(1)
+                            }
+                            .tag(folder.path)
+                            .listRowSeparator(.hidden)
+                        }
+                    } header: {
+                        Text("仓库")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(.tertiary)
+                    }
+                }
+                .listStyle(.sidebar)
+                .scrollContentBackground(.hidden)
+                .background(Color.clear)
+            }
         }
-        .frame(height: 220)
+        .background(Color.primary.opacity(0.015))
     }
 
-    private var filesTable: some View {
-        Table(model.files) {
-            TableColumn("变更") { f in Text(f.status).monospacedDigit() }.width(52)
-            TableColumn("文件") { f in Text(f.path).lineLimit(1) }
-            TableColumn("操作") { f in
-                Button("恢复") { model.restoreFile(f.path) }
-            }.width(90)
+    // MARK: Commits
+
+    private var commitPane: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("提交记录")
+                    .font(FVTheme.sectionFont)
+                Spacer()
+                Text(model.commits.isEmpty ? "—" : "\(model.commits.count) 条")
+                    .font(FVTheme.metaFont)
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+            }
+            .padding(.horizontal, 14)
+            .padding(.top, 14)
+            .padding(.bottom, 10)
+
+            FVHairline(leading: 0)
+
+            if model.commits.isEmpty {
+                FVEmptyState(symbol: "clock.arrow.circlepath",
+                             title: "还没有提交历史",
+                             message: "这个文件夹被守卫后，每次改动都会在这里留下一条记录。")
+                Spacer()
+            } else {
+                List(selection: Binding(
+                    get: { model.selectedCommitHash },
+                    set: { model.selectCommit($0) })) {
+                    ForEach(model.commits) { commit in
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(commit.subject)
+                                .font(.system(size: 12))
+                                .lineLimit(2)
+                                .multilineTextAlignment(.leading)
+                            HStack(spacing: 5) {
+                                Text(commit.shortHash)
+                                    .font(.system(size: 10, design: .monospaced))
+                                Text("·")
+                                    .font(.system(size: 10))
+                                Text(FVTime.relative(commit.date))
+                                    .font(.system(size: 10))
+                            }
+                            .foregroundStyle(.tertiary)
+                        }
+                        .padding(.vertical, 3)
+                        .tag(commit.hash)
+                        .listRowSeparator(.hidden)
+                    }
+                }
+                .listStyle(.inset)
+                .scrollContentBackground(.hidden)
+                .background(Color.clear)
+            }
         }
-        .frame(height: 140)
+    }
+
+    // MARK: Detail
+
+    private var detailPane: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            if let commit = selectedCommit {
+                commitHeader(commit)
+                FVHairline(leading: 0)
+                filesList
+                Spacer(minLength: 0)
+                detailFooter
+            } else {
+                FVEmptyState(symbol: "sidebar.left",
+                             title: "选择一个提交",
+                             message: "右侧会列出这个版本包含的文件，可以只恢复其中一个。")
+                    .padding(.top, 40)
+                Spacer(minLength: 0)
+                detailFooter
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    private func commitHeader(_ commit: CommitInfo) -> some View {
+        VStack(alignment: .leading, spacing: 9) {
+            Text(commit.subject)
+                .font(.system(size: 15, weight: .semibold))
+                .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
+            HStack(spacing: 8) {
+                Text(commit.shortHash)
+                    .font(.system(size: 10, design: .monospaced))
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(Capsule().fill(Color.primary.opacity(0.06)))
+                Text(FVTime.absoluteWithSeconds(commit.date))
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                if !model.files.isEmpty {
+                    Text("· \(model.files.count) 个文件")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.tertiary)
+                }
+            }
+        }
+        .padding(.horizontal, 18)
+        .padding(.vertical, 14)
+    }
+
+    private var filesList: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text("此版本包含的文件")
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(.tertiary)
+                .padding(.horizontal, 18)
+                .padding(.top, 12)
+                .padding(.bottom, 6)
+
+            if model.files.isEmpty {
+                FVEmptyState(symbol: "doc",
+                             title: "没有文件变更",
+                             message: "这个提交只包含空目录或元数据变化。")
+            } else {
+                ScrollView {
+                    VStack(spacing: 0) {
+                        ForEach(Array(model.files.enumerated()), id: \.element.id) { index, file in
+                            fileRow(file)
+                            if index < model.files.count - 1 {
+                                FVHairline(leading: 18)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func fileRow(_ file: ChangedFile) -> some View {
+        HStack(spacing: 10) {
+            Text(file.status)
+                .font(.system(size: 10, weight: .bold, design: .monospaced))
+                .foregroundStyle(changeTint(file.status))
+                .frame(width: 18, height: 18)
+                .background(
+                    RoundedRectangle(cornerRadius: 5, style: .continuous)
+                        .fill(changeTint(file.status).opacity(0.12))
+                )
+            Text(file.path)
+                .font(.system(size: 12))
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .textSelection(.enabled)
+            Spacer(minLength: 8)
+            Button("恢复") { model.restoreFile(file.path) }
+                .controlSize(.small)
+                .help("把这个文件恢复到选中提交时的内容")
+        }
+        .padding(.horizontal, 18)
+        .padding(.vertical, 8)
+    }
+
+    private func changeTint(_ status: String) -> Color {
+        switch status {
+        case "A": return .green
+        case "D": return .red
+        case "R": return .blue
+        default: return .orange
+        }
+    }
+
+    private var detailFooter: some View {
+        VStack(spacing: 0) {
+            FVHairline(leading: 0)
+            HStack(spacing: 8) {
+                Image(systemName: statusSymbol)
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+                Text(model.statusText)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                Spacer(minLength: 8)
+                Button("回滚整个文件夹", role: .destructive) { confirmRollback = true }
+                    .controlSize(.small)
+                    .disabled(selectedCommit == nil)
+            }
+            .padding(.horizontal, 18)
+            .padding(.vertical, 10)
+        }
+    }
+
+    private var statusSymbol: String {
+        if model.statusText.hasPrefix("✓") { return "checkmark.circle.fill" }
+        if model.statusText.hasPrefix("⚠️") { return "exclamationmark.triangle.fill" }
+        return "info.circle"
     }
 }

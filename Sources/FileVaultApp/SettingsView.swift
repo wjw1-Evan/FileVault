@@ -68,6 +68,7 @@ final class SettingsModel: ObservableObject {
         guard self.app == nil else { return }
         self.app = app
         reload()
+        reloadLicenseState()
     }
 
     private var service: FileVaultService? { app?.service }
@@ -171,6 +172,85 @@ final class SettingsModel: ObservableObject {
             g.autoCheckUpdates = autoCheckUpdates
             g.debounceSeconds = debounceSeconds
         }
+    }
+
+    // MARK: - Licence & support (v3.2.0)
+
+    @Published var licenseState: LicenseState = .trial(daysRemaining: AppBrand.trialDays)
+    @Published var licenseTokenText = ""
+    @Published var licenseMessage: String?
+    @Published var licenseMessageIsError = false
+
+    var licenseSummary: String { SupportBundle.describe(licenseState) }
+
+    func reloadLicenseState() {
+        guard let svc = service else { return }
+        licenseState = svc.license.refresh()
+    }
+
+    func activateLicense() {
+        guard let svc = service else { return }
+        let token = licenseTokenText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !token.isEmpty else {
+            licenseMessage = "请先粘贴激活码"
+            licenseMessageIsError = true
+            return
+        }
+        do {
+            licenseState = try svc.license.activate(token)
+            licenseTokenText = ""
+            licenseMessage = "✓ 已激活：" + SupportBundle.describe(licenseState)
+            licenseMessageIsError = false
+        } catch {
+            let detail = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            licenseMessage = "⚠️ " + detail
+            licenseMessageIsError = true
+        }
+    }
+
+    func buyLicense() {
+        guard let url = URL(string: AppBrand.purchaseURL) else { return }
+        NSWorkspace.shared.open(url)
+    }
+
+    /// Remove the local token so the user can paste a different licence.
+    func deactivateLicenseForReentry() {
+        guard let svc = service else { return }
+        licenseState = svc.license.deactivate()
+        licenseMessage = "已移除本机激活码"
+        licenseMessageIsError = false
+    }
+
+    /// Build a privacy-conscious diagnostics zip users can attach to support mail.
+    func exportDiagnostics() {
+        guard let svc = service, let app else { return }
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = "FileVault-诊断-\(Self.dayStamp()).zip"
+        panel.allowedContentTypes = [.zip]
+        guard panel.runModal() == .OK, let dest = panel.url else { return }
+        let roots = svc.rootsSnapshot().map { ($0, svc.repoManager.firstLevelFolders(root: $0).count) }
+        let report = SupportBundle.report(appVersion: app.version,
+                                          license: svc.license,
+                                          config: svc.configStore.load(),
+                                          gitDescription: svc.detection.map { "\($0.gitPath) (\($0.version))" },
+                                          roots: roots)
+        do {
+            _ = try SupportBundle.export(report: report,
+                                         configDirectory: svc.configStore.directory,
+                                         destination: dest)
+            licenseMessage = "✓ 诊断包已保存到 \(dest.path)"
+            licenseMessageIsError = false
+        } catch {
+            licenseMessage = "⚠️ " + error.localizedDescription
+            licenseMessageIsError = true
+        }
+    }
+
+    private static func dayStamp() -> String {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = "yyyyMMdd-HHmm"
+        return f.string(from: Date())
     }
 
     /// Toggling "自动检查更新" back on resumes checking immediately (v3.1.4).
@@ -398,7 +478,7 @@ final class SettingsModel: ObservableObject {
     }
 }
 
-// MARK: - View (native Form styling)
+// MARK: - View (custom cards)
 
 struct SettingsView: View {
     @EnvironmentObject var app: AppState
@@ -407,17 +487,23 @@ struct SettingsView: View {
     @State private var removeTarget: RootCard?
 
     var body: some View {
-        Form {
-            generalSection
-            ForEach($model.rootCards) { $card in
-                rootSection($card)
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                header
+                generalCard
+                licenseCard
+                ForEach(model.rootCards) { card in
+                    rootCard(card)
+                }
+                if model.rootCards.isEmpty {
+                    emptyRootsCard
+                }
+                addRootButton
             }
-            Section {
-                Button("＋ 添加根目录…") { model.showFileImporter = true }
-            }
+            .padding(24)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .formStyle(.grouped)
-        .frame(minWidth: 660, minHeight: 560)
+        .fvCanvas()
         .task { model.bind(app) }
         .fileImporter(isPresented: $model.showFileImporter, allowedContentTypes: [.folder]) { result in
             if case .success(let url) = result {
@@ -425,7 +511,7 @@ struct SettingsView: View {
             }
         }
         .alert(item: $model.connectionAlert) { alert in
-            Alert(title: Text(alert.ok ? "✅ 连接成功" : "⚠️ 连接失败"),
+            Alert(title: Text(alert.ok ? "连接成功" : "连接失败"),
                   message: Text(alert.detail),
                   dismissButton: .default(Text("好")))
         }
@@ -449,111 +535,342 @@ struct SettingsView: View {
         } message: {
             Text("输入仓库名（将创建为当前 gh 账号下的私有仓库）：")
         }
+        .confirmationDialog("移除根目录？", isPresented: Binding(
+            get: { removeTarget != nil },
+            set: { if !$0 { removeTarget = nil } }), titleVisibility: .visible) {
+            Button("移除 \(removeTarget?.name ?? "")（仓库保留在磁盘）", role: .destructive) {
+                if let target = removeTarget {
+                    model.removeRoot(target)
+                }
+                removeTarget = nil
+            }
+            Button("取消", role: .cancel) { removeTarget = nil }
+        } message: {
+            Text("FileVault 只是不再守卫这个目录，已经生成的 .git 历史不会被删除。")
+        }
+    }
+
+    // MARK: Header
+
+    private var header: some View {
+        HStack(spacing: 14) {
+            FVIconBadge(symbol: "slider.horizontal.3", size: 46)
+            VStack(alignment: .leading, spacing: 3) {
+                Text("设置")
+                    .font(FVTheme.titleFont)
+                    .tracking(-0.4)
+                Text("所有改动即时生效，保存在本地配置文件中")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+        }
     }
 
     // MARK: General
 
-    private var generalSection: some View {
-        Section("通用设置") {
+    private var generalCard: some View {
+        VStack(spacing: 0) {
+            FVSectionHeader(title: "通用",
+                            subtitle: "影响所有受保护目录",
+                            trailing: app.version.isEmpty ? nil : "v\(app.version)")
+            FVHairline(leading: 0)
             if LaunchAtLogin.available {
-                Toggle("登录时启动", isOn: Binding(
-                    get: { model.loginIntent },
-                    set: { model.toggleLoginIntent($0) }))
+                settingRow(title: "登录时启动",
+                           detail: "开机后直接在菜单栏待命") {
+                    Toggle("", isOn: Binding(
+                        get: { model.loginIntent },
+                        set: { model.toggleLoginIntent($0) }))
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                        .controlSize(.small)
+                }
+                FVHairline(leading: 16)
             }
-            Toggle("推送失败通知", isOn: Binding(
-                get: { model.notificationsEnabled },
-                set: { model.notificationsEnabled = $0; model.commitGeneral() }))
-            Toggle("自动检查更新", isOn: Binding(
-                get: { model.autoCheckUpdates },
-                set: { model.setAutoCheckUpdates($0) }))
-            Picker("自动提交延迟", selection: Binding(
-                get: { model.debounceSeconds },
-                set: { model.debounceSeconds = $0; model.commitGeneral() })) {
-                ForEach([2, 5, 10, 30], id: \.self) { s in Text("\(s) 秒").tag(s) }
+            settingRow(title: "推送失败通知",
+                       detail: "认证失效或网络异常时提醒一次") {
+                Toggle("", isOn: Binding(
+                    get: { model.notificationsEnabled },
+                    set: { model.notificationsEnabled = $0; model.commitGeneral() }))
+                    .labelsHidden()
+                    .toggleStyle(.switch)
+                    .controlSize(.small)
             }
-            LabeledContent("配置文件") {
-                Button("打开配置文件") { model.openConfigFile() }
+            FVHairline(leading: 16)
+            settingRow(title: "自动检查更新",
+                       detail: "启动 20 秒后检查一次，此后每天一次") {
+                Toggle("", isOn: Binding(
+                    get: { model.autoCheckUpdates },
+                    set: { model.setAutoCheckUpdates($0) }))
+                    .labelsHidden()
+                    .toggleStyle(.switch)
+                    .controlSize(.small)
+            }
+            FVHairline(leading: 16)
+            settingRow(title: "自动提交延迟",
+                       detail: "停止编辑多久后落一版") {
+                Picker("", selection: Binding(
+                    get: { model.debounceSeconds },
+                    set: { model.debounceSeconds = $0; model.commitGeneral() })) {
+                    ForEach([2, 5, 10, 30], id: \.self) { s in Text("\(s) 秒").tag(s) }
+                }
+                .labelsHidden()
+                .frame(width: 92)
+            }
+            FVHairline(leading: 16)
+            settingRow(title: "配置文件",
+                       detail: "高级选项都在这里，改完重启生效") {
+                Button("打开") { model.openConfigFile() }
+                    .controlSize(.small)
             }
         }
+        .fvCard()
     }
 
-    // MARK: Root card
-
-    @ViewBuilder
-    private func rootSection(_ card: Binding<RootCard>) -> some View {
-        Section("\(card.wrappedValue.name)（\(card.wrappedValue.repos.count) 个仓库）") {
-            LabeledContent("路径") {
-                Text(card.wrappedValue.path)
-                    .foregroundStyle(.secondary)
-                    .textSelection(.enabled)
+    private func settingRow<Control: View>(title: String,
+                                           detail: String,
+                                           @ViewBuilder control: () -> Control) -> some View {
+        HStack(alignment: .center, spacing: 12) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title).font(.system(size: 13, weight: .medium))
+                Text(detail)
+                    .font(.system(size: 10))
+                    .foregroundStyle(.tertiary)
             }
-            Toggle("暂停", isOn: Binding(
-                get: { card.wrappedValue.paused },
-                set: { model.pauseRoot(card.wrappedValue, to: $0) }))
-            LabeledContent("操作") {
-                HStack {
-                    Button("在 Finder 中打开") { app.openPath(card.wrappedValue.path) }
-                    Button("移除根目录", role: .destructive) { removeTarget = card.wrappedValue }
+            Spacer(minLength: 12)
+            control()
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 9)
+    }
+
+    // MARK: Licence & support (v3.2.0)
+
+    private var licenseCard: some View {
+        VStack(spacing: 0) {
+            FVSectionHeader(title: "许可与支持",
+                            subtitle: "试用 \(AppBrand.trialDays) 天 · 离线激活，激活信息只存本机钥匙串",
+                            trailing: model.licenseState.isLicensed ? "Pro" : "试用")
+            FVHairline(leading: 0)
+            settingRow(title: "授权状态", detail: model.licenseSummary) {
+                if model.licenseState.isLicensed {
+                    FVStatusPill(text: "已激活", tint: .green, symbol: "checkmark.seal.fill")
+                } else {
+                    FVStatusPill(text: "未激活", tint: .orange, symbol: "key.fill")
                 }
             }
-        }
-        .confirmationDialog("移除根目录？", isPresented: Binding(
-            get: { removeTarget?.id == card.wrappedValue.id },
-            set: { if !$0 { removeTarget = nil } }), titleVisibility: .visible) {
-            Button("移除 \(card.wrappedValue.name)（仓库保留在磁盘）", role: .destructive) {
-                model.removeRoot(card.wrappedValue)
-                removeTarget = nil
+            if !model.licenseState.isLicensed {
+                FVHairline(leading: 16)
+                VStack(alignment: .leading, spacing: 9) {
+                    HStack(spacing: 8) {
+                        TextField("粘贴激活码（fv1.…）", text: $model.licenseTokenText)
+                            .textFieldStyle(.roundedBorder)
+                        Button("激活") { model.activateLicense() }
+                            .buttonStyle(.borderedProminent)
+                    }
+                    HStack(spacing: 10) {
+                        Button("购买 / 了解价格") { model.buyLicense() }
+                        Button("导出诊断包…") { model.exportDiagnostics() }
+                        Spacer()
+                    }
+                    .controlSize(.small)
+                    Text("试用结束后自动提交会暂停；历史查看、文件恢复与整仓回滚始终可用。")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.tertiary)
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 12)
+            } else {
+                FVHairline(leading: 16)
+                settingRow(title: "支持", detail: "导出脱敏诊断包（不含文件内容/激活码）发给支持团队") {
+                    HStack(spacing: 8) {
+                        Button("导出诊断包…") { model.exportDiagnostics() }
+                        Button("更换授权…") { model.deactivateLicenseForReentry() }
+                    }
+                    .controlSize(.small)
+                }
             }
-            Button("取消", role: .cancel) { removeTarget = nil }
+            if let message = model.licenseMessage {
+                FVHairline(leading: 16)
+                Text(message)
+                    .font(.system(size: 11))
+                    .foregroundStyle(model.licenseMessageIsError ? Color.red : Color.secondary)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 8)
+            }
         }
-        ForEach(card.wrappedValue.repos) { section in
-            repoSection(section, rootName: card.wrappedValue.name,
-                        multiRoot: model.rootCards.count > 1)
-        }
+        .fvCard()
     }
 
-    /// One native Section per repo — no nested custom containers.
-    private func repoSection(_ section: RepoSection, rootName: String, multiRoot: Bool) -> some View {
-        Section(header: Text(multiRoot ? "\(rootName) · \(section.name)" : section.name)) {
-            LabeledContent("状态") {
-                HStack(spacing: 6) {
-                    Image(systemName: section.statusGlyph)
-                        .foregroundStyle(section.statusColor)
-                    Text(section.health)
+    // MARK: Root cards
+
+    private func rootCard(_ card: RootCard) -> some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 12) {
+                FVIconBadge(symbol: "folder.fill", tint: card.paused ? .gray : .orange, size: 34)
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 7) {
+                        Text(card.name)
+                            .font(.system(size: 15, weight: .semibold))
+                        if card.paused {
+                            FVStatusPill(text: "已暂停", tint: .orange, symbol: "pause.fill")
+                        }
+                    }
+                    Text(card.path)
+                        .font(.system(size: 10))
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                Spacer(minLength: 8)
+                Text("\(card.repos.count) 个仓库")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                Menu {
+                    Button("在 Finder 中打开") { app.openPath(card.path) }
+                    Button(card.paused ? "恢复自动提交" : "暂停自动提交") {
+                        model.pauseRoot(card, to: !card.paused)
+                    }
+                    Divider()
+                    Button("移除根目录…", role: .destructive) { removeTarget = card }
+                } label: {
+                    Image(systemName: "ellipsis.circle")
+                        .font(.system(size: 15))
                         .foregroundStyle(.secondary)
                 }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .frame(width: 24)
+                .help("根目录操作")
             }
-            LabeledContent("单文件上限") {
-                Text(section.remoteLimit)
-                    .foregroundStyle(.secondary)
-            }
-            LabeledContent("远程仓库地址") {
-                TextField("留空 = 仅本地", text: model.urlBinding(section.id))
-                    .onSubmit { model.saveRepo(section.id) }
-            }
-            Toggle("自动推送", isOn: model.autoPushBinding(section.id))
-            Picker("身份验证", selection: model.authModeBinding(section.id)) {
-                Text("自动（gh 凭证助手）").tag(RepoManager.AuthMode.auto)
-                Text("用户名 + 访问令牌").tag(RepoManager.AuthMode.pat)
-                Text("SSH 密钥").tag(RepoManager.AuthMode.ssh)
-            }
-            LabeledContent("操作") {
-                HStack {
-                    Button("保存") { model.saveRepo(section.id) }
-                    Button("立即推送") { model.pushNow(section.id) }
-                    Button("测试连接") { model.testConnection(section.id) }
-                    Button("忽略规则") { model.openGitignoreEditor(section.id) }
-                    Button("拉取") { model.pull(section.id) }
-                    Button("建仓") { model.createRepoTarget = section.id }
-                        .help("在 GitHub 创建私有仓库并绑定")
+            .padding(.horizontal, 16)
+            .padding(.vertical, 13)
+
+            FVHairline(leading: 0)
+            if card.repos.isEmpty {
+                FVEmptyState(symbol: "tray",
+                             title: "这个目录里还没有子文件夹",
+                             message: "在根目录下新建文件夹后，会自动成为独立版本库。")
+            } else {
+                VStack(spacing: 0) {
+                    ForEach(Array(card.repos.enumerated()), id: \.element.id) { index, repo in
+                        repoBlock(repo)
+                        if index < card.repos.count - 1 {
+                            FVHairline(leading: 16)
+                        }
+                    }
                 }
             }
-            if let msg = model.message(section.id) {
-                Text(msg.0)
-                    .font(.caption)
-                    .foregroundStyle(msg.1)
+        }
+        .fvCard()
+    }
+
+    /// One repo: identity + status, remote field, then a calm row of controls.
+    private func repoBlock(_ repo: RepoSection) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .center, spacing: 7) {
+                Image(systemName: repo.statusGlyph)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(repo.statusColor)
+                Text(repo.name)
+                    .font(.system(size: 13, weight: .medium))
+                Spacer(minLength: 8)
+                Text(repo.health)
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+
+            HStack(spacing: 8) {
+                TextField("远程仓库地址（留空 = 仅本地）", text: model.urlBinding(repo.id))
+                    .textFieldStyle(.roundedBorder)
+                    .controlSize(.small)
+                    .font(.system(size: 11))
+                    .onSubmit { model.saveRepo(repo.id) }
+                Button("保存") { model.saveRepo(repo.id) }
+                    .controlSize(.small)
+                Button("测试") { model.testConnection(repo.id) }
+                    .controlSize(.small)
+            }
+
+            HStack(spacing: 12) {
+                Toggle("自动推送", isOn: model.autoPushBinding(repo.id))
+                    .toggleStyle(.switch)
+                    .controlSize(.mini)
+                    .font(.system(size: 11))
+                Picker("", selection: model.authModeBinding(repo.id)) {
+                    Text("自动（gh 凭证助手）").tag(RepoManager.AuthMode.auto)
+                    Text("用户名 + 访问令牌").tag(RepoManager.AuthMode.pat)
+                    Text("SSH 密钥").tag(RepoManager.AuthMode.ssh)
+                }
+                .labelsHidden()
+                .controlSize(.small)
+                .frame(width: 168)
+                Text(repo.remoteLimit)
+                    .font(.system(size: 10))
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+                Spacer(minLength: 4)
+                Menu("更多") {
+                    Button("立即推送") { model.pushNow(repo.id) }
+                    Button("拉取远程更新") { model.pull(repo.id) }
+                    Button("编辑忽略规则…") { model.openGitignoreEditor(repo.id) }
+                    Button("在 GitHub 建仓并绑定…") { model.createRepoTarget = repo.id }
+                }
+                .controlSize(.small)
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+            }
+
+            if let msg = model.message(repo.id) {
+                HStack(spacing: 5) {
+                    Image(systemName: msg.1 == Color(nsColor: .systemRed)
+                          ? "exclamationmark.circle.fill" : "checkmark.circle.fill")
+                        .font(.system(size: 9))
+                    Text(msg.0)
+                        .font(.system(size: 10))
+                        .lineLimit(2)
+                }
+                .foregroundStyle(msg.1)
             }
         }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+    }
+
+    private var emptyRootsCard: some View {
+        VStack(spacing: 0) {
+            FVEmptyState(symbol: "folder.badge.plus",
+                         title: "还没有受保护的目录",
+                         message: "选一个文件夹，它下面的每个子文件夹都会自动拥有独立的版本历史。",
+                         actionTitle: "选择目录…",
+                         action: { model.showFileImporter = true })
+        }
+        .fvCard()
+    }
+
+    private var addRootButton: some View {
+        Button {
+            model.showFileImporter = true
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: "plus.circle.fill")
+                    .font(.system(size: 13))
+                Text("添加根目录…")
+                    .font(.system(size: 12, weight: .medium))
+                Spacer()
+            }
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 13)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .overlay(
+            RoundedRectangle(cornerRadius: FVTheme.radius, style: .continuous)
+                .strokeBorder(Color.secondary.opacity(0.3),
+                              style: StrokeStyle(lineWidth: 1.2, dash: [5, 4]))
+        )
     }
 }
 
@@ -571,21 +888,46 @@ struct GitignoreSheet: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("忽略规则 — \(state.repoName)")
-                .font(.headline)
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 12) {
+                FVIconBadge(symbol: "eye.slash.fill", tint: .gray, size: 34)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("忽略规则")
+                        .font(.system(size: 15, weight: .semibold))
+                    Text(state.repoName)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+            }
             TextEditor(text: $draft)
                 .font(.system(size: 12, design: .monospaced))
+                .scrollContentBackground(.hidden)
+                .padding(8)
+                .background(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(Color(nsColor: .textBackgroundColor))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .strokeBorder(FVTheme.cardStroke, lineWidth: 1)
+                )
                 .frame(minHeight: 240)
             HStack {
+                Text("保存后改动会被自动提交")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.tertiary)
                 Spacer()
-                Button("保存（改动会被自动提交）") {
+                Button("取消") { dismiss() }
+                Button("保存") {
                     onSave(draft)
                     dismiss()
                 }
+                .keyboardShortcut(.defaultAction)
             }
         }
-        .padding(16)
-        .frame(width: 520, height: 400)
+        .padding(20)
+        .frame(width: 540, height: 420)
+        .background(FVTheme.canvas)
     }
 }
