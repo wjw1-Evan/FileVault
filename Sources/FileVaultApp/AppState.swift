@@ -34,45 +34,6 @@ final class AppState: ObservableObject {
     @Published var paused = false
     @Published var envReady = false
     @Published var statusLine = "正在加载…"
-    /// Trial / licence state (v3.2.0). Drives the "activate" prompts and the
-    /// read-only mode after the trial ends.
-    @Published var licenseState: LicenseState = .trial(daysRemaining: AppBrand.trialDays)
-    /// Licence manager owned by the app process (trial clock + activation token).
-    ///
-    /// Debug builds deliberately avoid the Keychain: every rebuild changes the
-    /// ad-hoc code signature, so reading an item written by the previous build
-    /// makes macOS demand the login-keychain password — synchronously on the main
-    /// thread, which freezes the whole app (found while rendering UI shots).
-    /// Release builds keep the Keychain-backed storage.
-    lazy var licenseManager = LicenseManager(storage: Self.makeLicenseStorage())
-
-    private static func makeLicenseStorage() -> LicenseStorage {
-        #if DEBUG
-        return UserDefaultsLicenseStorage()
-        #else
-        return KeychainLicenseStorage()
-        #endif
-    }
-    #if DEBUG
-/// Debug-only licence storage: survives restarts, never touches the Keychain.
-final class UserDefaultsLicenseStorage: LicenseStorage, @unchecked Sendable {
-    private let defaults: UserDefaults
-
-    init() {
-        defaults = UserDefaults(suiteName: "com.filevault.FileVault.license.debug") ?? .standard
-    }
-
-    func string(forKey key: String) -> String? { defaults.string(forKey: key) }
-
-    func setString(_ value: String?, forKey key: String) {
-        defaults.set(value, forKey: key)
-    }
-}
-#endif
-
-/// The manager actually in use (injected service wins, so tests stay hermetic).
-    var license: LicenseManager { service?.license ?? licenseManager }
-    var licenseAllowsAutomation: Bool { licenseState.allowsAutomation }
     @Published var version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.0.0"
 
     /// Update progress (FR-20): non-nil while an update transaction runs.
@@ -108,7 +69,7 @@ final class UserDefaultsLicenseStorage: LicenseStorage, @unchecked Sendable {
 
     func start() {
         guard service == nil else { return }
-        let svc = FileVaultService(license: licenseManager)
+        let svc = FileVaultService()
         service = svc
         notificationService.setup()
         svc.onFailure.handler = { [weak self] title, body in
@@ -208,7 +169,6 @@ final class UserDefaultsLicenseStorage: LicenseStorage, @unchecked Sendable {
         repoCount = count
         envReady = svc.detection != nil
         paused = svc.pause.isGloballyPaused
-        licenseState = svc.license.refresh()
         let failed = statusCache.values.contains(.failed)
         let state: String
         if paused {

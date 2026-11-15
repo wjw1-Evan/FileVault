@@ -1,6 +1,6 @@
 import Foundation
 
-/// Central product/brand metadata (v3.2.0).
+/// Central product/brand metadata.
 ///
 /// Everything user-facing that a rename or rebrand would touch lives here:
 /// the trademark/App Store review risk of the current name "FileVault"
@@ -13,12 +13,11 @@ public enum AppBrand {
 
     /// Support / feedback channel (shown in About + 诊断包).
     public static let supportEmail = "support@filevault.app"
-    /// Marketing site (pricing, docs, privacy).
+    /// Project home (docs, releases, issue tracker).
     public static let websiteURL = "https://github.com/wjw1-Evan/FileVault"
-    /// Where the "购买" button sends users. Placeholder until the store page
-    /// (Paddle / Lemon Squeezy / own checkout) is live.
-    public static let purchaseURL = "https://github.com/wjw1-Evan/FileVault#pricing"
+    /// Privacy policy (also shipped as PRIVACY.md in the repo).
+    public static let privacyURL = "https://github.com/wjw1-Evan/FileVault/blob/main/PRIVACY.md"
 
-    /// Days of full-featured trial before automation is paused.
-    public static let trialDays = 14
+    /// FileVault is free to use, with no account, trial or activation.
+    public static let pricingNote = "永久免费"
 }

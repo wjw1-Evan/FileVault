@@ -68,7 +68,6 @@ final class SettingsModel: ObservableObject {
         guard self.app == nil else { return }
         self.app = app
         reload()
-        reloadLicenseState()
     }
 
     private var service: FileVaultService? { app?.service }
@@ -173,53 +172,10 @@ final class SettingsModel: ObservableObject {
             g.debounceSeconds = debounceSeconds
         }
     }
+    // MARK: - Support (v3.2.1: the app is free — no licence, only diagnostics)
 
-    // MARK: - Licence & support (v3.2.0)
-
-    @Published var licenseState: LicenseState = .trial(daysRemaining: AppBrand.trialDays)
-    @Published var licenseTokenText = ""
-    @Published var licenseMessage: String?
-    @Published var licenseMessageIsError = false
-
-    var licenseSummary: String { SupportBundle.describe(licenseState) }
-
-    func reloadLicenseState() {
-        guard let svc = service else { return }
-        licenseState = svc.license.refresh()
-    }
-
-    func activateLicense() {
-        guard let svc = service else { return }
-        let token = licenseTokenText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !token.isEmpty else {
-            licenseMessage = "请先粘贴激活码"
-            licenseMessageIsError = true
-            return
-        }
-        do {
-            licenseState = try svc.license.activate(token)
-            licenseTokenText = ""
-            licenseMessage = "✓ 已激活：" + SupportBundle.describe(licenseState)
-            licenseMessageIsError = false
-        } catch {
-            let detail = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
-            licenseMessage = "⚠️ " + detail
-            licenseMessageIsError = true
-        }
-    }
-
-    func buyLicense() {
-        guard let url = URL(string: AppBrand.purchaseURL) else { return }
-        NSWorkspace.shared.open(url)
-    }
-
-    /// Remove the local token so the user can paste a different licence.
-    func deactivateLicenseForReentry() {
-        guard let svc = service else { return }
-        licenseState = svc.license.deactivate()
-        licenseMessage = "已移除本机激活码"
-        licenseMessageIsError = false
-    }
+    @Published var supportMessage: String?
+    @Published var supportMessageIsError = false
 
     /// Build a privacy-conscious diagnostics zip users can attach to support mail.
     func exportDiagnostics() {
@@ -230,7 +186,6 @@ final class SettingsModel: ObservableObject {
         guard panel.runModal() == .OK, let dest = panel.url else { return }
         let roots = svc.rootsSnapshot().map { ($0, svc.repoManager.firstLevelFolders(root: $0).count) }
         let report = SupportBundle.report(appVersion: app.version,
-                                          license: svc.license,
                                           config: svc.configStore.load(),
                                           gitDescription: svc.detection.map { "\($0.gitPath) (\($0.version))" },
                                           roots: roots)
@@ -238,14 +193,13 @@ final class SettingsModel: ObservableObject {
             _ = try SupportBundle.export(report: report,
                                          configDirectory: svc.configStore.directory,
                                          destination: dest)
-            licenseMessage = "✓ 诊断包已保存到 \(dest.path)"
-            licenseMessageIsError = false
+            supportMessage = "✓ 诊断包已保存到 \(dest.path)"
+            supportMessageIsError = false
         } catch {
-            licenseMessage = "⚠️ " + error.localizedDescription
-            licenseMessageIsError = true
+            supportMessage = "⚠️ " + error.localizedDescription
+            supportMessageIsError = true
         }
     }
-
     private static func dayStamp() -> String {
         let f = DateFormatter()
         f.locale = Locale(identifier: "en_US_POSIX")
@@ -491,7 +445,7 @@ struct SettingsView: View {
             VStack(alignment: .leading, spacing: 18) {
                 header
                 generalCard
-                licenseCard
+                supportCard
                 ForEach(model.rootCards) { card in
                     rootCard(card)
                 }
@@ -644,57 +598,39 @@ struct SettingsView: View {
         .padding(.vertical, 9)
     }
 
-    // MARK: Licence & support (v3.2.0)
+    // MARK: Support (v3.2.1: free app — diagnostics only)
 
-    private var licenseCard: some View {
+    private var supportCard: some View {
         VStack(spacing: 0) {
-            FVSectionHeader(title: "许可与支持",
-                            subtitle: "试用 \(AppBrand.trialDays) 天 · 离线激活，激活信息只存本机钥匙串",
-                            trailing: model.licenseState.isLicensed ? "Pro" : "试用")
+            FVSectionHeader(title: "关于与支持",
+                            subtitle: "FileVault 永久免费 · 无账号、无订阅、无遥测",
+                            trailing: app.version.isEmpty ? nil : "v\(app.version)")
             FVHairline(leading: 0)
-            settingRow(title: "授权状态", detail: model.licenseSummary) {
-                if model.licenseState.isLicensed {
-                    FVStatusPill(text: "已激活", tint: .green, symbol: "checkmark.seal.fill")
-                } else {
-                    FVStatusPill(text: "未激活", tint: .orange, symbol: "key.fill")
-                }
-            }
-            if !model.licenseState.isLicensed {
-                FVHairline(leading: 16)
-                VStack(alignment: .leading, spacing: 9) {
-                    HStack(spacing: 8) {
-                        TextField("粘贴激活码（fv1.…）", text: $model.licenseTokenText)
-                            .textFieldStyle(.roundedBorder)
-                        Button("激活") { model.activateLicense() }
-                            .buttonStyle(.borderedProminent)
-                    }
-                    HStack(spacing: 10) {
-                        Button("购买 / 了解价格") { model.buyLicense() }
-                        Button("导出诊断包…") { model.exportDiagnostics() }
-                        Spacer()
-                    }
+            settingRow(title: "导出诊断包",
+                       detail: "脱敏报告（不含文件内容/远程地址/账号），便于反馈问题") {
+                Button("导出诊断包…") { model.exportDiagnostics() }
                     .controlSize(.small)
-                    Text("试用结束后自动提交会暂停；历史查看、文件恢复与整仓回滚始终可用。")
-                        .font(.system(size: 10))
-                        .foregroundStyle(.tertiary)
-                }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 12)
-            } else {
-                FVHairline(leading: 16)
-                settingRow(title: "支持", detail: "导出脱敏诊断包（不含文件内容/激活码）发给支持团队") {
-                    HStack(spacing: 8) {
-                        Button("导出诊断包…") { model.exportDiagnostics() }
-                        Button("更换授权…") { model.deactivateLicenseForReentry() }
-                    }
-                    .controlSize(.small)
-                }
             }
-            if let message = model.licenseMessage {
+            FVHairline(leading: 16)
+            settingRow(title: "隐私与许可",
+                       detail: "无云端中转；数据与版本库完全属于你") {
+                HStack(spacing: 10) {
+                    Button("隐私政策") {
+                        if let url = URL(string: AppBrand.privacyURL) { NSWorkspace.shared.open(url) }
+                    }
+                    Button("开源协议") {
+                        if let url = URL(string: AppBrand.websiteURL + "/blob/main/LICENSE") {
+                            NSWorkspace.shared.open(url)
+                        }
+                    }
+                }
+                .controlSize(.small)
+            }
+            if let message = model.supportMessage {
                 FVHairline(leading: 16)
                 Text(message)
                     .font(.system(size: 11))
-                    .foregroundStyle(model.licenseMessageIsError ? Color.red : Color.secondary)
+                    .foregroundStyle(model.supportMessageIsError ? Color.red : Color.secondary)
                     .padding(.horizontal, 16)
                     .padding(.vertical, 8)
             }

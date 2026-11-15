@@ -80,25 +80,6 @@ struct MenuContentView: View {
             }
             .padding(.horizontal, 14)
             .padding(.bottom, 8)
-        } else if !app.licenseAllowsAutomation {
-            // Trial over: automation is paused until a licence is activated.
-            // Data (history / restore / rollback) stays fully available.
-            Button {
-                app.open("settings")
-            } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: "key.fill")
-                        .font(.system(size: 9))
-                    Text("试用已结束——点此激活，恢复自动提交")
-                        .font(.system(size: 10))
-                        .lineLimit(2)
-                    Spacer(minLength: 0)
-                }
-                .foregroundStyle(.orange)
-                .padding(.horizontal, 14)
-                .padding(.bottom, 8)
-            }
-            .buttonStyle(.plain)
         } else if let notice = app.updateNotice {
             noticeText(notice)
         } else if app.lastUpdateCheckFailed {

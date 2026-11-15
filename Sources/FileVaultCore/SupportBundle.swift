@@ -1,18 +1,17 @@
 import Foundation
 
-/// One-click support diagnostics (v3.2.0).
+/// One-click support diagnostics.
 ///
-/// Commercial support needs reproducible, privacy-conscious reports: enough to
+/// Good support needs reproducible, privacy-conscious reports: enough to
 /// diagnose without asking users to paste terminal output, and without shipping
 /// file contents or credentials anywhere.
 public enum SupportBundle {
     /// Build the plain-text report shown to users and attached to the zip.
     ///
     /// - Home paths are collapsed to `~` so reports can be shared publicly.
-    /// - Licence tokens are never included; only a short state summary.
+    /// - Credentials never appear (they live in the keychain, not the config).
     public static func report(appVersion: String,
                               bundleIdentifier: String = AppBrand.bundleIdentifier,
-                              license: LicenseManager?,
                               config: AppConfig?,
                               gitDescription: String?,
                               roots: [(path: String, repos: Int)] = [],
@@ -29,12 +28,7 @@ public enum SupportBundle {
         lines.append("macOS: " + os)
         lines.append("架构: " + arch)
         lines.append("语言: " + Locale.current.identifier)
-        lines.append("")
-        lines.append("## 许可")
-        lines.append("状态: " + (license.map { Self.describe($0.state) } ?? "未知"))
-        if let start = license?.trialStart {
-            lines.append("试用起始: " + Self.dayFormatter.string(from: start))
-        }
+        lines.append("许可: " + AppBrand.pricingNote + "（无账号、无订阅）")
         lines.append("")
         lines.append("## Git")
         lines.append("环境: " + (gitDescription ?? "未检测到"))
@@ -63,7 +57,7 @@ public enum SupportBundle {
         }
         lines.append("")
         lines.append("## 隐私说明")
-        lines.append("本报告不含任何文件内容、远程地址、账号或激活码；路径已替换为 ~。")
+        lines.append("本报告不含任何文件内容、远程地址或账号；路径已替换为 ~。")
         return lines.joined(separator: "\n") + "\n"
     }
 
@@ -112,32 +106,12 @@ public enum SupportBundle {
 
     // MARK: - Helpers
 
-    public static func describe(_ state: LicenseState) -> String {
-        switch state {
-        case .licensed(let license):
-            let expiry = license.expiresAt.map { "，有效期至 " + $0 } ?? "，永久授权"
-            return "已授权（\(license.plan)\(expiry)）"
-        case .trial(let days):
-            return "试用中（剩余 \(days) 天）"
-        case .expired:
-            return "试用已结束（未激活，自动提交已暂停）"
-        }
-    }
-
     /// Collapse the user's home directory to `~` (reports are shareable).
     public static func masked(_ text: String) -> String {
         let home = NSHomeDirectory()
         guard !home.isEmpty, home != "/" else { return text }
         return text.replacingOccurrences(of: home, with: "~")
     }
-
-    static let dayFormatter: DateFormatter = {
-        let f = DateFormatter()
-        f.locale = Locale(identifier: "en_US_POSIX")
-        f.timeZone = TimeZone(identifier: "UTC")
-        f.dateFormat = "yyyy-MM-dd"
-        return f
-    }()
 }
 
 extension ProcessInfo {
