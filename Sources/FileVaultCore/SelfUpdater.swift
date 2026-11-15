@@ -1,34 +1,9 @@
 import Foundation
 import CryptoKit
 
-/// Downloads, verifies and installs an update bundle (FR-20).
+/// Verifies and installs an update bundle (FR-20).
 /// The replace routine takes explicit paths so it is fully unit-testable.
 public enum SelfUpdater {
-    /// Download the release asset into a directory via `gh release download`.
-    @discardableResult
-    public static func download(info: ReleaseInfo, into dir: URL, repo: String = "wjw1-Evan/FileVault") async throws -> URL {
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        let proc = Process()
-        proc.executableURL = ghURL()
-        proc.arguments = ["release", "download", info.tagName, "--repo", repo, "--pattern", info.assetName, "--dir", dir.path, "--clobber"]
-        let errPipe = Pipe()
-        proc.standardOutput = FileHandle.nullDevice
-        proc.standardError = errPipe
-        do {
-            try proc.run()
-        } catch {
-            throw UpdateError.downloadFailed
-        }
-        proc.waitUntilExit()
-        guard proc.terminationStatus == 0 else {
-            _ = String(decoding: errPipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
-            throw UpdateError.downloadFailed
-        }
-        let file = dir.appendingPathComponent(info.assetName)
-        guard FileManager.default.fileExists(atPath: file.path) else { throw UpdateError.downloadFailed }
-        return file
-    }
-
     /// Verify sha256 of the downloaded zip against the release digest.
     public static func verify(zipURL: URL, expectedSHA256: String?) throws {
         guard let expectedSHA256, !expectedSHA256.isEmpty else { return }

@@ -25,7 +25,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let notifications = NotificationService()
     lazy var updateChecker = UpdateChecker(
         currentVersion: (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "0.0.0",
-        fetcher: GhReleaseFetcher()
+        fetcher: HttpReleaseFetcher()
     )
 
     func applicationDidFinishLaunching(_ n: Notification) {

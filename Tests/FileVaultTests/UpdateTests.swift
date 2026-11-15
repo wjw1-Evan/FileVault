@@ -9,17 +9,17 @@ final class FakeReleaseFetcher: ReleaseFetching {
 
 final class UpdateCheckTests: XCTestCase {
     func testSemverCompare() {
-        XCTAssertEqual(GhReleaseFetcher.compare("1.0.0", "1.0.0"), 0)
-        XCTAssertEqual(GhReleaseFetcher.compare("1.0.1", "1.0.0"), 1)
-        XCTAssertEqual(GhReleaseFetcher.compare("0.9.9", "1.0.0"), -1)
-        XCTAssertEqual(GhReleaseFetcher.compare("1.0", "1.0.0"), 0)
-        XCTAssertEqual(GhReleaseFetcher.compare("1.10.0", "1.9.9"), 1)
-        XCTAssertEqual(GhReleaseFetcher.compare("1.0.0.1", "1.0.0"), 1)
+        XCTAssertEqual(HttpReleaseFetcher.compare("1.0.0", "1.0.0"), 0)
+        XCTAssertEqual(HttpReleaseFetcher.compare("1.0.1", "1.0.0"), 1)
+        XCTAssertEqual(HttpReleaseFetcher.compare("0.9.9", "1.0.0"), -1)
+        XCTAssertEqual(HttpReleaseFetcher.compare("1.0", "1.0.0"), 0)
+        XCTAssertEqual(HttpReleaseFetcher.compare("1.10.0", "1.9.9"), 1)
+        XCTAssertEqual(HttpReleaseFetcher.compare("1.0.0.1", "1.0.0"), 1)
     }
 
     func testVersionFromTag() {
-        XCTAssertEqual(GhReleaseFetcher.version(fromTag: "v1.2.3"), "1.2.3")
-        XCTAssertEqual(GhReleaseFetcher.version(fromTag: "2.0.0"), "2.0.0")
+        XCTAssertEqual(HttpReleaseFetcher.version(fromTag: "v1.2.3"), "1.2.3")
+        XCTAssertEqual(HttpReleaseFetcher.version(fromTag: "2.0.0"), "2.0.0")
     }
 
     func testCheckReturnsNewerOffer() async throws {
@@ -40,21 +40,24 @@ final class UpdateCheckTests: XCTestCase {
         let json = """
         {"tag_name": "v1.2.0", "body": "notes here",
          "assets": [{"name": "FileVault-1.2.0.zip", "digest": "sha256:deadbeef",
-                     "id": 424242, "size": 659608},
+                     "id": 424242, "size": 659608,
+                     "browser_download_url": "https://github.com/x/y/releases/download/v1.2.0/FileVault-1.2.0.zip"},
                     {"name": "other.tar.gz"}]}
         """
-        let info = try GhReleaseFetcher.parseRelease(Data(json.utf8))
+        let info = try HttpReleaseFetcher.parseRelease(Data(json.utf8))
         XCTAssertEqual(info.version, "1.2.0")
         XCTAssertEqual(info.assetName, "FileVault-1.2.0.zip")
         XCTAssertEqual(info.sha256, "deadbeef")
         XCTAssertEqual(info.notes, "notes here")
-        XCTAssertEqual(info.assetID, 424242, "asset id needed for authenticated download")
+        XCTAssertEqual(info.assetID, 424242)
         XCTAssertEqual(info.assetSize, 659608, "asset size needed for progress")
+        XCTAssertEqual(info.assetURL, "https://github.com/x/y/releases/download/v1.2.0/FileVault-1.2.0.zip",
+                       "browser_download_url needed for direct HTTPS download (v2.6.4)")
     }
 
     func testParseReleaseWithoutZipAsset() {
         let json = Data(#"{"tag_name": "v1.0.0", "assets": [{"name": "x.tar.gz"}]}"#.utf8)
-        XCTAssertThrowsError(try GhReleaseFetcher.parseRelease(json)) { e in
+        XCTAssertThrowsError(try HttpReleaseFetcher.parseRelease(json)) { e in
             XCTAssertEqual(e as? UpdateError, .noAsset)
         }
     }

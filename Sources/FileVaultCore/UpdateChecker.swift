@@ -7,11 +7,12 @@ public struct ReleaseInfo: Equatable, Sendable {
     public var notes: String
     public var assetName: String     // "FileVault-1.1.0.zip"
     public var sha256: String?       // asset digest from the API (when present)
-    public var assetID: Int64        // GitHub asset id (for authenticated download)
+    public var assetID: Int64        // GitHub asset id
     public var assetSize: Int64      // bytes (for progress)
+    public var assetURL: String      // browser_download_url (public repos: no auth needed)
 
     public init(version: String, tagName: String, notes: String, assetName: String, sha256: String?,
-                assetID: Int64 = 0, assetSize: Int64 = 0) {
+                assetID: Int64 = 0, assetSize: Int64 = 0, assetURL: String = "") {
         self.version = version
         self.tagName = tagName
         self.notes = notes
@@ -19,11 +20,11 @@ public struct ReleaseInfo: Equatable, Sendable {
         self.sha256 = sha256
         self.assetID = assetID
         self.assetSize = assetSize
+        self.assetURL = assetURL
     }
 }
 
 public enum UpdateError: Error, LocalizedError {
-    case ghUnavailable
     case noRelease
     case noAsset
     case downloadFailed
@@ -32,8 +33,7 @@ public enum UpdateError: Error, LocalizedError {
 
     public var errorDescription: String? {
         switch self {
-        case .ghUnavailable: return "无法查询更新（gh CLI 不可用或网络受限）"
-        case .noRelease: return "未找到可用发布版本"
+        case .noRelease: return "未找到可用发布版本（网络不可达或 GitHub 受限）"
         case .noAsset: return "发布版本缺少应用资产"
         case .downloadFailed: return "下载更新失败"
         case .checksumMismatch: return "更新包校验失败，已中止安装"
@@ -47,32 +47,29 @@ public protocol ReleaseFetching: Sendable {
     func latest() async throws -> ReleaseInfo
 }
 
-/// Fetches the latest release via the authenticated `gh` CLI (works for
-/// private repos; the user's own machine always has gh when needed).
-public struct GhReleaseFetcher: ReleaseFetching {
+/// Fetches the latest release over plain HTTPS from the public GitHub API.
+/// No `gh` CLI dependency: the repo is public, so neither the metadata call
+/// nor the asset download needs authentication — a normal user's Mac must be
+/// able to self-update with nothing installed but FileVault itself
+/// (v2.6.4: the old gh-based fetcher silently killed updates on machines
+/// without an authenticated Homebrew gh).
+public struct HttpReleaseFetcher: ReleaseFetching {
     public let repo: String
     public init(repo: String = "wjw1-Evan/FileVault") {
         self.repo = repo
     }
 
     public func latest() async throws -> ReleaseInfo {
-        let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: "/opt/homebrew/bin/gh")
-        if !FileManager.default.isExecutableFile(atPath: "/opt/homebrew/bin/gh") {
-            proc.executableURL = URL(fileURLWithPath: "/usr/local/bin/gh")
+        guard let url = URL(string: "https://api.github.com/repos/\(repo)/releases/latest") else {
+            throw UpdateError.noRelease
         }
-        proc.arguments = ["api", "repos/\(repo)/releases/latest"]
-        let pipe = Pipe()
-        proc.standardOutput = pipe
-        proc.standardError = FileHandle.nullDevice
-        do {
-            try proc.run()
-        } catch {
-            throw UpdateError.ghUnavailable
+        var req = URLRequest(url: url, timeoutInterval: 15)
+        req.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+        req.setValue("FileVaultApp", forHTTPHeaderField: "User-Agent") // GitHub API requires a UA
+        let (data, resp) = try await URLSession.shared.data(for: req)
+        guard let http = resp as? HTTPURLResponse, http.statusCode == 200 else {
+            throw UpdateError.noRelease
         }
-        proc.waitUntilExit()
-        guard proc.terminationStatus == 0 else { throw UpdateError.noRelease }
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
         return try Self.parseRelease(data)
     }
 
@@ -89,6 +86,7 @@ public struct GhReleaseFetcher: ReleaseFetching {
         let digest = asset?["digest"] as? String
         let assetID = (asset?["id"] as? NSNumber)?.int64Value ?? 0
         let assetSize = (asset?["size"] as? NSNumber)?.int64Value ?? 0
+        let assetURL = (asset?["browser_download_url"] as? String) ?? ""
         return ReleaseInfo(
             version: Self.version(fromTag: tag),
             tagName: tag,
@@ -96,7 +94,8 @@ public struct GhReleaseFetcher: ReleaseFetching {
             assetName: name,
             sha256: digest?.hasPrefix("sha256:") == true ? String(digest!.dropFirst(7)) : digest,
             assetID: assetID,
-            assetSize: assetSize
+            assetSize: assetSize,
+            assetURL: assetURL
         )
     }
 
@@ -133,6 +132,6 @@ public struct UpdateChecker: Sendable {
     /// Returns the newer ReleaseInfo, or nil when up to date.
     public func check() async throws -> ReleaseInfo? {
         let latest = try await fetcher.latest()
-        return GhReleaseFetcher.compare(latest.version, currentVersion) > 0 ? latest : nil
+        return HttpReleaseFetcher.compare(latest.version, currentVersion) > 0 ? latest : nil
     }
 }

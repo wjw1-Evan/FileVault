@@ -1,29 +1,10 @@
 import Foundation
 
 /// Streams the update asset with byte-level progress (FR-20 v1.2.2).
+/// v2.6.4: direct HTTPS download of the public release asset — no `gh` CLI,
+/// no token, no Homebrew paths. Works on any Mac with just FileVault installed.
 public enum UpdateDownloader {
-    /// The user's gh auth token (private repo access). Nil when gh is absent.
-    public static func ghToken() -> String? {
-        let p = Process()
-        p.executableURL = SelfUpdater.ghURL()
-        p.arguments = ["auth", "token"]
-        let pipe = Pipe()
-        p.standardOutput = pipe
-        p.standardError = FileHandle.nullDevice
-        do {
-            try p.run()
-        } catch {
-            return nil
-        }
-        p.waitUntilExit()
-        guard p.terminationStatus == 0 else { return nil }
-        let s = String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        return s.isEmpty ? nil : s
-    }
-
-    /// Download with progress: URLSession + gh token. Falls back to gh CLI when
-    /// no token is available (progress unavailable on that path).
+    /// Download with progress and retries.
     @discardableResult
     public static func download(info: ReleaseInfo, repo: String = "wjw1-Evan/FileVault",
                                 progress: ((Double, Int64, Int64) -> Void)? = nil,
@@ -31,7 +12,7 @@ public enum UpdateDownloader {
         var lastError: Error = UpdateError.downloadFailed
         for attempt in 1...max(1, attempts) {
             do {
-                return try await downloadOnce(info: info, repo: repo, progress: progress)
+                return try await downloadOnce(info: info, progress: progress)
             } catch {
                 lastError = error
                 if attempt < attempts {
@@ -42,15 +23,14 @@ public enum UpdateDownloader {
         throw lastError
     }
 
-    /// One download attempt (URLSession with gh token; CLI fallback).
-    private static func downloadOnce(info: ReleaseInfo, repo: String,
+    /// One download attempt: stream `browser_download_url` to a temp file.
+    private static func downloadOnce(info: ReleaseInfo,
                                      progress: ((Double, Int64, Int64) -> Void)?) async throws -> URL {
-        guard let token = ghToken(), info.assetID > 0 else {
-            return try await SelfUpdater.download(info: info, into: FileManager.default.temporaryDirectory.appendingPathComponent("fv-update-cli"), repo: repo)
+        guard !info.assetURL.isEmpty, let url = URL(string: info.assetURL) else {
+            throw UpdateError.downloadFailed
         }
-        var req = URLRequest(url: URL(string: "https://api.github.com/repos/\(repo)/releases/assets/\(info.assetID)")!)
-        req.setValue("application/octet-stream", forHTTPHeaderField: "Accept")
-        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        var req = URLRequest(url: url, timeoutInterval: 60)
+        req.setValue("FileVaultApp", forHTTPHeaderField: "User-Agent")
         let (bytes, response) = try await URLSession.shared.bytes(for: req)
         guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
             throw UpdateError.downloadFailed
