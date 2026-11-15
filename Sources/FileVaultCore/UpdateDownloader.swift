@@ -32,7 +32,9 @@ public enum UpdateDownloader {
         var req = URLRequest(url: url, timeoutInterval: 60)
         req.setValue("FileVaultApp", forHTTPHeaderField: "User-Agent")
         let (bytes, response) = try await URLSession.shared.bytes(for: req)
-        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+        // Only HTTP responses carry a failure status; non-HTTP schemes (file://,
+        // used by tests and offline mirrors) with no transport error are fine.
+        if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
             throw UpdateError.downloadFailed
         }
         let total = info.assetSize > 0 ? info.assetSize : response.expectedContentLength
