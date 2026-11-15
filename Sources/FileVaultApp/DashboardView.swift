@@ -145,27 +145,31 @@ final class DashboardModel: ObservableObject {
 
 /// Main dashboard: status header, summary strip, recent activity and roots.
 struct DashboardView: View {
+    /// The dashboard window sizes itself to its content; cap the roots list so
+    /// a machine with dozens of roots still fits on screen without scrolling.
+    static let maxRootRows = 8
+
     @EnvironmentObject var app: AppState
     @Environment(\.openWindow) private var openWindow
     @StateObject private var model = DashboardModel()
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
-                header
-                summaryStrip
-                HStack(alignment: .top, spacing: 16) {
-                    activityCard
-                    rootsCard
-                        .frame(width: 272)
-                }
-                footer
+        // v3.4.1: no ScrollView — the window is sized to the content, so the
+        // dashboard always shows everything at once (no scrollbars ever).
+        VStack(alignment: .leading, spacing: 16) {
+            header
+            summaryStrip
+            HStack(alignment: .top, spacing: 16) {
+                activityCard
+                rootsCard
+                    .frame(width: 272)
             }
-            .padding(24)
-            .frame(maxWidth: .infinity, alignment: .leading)
+            footer
         }
+        .padding(24)
+        .fixedSize(horizontal: false, vertical: true)
+        .frame(minWidth: 720, alignment: .leading)
         .fvCanvas()
-        .frame(minWidth: 720, minHeight: 600)
         .task { model.bind(app) }
         .onDisappear { model.unbind() }
     }
@@ -307,11 +311,28 @@ struct DashboardView: View {
                              action: { openWindow(id: "settings") })
             } else {
                 VStack(spacing: 0) {
-                    ForEach(Array(model.rootRows.enumerated()), id: \.element.id) { index, row in
+                    // Bounded list: the window fits its content, so cap the rows
+                    // instead of ever introducing a scrollbar.
+                    ForEach(Array(model.rootRows.prefix(Self.maxRootRows).enumerated()), id: \.element.id) { index, row in
                         rootRow(row)
-                        if index < model.rootRows.count - 1 {
+                        if index < min(model.rootRows.count, Self.maxRootRows) - 1 {
                             FVHairline(leading: 50)
                         }
+                    }
+                    if model.rootRows.count > Self.maxRootRows {
+                        Button {
+                            openWindow(id: "settings")
+                        } label: {
+                            Text(String(format: NSLocalizedString("还有 %d 个目录…", comment: "dashboard overflow"),
+                                        model.rootRows.count - Self.maxRootRows))
+                                .font(FVTheme.metaFont)
+                                .foregroundStyle(.secondary)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.horizontal, 14)
+                                .padding(.vertical, 7)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
                     }
                 }
                 Spacer(minLength: 0)

@@ -44,7 +44,9 @@ struct FileVaultApp: App {
             DashboardView()
                 .environmentObject(app)
         }
-        .defaultSize(width: 800, height: 780)
+        // Content-sized: the dashboard is laid out to fit and never scrolls.
+        .windowResizability(.contentSize)
+        .defaultSize(width: 820, height: 640)
 
         Window("FileVault 设置", id: "settings") {
             SettingsView()
