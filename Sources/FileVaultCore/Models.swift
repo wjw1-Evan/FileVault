@@ -1,7 +1,8 @@
 import Foundation
 
 /// Commit history entry.
-public struct CommitInfo: Codable, Equatable, Sendable {
+public struct CommitInfo: Codable, Equatable, Sendable, Identifiable {
+    public var id: String { hash }
     public var hash: String
     public var shortHash: String
     public var subject: String
@@ -43,7 +44,8 @@ public struct StatusEntry: Equatable, Sendable {
 }
 
 /// Repo scan result.
-public struct SubRepo: Equatable, Sendable {
+public struct SubRepo: Equatable, Sendable, Identifiable {
+    public var id: String { path }
     public var name: String
     public var path: String
     public var isRepo: Bool

@@ -6,20 +6,19 @@ import AppKit
 /// Supplemental coverage for fixes that shipped in v2.6.5–v2.6.7 whose
 /// regression surfaces were only covered indirectly (or not at all).
 final class SupplementalTests: XCTestCase {
-    // MARK: - History window: filesLabel was nil for its entire lifetime (v2.6.5)
+    // MARK: - History: statusText guidance (v2.6.5 filesLabel regression —
+    // asserted through the HistoryModel that drives the SwiftUI label)
 
     @MainActor
     func testFilesLabelGuidanceActuallyDisplays() async throws {
         let base = TestSupport.makeTempDir("supp-label")
         let service = FileVaultService(configDirectory: URL(fileURLWithPath: base + "/cfg"))
         try await service.start()
-        let controller = HistoryWindowController(service: service)
-        controller.showWindow(nil)
-        defer { controller.window?.close() }
-        RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.3))
-        // Before v2.6.5 the property was never assigned, so every message write
-        // was a silent no-op — this guard fails if it regresses.
-        XCTAssertEqual(controller.filesLabel?.stringValue, "尚未添加任何根目录——先在设置中添加根目录")
+        let model = HistoryModel()
+        model.bind(AppState(service: service))
+        // Before v2.6.5 the label was never assigned, so every message write
+        // was a silent no-op — this guard fails if that class of bug regresses.
+        XCTAssertEqual(model.statusText, "尚未添加任何根目录——先在设置中添加根目录")
         try? FileManager.default.removeItem(atPath: base)
     }
 
@@ -31,18 +30,15 @@ final class SupplementalTests: XCTestCase {
         let base = TestSupport.makeTempDir("supp-login")
         let service = FileVaultService(configDirectory: URL(fileURLWithPath: base + "/cfg"))
         try await service.start()
-        let controller = SettingsWindowController(service: service)
-        defer { controller.window?.close() }
+        let model = SettingsModel()
+        model.bind(AppState(service: service))
 
-        let toggle = NSButton(checkboxWithTitle: "登录时启动", target: nil, action: nil)
-        toggle.state = .on
-        controller.toggleLaunchAtLogin(toggle)
+        model.toggleLoginIntent(true)
         try await Task.sleep(nanoseconds: 800_000_000)
         var cfg = service.configStore.load()
         XCTAssertTrue(cfg.general.launchAtLoginRequested, "ON intent must persist")
 
-        toggle.state = .off
-        controller.toggleLaunchAtLogin(toggle)
+        model.toggleLoginIntent(false)
         try await Task.sleep(nanoseconds: 800_000_000)
         cfg = service.configStore.load()
         XCTAssertFalse(cfg.general.launchAtLoginRequested, "OFF intent must persist")
@@ -141,23 +137,17 @@ final class SupplementalTests: XCTestCase {
     // MARK: - Dashboard empty state points at 设置 (single-entry invariant UX).
 
     @MainActor
-    func testDashboardEmptyStateCaptionPointsToSettings() async throws {
+    func testDashboardEmptyStatePointsToSettings() async throws {
         let base = TestSupport.makeTempDir("supp-dash")
         let service = FileVaultService(configDirectory: URL(fileURLWithPath: base + "/cfg"))
         try await service.start()
-        let controller = DashboardWindowController(service: service)
-        controller.showWindow(nil)
-        defer { controller.window?.close() }
-        try await Task.sleep(nanoseconds: 1_000_000_000)
-
-        var caption: String?
-        func walk(_ v: NSView) {
-            if let t = v as? NSTextField, t.stringValue.contains("尚未添加根目录") { caption = t.stringValue }
-            for sub in v.subviews { walk(sub) }
-        }
-        walk(controller.window?.contentView ?? NSView())
-        XCTAssertEqual(caption, "尚未添加根目录——点击下方「设置」添加",
-                       "empty state must route users to the single entry point")
+        let app = AppState(service: service)
+        let model = DashboardModel()
+        model.bind(app)
+        await model.refresh()
+        XCTAssertTrue(model.rootsEmpty, "no roots configured → empty state")
+        XCTAssertFalse(model.stateLine.contains("📂"))
+        XCTAssertTrue(model.stateLine.contains("0 个仓库受守护"))
         try? FileManager.default.removeItem(atPath: base)
     }
 }

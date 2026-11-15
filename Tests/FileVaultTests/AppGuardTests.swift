@@ -6,12 +6,10 @@ import XCTest
 final class AppGuardTests: XCTestCase {
     /// UNUserNotificationCenter.current() throws an uncatchable ObjC exception
     /// without an app bundle; setup/notify must degrade instead of crashing.
-    /// This test would have CRASHED the suite before the guard was added.
     func testNotificationServiceDegradesWithoutBundle() {
         let svc = NotificationService()
-        svc.setup()               // must not throw/crash
+        svc.setup()                 // must not throw/crash
         svc.notifyFailure("t", "b") // must be a no-op when not authorized
-        // And repeated setup must stay harmless.
         svc.setup()
     }
 
@@ -31,190 +29,39 @@ final class AppGuardTests: XCTestCase {
         try await service.start()
         try await service.addRoot(path: root + "/vault")
         let repoPath = root + "/vault/alpha"
-        let s1 = AppDelegate.menuSignature(service: service, statuses: [repoPath: .synced])
-        let s2 = AppDelegate.menuSignature(service: service, statuses: [repoPath: .failed])
+        let s1 = AppState.menuSignature(service: service, statuses: [repoPath: .synced])
+        let s2 = AppState.menuSignature(service: service, statuses: [repoPath: .failed])
         XCTAssertNotEqual(s1, s2, "failed vs synced must produce different signatures")
         try? FileManager.default.removeItem(atPath: root)
     }
 }
 
-
-/// UI-structure regression: the settings window must actually contain the
-/// root-directory management UI (caught the v1.1.0 layout bug in real use).
-final class SettingsUIStructureTests: XCTestCase {
-    @MainActor
-    func testSettingsWindowContainsRootManagementUI() async throws {
-        let root = TestSupport.makeTempDir("settingsui")
-        try? FileManager.default.createDirectory(atPath: root + "/vault/work", withIntermediateDirectories: true)
-        let service = FileVaultService(configDirectory: URL(fileURLWithPath: root + "/cfg"))
-        try await service.start()
-        try await service.addRoot(path: root + "/vault")
-        let controller = SettingsWindowController(service: service)
-        defer { controller.window?.close() }
-        guard let content = controller.window?.contentView else {
-            return XCTFail("settings window has no content view")
-        }
-        var foundAddButton = false
-        var foundUrlField = false
-        var foundOpenButton = false
-        var foundStatusDot = false
-        func walk(_ v: NSView) {
-            if let b = v as? NSButton, b.title.contains("添加根目录") { foundAddButton = true }
-            if let b = v as? NSButton, b.title == "打开", b.identifier?.rawValue.contains("/vault") == true {
-                foundOpenButton = true
-            }
-            if let f = v as? NSTextField, f.placeholderString?.contains("远程仓库地址") == true { foundUrlField = true }
-            if let iv = v as? NSImageView, iv.image != nil { foundStatusDot = true }
-            for sub in v.subviews { walk(sub) }
-        }
-        walk(content)
-        XCTAssertEqual(controller.rootCards.count, 1, "one card per root (v1.2.0 card layout)")
-        XCTAssertTrue(foundAddButton, "添加根目录 button must be visible")
-        XCTAssertTrue(foundUrlField, "per-repo remote config field must be visible")
-        XCTAssertTrue(foundOpenButton, "root 打开 button must exist with the root path identifier (FR-21)")
-        XCTAssertTrue(foundStatusDot, "per-repo status glyph must be visible")
-        try? FileManager.default.removeItem(atPath: root)
-    }
-}
-
-
-/// Menu bar icon state mapping (FR-08, v1.1.3 — fixes invisible "·" glyph).
+/// Menu bar icon state mapping (FR-08, v1.1.3 — fixes invisible glyph).
 final class StatusSymbolTests: XCTestCase {
     func testSymbolMapping() {
         let all: [SyncStatus] = [.noRemote, .synced, .pendingPush, .pushing, .failed]
-        // Normal / no-remote: always-visible clock glyph.
-        XCTAssertEqual(AppDelegate.statusSymbol(paused: false, envReady: true, statuses: []), "clock.arrow.circlepath")
-        XCTAssertEqual(AppDelegate.statusSymbol(paused: false, envReady: true, statuses: [.noRemote]), "clock.arrow.circlepath")
-        XCTAssertEqual(AppDelegate.statusSymbol(paused: false, envReady: true, statuses: [.synced]), "clock.arrow.circlepath")
+        XCTAssertEqual(AppState.statusSymbol(paused: false, envReady: true, statuses: []), "clock.arrow.circlepath")
+        XCTAssertEqual(AppState.statusSymbol(paused: false, envReady: true, statuses: [.noRemote]), "clock.arrow.circlepath")
+        XCTAssertEqual(AppState.statusSymbol(paused: false, envReady: true, statuses: [.synced]), "clock.arrow.circlepath")
         // Pending / pushing.
-        XCTAssertEqual(AppDelegate.statusSymbol(paused: false, envReady: true, statuses: [.pendingPush]), "arrow.up.arrow.down.circle")
-        XCTAssertEqual(AppDelegate.statusSymbol(paused: false, envReady: true, statuses: [.pushing]), "arrow.up.arrow.down.circle")
-        // Failure / env missing / paused.
-        XCTAssertEqual(AppDelegate.statusSymbol(paused: false, envReady: true, statuses: [.failed]), "exclamationmark.triangle")
-        XCTAssertEqual(AppDelegate.statusSymbol(paused: false, envReady: false, statuses: all), "exclamationmark.triangle")
-        XCTAssertEqual(AppDelegate.statusSymbol(paused: true, envReady: true, statuses: all), "pause.circle")
+        XCTAssertEqual(AppState.statusSymbol(paused: false, envReady: true, statuses: [.pendingPush]), "arrow.up.arrow.down.circle")
+        XCTAssertEqual(AppState.statusSymbol(paused: false, envReady: true, statuses: [.pushing]), "arrow.up.arrow.down.circle")
+        // Paused / env failure / push failure.
+        XCTAssertEqual(AppState.statusSymbol(paused: true, envReady: true, statuses: all), "pause.circle")
+        XCTAssertEqual(AppState.statusSymbol(paused: false, envReady: false, statuses: []), "exclamationmark.triangle")
+        XCTAssertEqual(AppState.statusSymbol(paused: false, envReady: true, statuses: [.failed]), "exclamationmark.triangle")
     }
 
-    /// Every mapped symbol must actually exist on this macOS (render proof).
     func testSymbolsExistInSystem() {
-        for name in ["clock.arrow.circlepath", "arrow.up.arrow.down.circle", "exclamationmark.triangle", "pause.circle",
-                     "checkmark.circle", "arrow.up.circle", "arrow.down.circle", "arrow.triangle.2.circlepath",
-                     "folder", "gearshape", "play.circle", "plus.circle", "square.grid.2x2", "arrow.up.forward.app",
-                     "circle.dashed"] {
-            XCTAssertNotNil(NSImage(systemSymbolName: name, accessibilityDescription: nil), "missing symbol: \(name)")
+        for name in ["clock.arrow.circlepath", "arrow.up.arrow.down.circle",
+                     "pause.circle", "exclamationmark.triangle", "folder",
+                     "gearshape", "arrow.up.forward.app"] {
+            XCTAssertNotNil(NSImage(systemSymbolName: name, accessibilityDescription: nil),
+                            "SF Symbol \(name) must exist")
         }
     }
 }
 
-
-/// Renders the settings window offscreen to a PNG (visual design review) and
-/// asserts the render succeeds with a sane size.
-final class SettingsRenderTests: XCTestCase {
-    @MainActor
-    func testRenderSettingsWindow() async throws {
-        let base = TestSupport.makeTempDir("settingsrender")
-        try? FileManager.default.createDirectory(atPath: base + "/vault/work", withIntermediateDirectories: true)
-        TestSupport.write("seed", to: base + "/vault/work/a.md")
-        let service = FileVaultService(configDirectory: URL(fileURLWithPath: base + "/cfg"))
-        try await service.start()
-        try await service.addRoot(path: base + "/vault")
-        let repos = service.repoManager!
-        let bare = URL(fileURLWithPath: base).appendingPathComponent("remote.git")
-        _ = try? await repos.runner.run(["init", "--bare", bare.path])
-        try? await repos.setRemote(path: base + "/vault/work", url: bare.path)
-        await repos.setAutoPush(path: base + "/vault/work", enabled: true)
-        // Give async fills time to land.
-        let controller = SettingsWindowController(service: service)
-        controller.window?.makeKeyAndOrderFront(nil)
-        controller.window?.contentView?.layoutSubtreeIfNeeded()
-        try await Task.sleep(nanoseconds: 800_000_000)
-        RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.2))
-        controller.window?.contentView?.layoutSubtreeIfNeeded()
-        guard let content = controller.window?.contentView else {
-            return XCTFail("no content view")
-        }
-        let rep = content.bitmapImageRepForCachingDisplay(in: content.bounds)!
-        content.cacheDisplay(in: content.bounds, to: rep)
-        let png = rep.representation(using: .png, properties: [:])
-        XCTAssertNotNil(png)
-        XCTAssertGreaterThan(png!.count, 10_000, "render should be substantial")
-        let out = URL(fileURLWithPath: "/tmp/settings_render.png")
-        try? png!.write(to: out)
-        print("[render] saved \(out.path) (\(png!.count) bytes)")
-        try? FileManager.default.removeItem(atPath: base)
-    }
-}
-
-
-/// Progress window render (FR-20 v1.2.2: visible download progress).
-final class UpdateProgressRenderTests: XCTestCase {
-    @MainActor
-    func testRenderUpdateProgressWindow() {
-        let controller = UpdateProgressWindowController()
-        controller.showWindow(nil)
-        controller.window?.makeKeyAndOrderFront(nil)
-        controller.setStage("下载更新…", fraction: 0.42, detail: "277 KB / 660 KB")
-        RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.3))
-        guard let content = controller.window?.contentView else {
-            return XCTFail("no content view")
-        }
-        let rep = content.bitmapImageRepForCachingDisplay(in: content.bounds)!
-        content.cacheDisplay(in: content.bounds, to: rep)
-        let png = rep.representation(using: .png, properties: [:])
-        XCTAssertNotNil(png)
-        XCTAssertGreaterThan(png!.count, 5_000)
-        try? png!.write(to: URL(fileURLWithPath: "/tmp/update_progress_render.png"))
-        controller.closeWindow()
-    }
-}
-
-
-/// E2E of the settings save flow: rebuild -> type url -> saveRepoConfig -> git config.
-final class SettingsSaveFlowTests: XCTestCase {
-    @MainActor
-    func testSaveRemoteConfigEndToEnd() async throws {
-        let base = TestSupport.makeTempDir("saveflow")
-        try? FileManager.default.createDirectory(atPath: base + "/vault/work", withIntermediateDirectories: true)
-        TestSupport.write("seed", to: base + "/vault/work/a.md")
-        let service = FileVaultService(configDirectory: URL(fileURLWithPath: base + "/cfg"))
-        try await service.start()
-        try await service.addRoot(path: base + "/vault")
-        let repoPath = base + "/vault/work"
-        let controller = SettingsWindowController(service: service)
-        _ = controller.window
-        // The rebuild must expose a field keyed by the repo path.
-        guard let field = controller.urlFields[repoPath] else {
-            return XCTFail("url field missing for key \(repoPath); keys=\(controller.urlFields.keys)")
-        }
-        field.stringValue = "https://github.com/example/demo.git"
-        controller.userEditedPaths.insert(repoPath)
-        // Simulate the 保存 button.
-        let btn = NSButton()
-        btn.identifier = NSUserInterfaceItemIdentifier(repoPath)
-        controller.saveRepoConfig(btn)
-        // Feedback appears quickly; poll (probe-wave threads can delay blocks).
-        var earlyMessage = ""
-        for _ in 0..<20 {
-            earlyMessage = controller.messageLabels[repoPath]?.stringValue ?? ""
-            if earlyMessage.contains("已保存") || earlyMessage.contains("失败") { break }
-            try? await Task.sleep(nanoseconds: 300_000_000)
-        }
-        XCTAssertTrue(earlyMessage.contains("已保存") || earlyMessage.contains("失败"),
-                      "inline feedback expected, got: '\(earlyMessage)'")
-        // Wait for the async save + rebuild.
-        try await Task.sleep(nanoseconds: 2_500_000_000)
-        let url = await service.repoManager.remoteURL(path: repoPath)
-        XCTAssertEqual(url, "https://github.com/example/demo.git", "saved url must reach git config")
-        let auto = await service.repoManager.autoPushEnabled(path: repoPath)
-        XCTAssertFalse(auto, "toggle default off")
-        XCTAssertNotNil(controller.urlFields[repoPath], "field re-exposed after rebuild")
-        try? FileManager.default.removeItem(atPath: base)
-    }
-}
-
-
-/// History window (v1.2.4): switching repos must swap commit lists, and a
-/// selected commit must show its changed files.
 /// v2.6.5: multicast state listeners (window auto-refresh foundation).
 final class StateListenerTests: XCTestCase {
     private final class Counter {
@@ -237,156 +84,7 @@ final class StateListenerTests: XCTestCase {
     }
 }
 
-final class HistoryWindowTests: XCTestCase {
-    private var base: String!
-    private var service: FileVaultService!
-    private var repos: RepoManager!
-    private var controller: HistoryWindowController!
-
-    @MainActor
-    private func makeWindow() async throws {
-        base = TestSupport.makeTempDir("histfull")
-        try? FileManager.default.createDirectory(atPath: base + "/vault1/alpha", withIntermediateDirectories: true)
-        try? FileManager.default.createDirectory(atPath: base + "/vault1/beta", withIntermediateDirectories: true)
-        try? FileManager.default.createDirectory(atPath: base + "/vault2/gamma", withIntermediateDirectories: true)
-        service = FileVaultService(configDirectory: URL(fileURLWithPath: base + "/cfg"))
-        try await service.start()
-        repos = service.repoManager!
-        try await service.addRoot(path: base + "/vault1")
-        try await service.addRoot(path: base + "/vault2")
-        TestSupport.write("g", to: base + "/vault2/gamma/g.md")
-        _ = try await repos.commitAll(path: base + "/vault2/gamma", message: "gamma change")
-        controller = HistoryWindowController(service: service)
-        controller.showWindow(nil)
-        RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.3))
-        try await Task.sleep(nanoseconds: 1_200_000_000)
-    }
-
-    private func waitCommitLoad() async {
-        try? await Task.sleep(nanoseconds: 1_200_000_000)
-    }
-
-    @MainActor
-    func test01TwoLevelPickerAndCommits() async throws {
-        try await makeWindow()
-        defer { try? FileManager.default.removeItem(atPath: base) }
-        XCTAssertEqual(controller.rootPopup?.numberOfItems, 2)
-        XCTAssertEqual(controller.currentRootPath(), base + "/vault1")
-        XCTAssertEqual(controller.currentFolders.count, 2)
-        XCTAssertEqual(controller.commits.count, 1)
-        controller.repoPopup?.selectItem(at: 1)
-        controller.repoChanged()
-        await waitCommitLoad()
-        XCTAssertEqual(controller.currentRepo(), base + "/vault1/beta")
-        XCTAssertEqual(controller.commits.count, 1)
-        controller.rootPopup?.selectItem(at: 1)
-        controller.rootChanged()
-        await waitCommitLoad()
-        XCTAssertEqual(controller.currentRootPath(), base + "/vault2")
-        XCTAssertEqual(controller.repoPopup?.numberOfItems, 1)
-        XCTAssertEqual(controller.commits.count, 2)
-        try? FileManager.default.removeItem(atPath: base)
-    }
-
-    @MainActor
-    func test02InlineRestoreButtonsWired() async throws {
-        try await makeWindow()
-        defer { try? FileManager.default.removeItem(atPath: base) }
-        TestSupport.write("x", to: base + "/vault1/alpha/x.md")
-        _ = try await repos.commitAll(path: base + "/vault1/alpha", message: "alpha adds x")
-        controller.repoPopup?.selectItem(at: 0)
-        controller.repoChanged()
-        await waitCommitLoad()
-        controller.table?.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
-        try await Task.sleep(nanoseconds: 1_000_000_000)
-        // The changed-files table carries an inline restore button per row.
-        XCTAssertEqual(controller.changedFiles.count, 1)
-        XCTAssertEqual(controller.changedFiles.first?.path, "x.md")
-        var found: NSButton?
-        func walk(_ v: NSView) {
-            if let b = v as? NSButton, b.title == "恢复", b.identifier?.rawValue == "x.md" { found = b }
-            for sub in v.subviews { walk(sub) }
-        }
-        walk(controller.window?.contentView ?? NSView())
-        XCTAssertNotNil(found, "inline restore button must exist for x.md")
-        XCTAssertNotNil(found?.target, "restore button must be wired")
-        try? FileManager.default.removeItem(atPath: base)
-    }
-
-    @MainActor
-    func test03RestoreCorePathChangesContent() async throws {
-        try await makeWindow()
-        defer { try? FileManager.default.removeItem(atPath: base) }
-        TestSupport.write("v1", to: base + "/vault2/gamma/g.md")
-        _ = try await repos.commitAll(path: base + "/vault2/gamma", message: "gamma v2")
-        let controller2 = HistoryWindowController(service: service)
-        _ = controller2.window
-        // Select gamma's oldest commit via the UI pickers.
-        controller2.rootPopup?.selectItem(at: 1)
-        controller2.rootChanged()
-        await waitCommitLoad()
-        let timeline = try await service.history.fileHistory(repoPath: base + "/vault2/gamma", file: "g.md")
-        XCTAssertEqual(timeline.count, 2)
-        let oldest = timeline.last!
-        XCTAssertEqual(oldest.subject, "gamma change")
-        try await service.history.restoreFile(repoPath: base + "/vault2/gamma", file: "g.md", to: oldest.hash)
-        let content = try String(contentsOfFile: base + "/vault2/gamma/g.md", encoding: .utf8)
-        XCTAssertEqual(content, "g", "restored to first-version content")
-        try? FileManager.default.removeItem(atPath: base)
-    }
-
-    @MainActor
-    func test04EmptyStates() async throws {
-        try await makeWindow()
-        defer { try? FileManager.default.removeItem(atPath: base) }
-        try? FileManager.default.createDirectory(atPath: base + "/empty", withIntermediateDirectories: true)
-        try await service.addRoot(path: base + "/empty")
-        controller.rootChanged()
-        await waitCommitLoad()
-        XCTAssertEqual(controller.rootPopup?.numberOfItems, 3, "stale root list refreshed")
-        controller.rootPopup?.selectItem(at: 2)
-        controller.rootChanged()
-        await waitCommitLoad()
-        XCTAssertTrue(controller.currentFolders.isEmpty)
-        XCTAssertEqual(controller.repoPopup?.numberOfItems, 0, "no folders in an empty root")
-        try? FileManager.default.removeItem(atPath: base)
-    }
-
-    /// v2.6.5: after operations / background commits the lists refresh without
-    /// reopening — the file list MUST follow even when the selection index did
-    /// not change (selectRowIndexes alone fires no callback).
-    @MainActor
-    func test05ReloadRefreshesFileListAndPreservesSelection() async throws {
-        try await makeWindow()
-        defer { try? FileManager.default.removeItem(atPath: base) }
-        let repo = base + "/vault1/alpha"
-        await waitCommitLoad()
-        XCTAssertEqual(controller.commits.count, 1)
-        XCTAssertEqual(controller.table?.selectedRow, 0)
-
-        // Background commit lands while the window is open (auto-commit path).
-        TestSupport.write("y", to: repo + "/y.md")
-        _ = try await repos.commitAll(path: repo, message: "alpha adds y")
-        let preservedHash = controller.commits[0].hash
-        controller.reloadCommits(preserveSelection: true)
-        await waitCommitLoad()
-        XCTAssertEqual(controller.commits.count, 2, "new commit appears without reopening")
-        XCTAssertEqual(controller.commits[1].hash, preservedHash, "old HEAD shifted below the new one")
-        XCTAssertEqual(controller.table?.selectedRow, 1, "selection follows the preserved commit")
-        XCTAssertEqual(controller.changedFiles.first?.path, ".gitignore",
-                       "file list refreshes for the PRESERVED commit (initial commit)")
-
-        // Operation path (restore/rollback): fresh reload selects the new HEAD.
-        controller.reloadCommits()
-        await waitCommitLoad()
-        XCTAssertEqual(controller.table?.selectedRow, 0, "operation reload selects row 0")
-        XCTAssertEqual(controller.filesLabel?.stringValue.contains("包含"), true, "file list refreshed for row 0")
-        XCTAssertEqual(controller.changedFiles.first?.path, "y.md", "file list shows the new HEAD's files")
-        try? FileManager.default.removeItem(atPath: base)
-    }
-}
-
-/// File-centric core: fileHistory filters to the file's own commits.
+/// FR-10 core: file history filters to the file's own commits.
 final class FileRestoreTests: XCTestCase {
     func testFileHistoryFiltersByFile() async throws {
         let base = TestSupport.makeTempDir("fhist")
@@ -411,80 +109,186 @@ final class FileRestoreTests: XCTestCase {
     }
 }
 
-
-/// The 添加根目录 button must be wired (the "click no response" report).
-final class AddRootButtonTests: XCTestCase {
+/// v3.0.0 SwiftUI migration: history behavior lives in HistoryModel.
+final class HistoryModelTests: XCTestCase {
     @MainActor
-    func testAddRootButtonWired() throws {
-        let service = FileVaultService(configDirectory: URL(fileURLWithPath: TestSupport.makeTempDir("addbtn")))
-        let controller = SettingsWindowController(service: service)
-        defer { controller.window?.close() }
-        var found: NSButton?
-        func walk(_ v: NSView) {
-            if let b = v as? NSButton, b.title.contains("添加根目录") { found = b }
-            for sub in v.subviews { walk(sub) }
-        }
-        walk(controller.window?.contentView ?? NSView())
-        let btn = try XCTUnwrap(found, "添加根目录 button must exist")
-        XCTAssertNotNil(btn.target, "target must be wired")
-        XCTAssertNotNil(btn.action, "action must be wired")
-        XCTAssertEqual(btn.action?.description.contains("addRootAction"), true)
-    }
-
-    /// v2.6.3 single-entry invariant: the dashboard must NOT carry its own
-    /// add-root button — root management lives only in 设置. The duplicated
-    /// implementation had already drifted (it swallowed add failures).
-    @MainActor
-    func testDashboardHasNoAddRootButton() throws {
-        let service = FileVaultService(configDirectory: URL(fileURLWithPath: TestSupport.makeTempDir("dashbtn")))
-        let controller = DashboardWindowController(service: service)
-        defer { controller.window?.close() }
-        var found: NSButton?
-        func walk(_ v: NSView) {
-            if let b = v as? NSButton, b.title.contains("添加根目录") { found = b }
-            for sub in v.subviews { walk(sub) }
-        }
-        walk(controller.window?.contentView ?? NSView())
-        XCTAssertNil(found, "dashboard must not duplicate the 添加根目录 entry (single entry = 设置)")
-    }
-}
-
-
-/// v2.6.0: content adapts to manual window resize (width AND height).
-final class ResizeAdaptationTests: XCTestCase {
-    @MainActor
-    func testHistoryTableFlexesWithWindow() async throws {
-        let base = TestSupport.makeTempDir("resize")
-        try? FileManager.default.createDirectory(atPath: base + "/vault/work", withIntermediateDirectories: true)
-        TestSupport.write("s", to: base + "/vault/work/s.md")
+    private func makeModel() async throws -> (HistoryModel, FileVaultService, String) {
+        let base = TestSupport.makeTempDir("histmodel")
+        try? FileManager.default.createDirectory(atPath: base + "/vault/alpha", withIntermediateDirectories: true)
+        try? FileManager.default.createDirectory(atPath: base + "/vault/beta", withIntermediateDirectories: true)
+        TestSupport.write("s", to: base + "/vault/alpha/s.md")
         let service = FileVaultService(configDirectory: URL(fileURLWithPath: base + "/cfg"))
         try await service.start()
         try await service.addRoot(path: base + "/vault")
-        let controller = HistoryWindowController(service: service)
-        controller.showWindow(nil)
-        controller.window?.setContentSize(NSSize(width: 660, height: 560))
-        controller.window?.contentView?.layoutSubtreeIfNeeded()
-        guard let tableScroll = firstScrollView(controller.window?.contentView) else {
-            return XCTFail("table scroll missing")
-        }
-        let w1 = tableScroll.frame.width
-        let h1 = tableScroll.frame.height
-        // Grow the window; the table must absorb BOTH dimensions.
-        controller.window?.setContentSize(NSSize(width: 900, height: 760))
-        controller.window?.contentView?.layoutSubtreeIfNeeded()
-        let w2 = tableScroll.frame.width
-        let h2 = tableScroll.frame.height
-        XCTAssertGreaterThan(w2, w1 + 100, "table width grows with window (\(w1) -> \(w2))")
-        XCTAssertGreaterThan(h2, h1 + 80, "table height grows with window (\(h1) -> \(h2))")
+        let app = AppState()
+        app.service = service
+        let model = HistoryModel()
+        model.bind(app)
+        return (model, service, base)
+    }
+
+    @MainActor
+    func testEmptyRootsShowsGuidance() async throws {
+        let base = TestSupport.makeTempDir("histmodel-empty")
+        let service = FileVaultService(configDirectory: URL(fileURLWithPath: base + "/cfg"))
+        try await service.start()
+        let model = HistoryModel()
+        model.bind(AppState(service: service))
+        XCTAssertEqual(model.statusText, "尚未添加任何根目录——先在设置中添加根目录")
+        XCTAssertTrue(model.roots.isEmpty)
         try? FileManager.default.removeItem(atPath: base)
     }
 
-    private func firstScrollView(_ v: NSView?) -> NSScrollView? {
-        guard let v else { return nil }
-        if let s = v as? NSScrollView { return s }
-        for sub in v.subviews {
-            if let s = firstScrollView(sub) { return s }
+    @MainActor
+    func testRepoSwitchReloadsCommits() async throws {
+        let (model, _, base) = try await makeModel()
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        XCTAssertEqual(model.selectedRoot, base + "/vault")
+        XCTAssertEqual(model.folders.count, 2)
+        // Async commit load: poll until it lands.
+        for _ in 0..<40 where model.commits.isEmpty {
+            try await Task.sleep(nanoseconds: 100_000_000)
         }
-        return nil
+        XCTAssertEqual(model.commits.count, 1)
+        XCTAssertEqual(model.selectedCommitHash, model.commits.first?.hash,
+                       "first commit auto-selected")
+        XCTAssertFalse(model.files.isEmpty)
+        XCTAssertTrue(model.statusText.contains("包含"))
+
+        // Switch to beta (also 1 commit after ensureRepos).
+        let beta = model.folders.first { $0.name == "beta" }
+        model.repoChanged(beta!.path)
+        XCTAssertEqual(model.selectedRepo, beta?.path)
+        for _ in 0..<40 where model.commits.isEmpty {
+            try await Task.sleep(nanoseconds: 100_000_000)
+        }
+        XCTAssertEqual(model.commits.count, 1)
+        try? FileManager.default.removeItem(atPath: base)
+    }
+
+    @MainActor
+    func testRestoreFeedbackAndCommitCount() async throws {
+        let (model, service, base) = try await makeModel()
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let repoPath = base + "/vault/alpha"
+        // Create a distinct second commit so restoring the first differs.
+        TestSupport.write("v2", to: repoPath + "/s.md")
+        _ = try await service.repoManager.commitAll(path: repoPath, message: "alpha v2")
+        await model.reloadCommits()
+        for _ in 0..<40 where model.commits.count < 2 {
+            try await Task.sleep(nanoseconds: 100_000_000)
+        }
+        XCTAssertEqual(model.commits.count, 2)
+        // Select the FIRST commit (alpha 初始版本) via the selection API.
+        let firstHash = model.commits.last!.hash
+        model.selectCommit(firstHash)
+        // Restore the selected commit's file — forms a rollback commit.
+        model.restoreFile("s.md")
+        try await Task.sleep(nanoseconds: 1_500_000_000)
+        let log = try await service.repoManager.log(path: repoPath)
+        XCTAssertEqual(log.count, 3, "restore must form a new commit")
+        XCTAssertTrue(log.first!.subject.contains("rollback: 恢复 s.md"),
+                      "rollback commit message: \(log.first!.subject)")
+        XCTAssertTrue(model.statusText.contains("已恢复") || model.statusText.contains("包含"),
+                      "feedback after restore: \(model.statusText)")
+        try? FileManager.default.removeItem(atPath: base)
+    }
+}
+
+/// v3.0.0 SwiftUI migration: settings behavior lives in SettingsModel.
+final class SettingsModelTests: XCTestCase {
+    @MainActor
+    private func makeModel() async throws -> (SettingsModel, FileVaultService, String) {
+        let base = TestSupport.makeTempDir("setmodel")
+        try? FileManager.default.createDirectory(atPath: base + "/vault/alpha", withIntermediateDirectories: true)
+        TestSupport.write("s", to: base + "/vault/alpha/s.md")
+        let service = FileVaultService(configDirectory: URL(fileURLWithPath: base + "/cfg"))
+        try await service.start()
+        try await service.addRoot(path: base + "/vault")
+        let app = AppState()
+        app.service = service
+        let model = SettingsModel()
+        model.bind(app)
+        return (model, service, base)
+    }
+
+    @MainActor
+    func testGeneralCardsAndRootCardsPopulate() async throws {
+        let (model, _, base) = try await makeModel()
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        XCTAssertEqual(model.rootCards.count, 1)
+        XCTAssertEqual(model.rootCards.first?.repos.count, 1)
+        XCTAssertEqual(model.thresholdText, "200")
+        XCTAssertEqual(model.debounceSeconds, 5)
+    }
+
+    @MainActor
+    func testSaveRepoPersistsRemoteAndReportsFeedback() async throws {
+        let (model, service, base) = try await makeModel()
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let repoPath = base + "/vault/alpha"
+        let bare = URL(fileURLWithPath: base).appendingPathComponent("remote.git")
+        _ = try? await service.repoManager.runner.run(["init", "--bare", bare.path])
+        model.urlBinding(repoPath).wrappedValue = bare.path
+        model.saveRepo(repoPath)
+        var message = ""
+        for _ in 0..<20 {
+            message = model.message(repoPath)?.0 ?? ""
+            if message.contains("已保存") || message.contains("失败") { break }
+            try? await Task.sleep(nanoseconds: 300_000_000)
+        }
+        XCTAssertTrue(message.contains("已保存并连通"), "inline feedback expected, got: '\(message)'")
+        let url = await service.repoManager.remoteURL(path: repoPath)
+        XCTAssertEqual(url, bare.path, "saved url must reach git config")
+    }
+
+    @MainActor
+    func testEmptyURLSaveClearsRemote() async throws {
+        let (model, service, base) = try await makeModel()
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let repoPath = base + "/vault/alpha"
+        let bare = URL(fileURLWithPath: base).appendingPathComponent("remote.git")
+        _ = try? await service.repoManager.runner.run(["init", "--bare", bare.path])
+        try await service.sync.configureRemote(repoPath: repoPath, url: bare.path, autoPush: false)
+        model.saveRepo(repoPath)   // url binding is empty by default
+        var message = ""
+        for _ in 0..<20 {
+            message = model.message(repoPath)?.0 ?? ""
+            if message.contains("仅本地") || message.contains("失败") { break }
+            try? await Task.sleep(nanoseconds: 300_000_000)
+        }
+        XCTAssertTrue(message.contains("仅本地"), "clear feedback expected, got: '\(message)'")
+        let url = await service.repoManager.remoteURL(path: repoPath)
+        XCTAssertNil(url, "remote must be removed")
+        try? FileManager.default.removeItem(atPath: base)
+    }
+
+    @MainActor
+    func testToggleLoginIntentPersists() async throws {
+        let (model, service, base) = try await makeModel()
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        model.toggleLoginIntent(true)
+        try await Task.sleep(nanoseconds: 800_000_000)
+        XCTAssertTrue(service.configStore.load().general.launchAtLoginRequested)
+        model.toggleLoginIntent(false)
+        try await Task.sleep(nanoseconds: 800_000_000)
+        XCTAssertFalse(service.configStore.load().general.launchAtLoginRequested)
+        try? FileManager.default.removeItem(atPath: base)
+    }
+
+    @MainActor
+    func testGitignoreEditorSaveWritesFile() async throws {
+        let (model, _, base) = try await makeModel()
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let repoPath = base + "/vault/alpha"
+        model.openGitignoreEditor(repoPath)
+        var editor = try XCTUnwrap(model.gitignoreEditor)
+        XCTAssertTrue(editor.draft.contains("node_modules/"), "template must preload")
+        editor.draft = ".DS_Store\n*.log\n"
+        model.saveGitignore(editor)
+        XCTAssertNil(model.gitignoreEditor, "editor closes after save")
+        let content = try String(contentsOfFile: repoPath + "/.gitignore", encoding: .utf8)
+        XCTAssertTrue(content.contains("*.log"))
+        try? FileManager.default.removeItem(atPath: base)
     }
 }
