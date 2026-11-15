@@ -14,7 +14,6 @@
 "修改" = "Modified";
 "测试" = "Test";
 "更多" = "More";
-"恢复" = "Restore";
 "失败" = "Failed";
 "同步中" = "Syncing";
 "待推送" = "Pending push";
@@ -23,9 +22,6 @@
 "已暂停" = "Paused";
 "需要处理" = "Needs attention";
 "永久免费" = "Free forever";
-"受保护的目录" = "Protected folders";
-"受守护仓库" = "Protected repos";
-"仓库" = "repos";
 "全部历史" = "All history";
 
 /* 菜单栏面板 */
@@ -37,13 +33,11 @@
 "暂停自动提交" = "Pause auto-commit";
 "恢复自动提交" = "Resume auto-commit";
 "退出 FileVault" = "Quit FileVault";
-"尚未添加根目录" = "No protected folders yet";
 "去设置添加…" = "Add one in Settings…";
 "在 Finder 中打开" = "Reveal in Finder";
 
 /* 设置：通用 */
 "通用" = "General";
-"影响所有受保护目录" = "Applies to all protected folders";
 "所有改动即时生效，保存在本地配置文件中" = "Changes apply immediately and are saved to the local config file";
 "登录时启动" = "Launch at login";
 "开机后直接在菜单栏待命" = "Waits in the menu bar after login";
@@ -70,19 +64,10 @@
 "开源协议" = "Licence";
 
 /* 设置：根目录/仓库 */
-"添加根目录…" = "Add folder…";
-"移除根目录…" = "Remove folder…";
-"移除根目录？" = "Remove folder?";
-"根目录操作" = "Folder actions";
-"根目录" = "Folder";
-"根目录不存在或不可访问" = "Folder is missing or inaccessible";
-"该根目录暂无子文件夹" = "No subfolders in this folder yet";
 "输入仓库名（将创建为当前 gh 账号下的私有仓库）：" = "Repository name (created as a private repo under your gh account):";
 ")（仓库保留在磁盘）" = ") (repositories stay on disk)";
-"FileVault 只是不再守卫这个目录，已经生成的 .git 历史不会被删除。" = "FileVault simply stops guarding this folder; the .git history it created stays on disk.";
 "远程仓库地址（留空 = 仅本地）" = "Remote URL (empty = local only)";
 "自动推送" = "Auto-push";
-"身份验证" = "Authentication";
 "自动（gh 凭证助手）" = "Automatic (gh credential helper)";
 "用户名 + 访问令牌" = "Username + access token";
 "SSH 密钥" = "SSH key";
@@ -104,61 +89,33 @@
 "已保存，正在测试连接…" = "Saved, testing connection…";
 "✓ 已保存并连通，提交后将自动推送" = "✓ Saved and connected — commits will be pushed automatically";
 "✓ 已保存并连通（自动推送未开启）" = "✓ Saved and connected (auto-push off)";
-"⚠️ 已保存但连接失败：" = "⚠️ Saved, but connection failed: ";
 "✓ 已拉取远程更新（ff-only）" = "✓ Pulled remote updates (ff-only)";
 "✓ 已是最新" = "✓ Already up to date";
 "正在拉取…" = "Pulling…";
-"⚠️ 拉取失败：" = "⚠️ Pull failed: ";
 "已清除远程仓库（仅本地模式）" = "Remote cleared (local-only mode)";
 "设置登录自启失败" = "Could not enable launch at login";
 "连接成功" = "Connected";
 "连接失败" = "Connection failed";
 "连接超时或无法执行 git" = "Timed out, or git could not run";
-"正在恢复 " = "Restoring ";
-"✓ 已恢复 " = "✓ Restored ";
-" 到 " = " to ";
 "正在回滚…" = "Rolling back…";
-"✓ 已回滚到 " = "✓ Rolled back to ";
-"⚠️ 恢复失败: " = "⚠️ Restore failed: ";
-"⚠️ 回滚失败: " = "⚠️ Rollback failed: ";
-"正在创建仓库 " = "Creating repository ";
-"⚠️ 创建失败: " = "⚠️ Create failed: ";
-"✓ 诊断包已保存到 " = "✓ Diagnostics saved to ";
 
 /* 主面板 / 菜单状态 */
-"FileVault — 文件时光机" = "FileVault — a time machine for your files";
 "最近活动" = "Recent activity";
-"还没有任何提交——向文件夹写入文件后会自动记录" = "No commits yet — writing a file creates the first version automatically";
-"尚未添加任何根目录——先在设置中添加根目录" = "No protected folders yet — add one in Settings";
 "打开设置" = "Open Settings";
-"历史" = "History";
-"个仓库" = " repos";
-"个仓库受守护" = " repos protected";
 "全部正常" = "All good";
 "已暂停自动提交" = "Auto-commit paused";
-"个仓库推送失败，点击菜单查看" = " repos failed to push — open the menu for details";
 "Git 环境未就绪" = "Git is not ready";
-"分布在 " = "across ";
-" 个根目录" = " folders";
-" 条" = " commits";
 
 /* 历史窗口 */
 "FileVault 历史" = "FileVault History";
 "选择一个提交，查看并恢复它包含的文件" = "Pick a commit to see and restore its files";
 "选择一个提交" = "Pick a commit";
 "选择一个提交以查看其包含的文件" = "Pick a commit to see the files it contains";
-"此版本包含的文件" = "Files in this version";
-"右侧会列出这个版本包含的文件，可以只恢复其中一个。" = "The files in this version are listed on the right — you can restore just one.";
 "该文件夹还没有提交历史" = "This folder has no commit history yet";
-"这个文件夹被守卫后，每次改动都会在这里留下一条记录。" = "Once this folder is protected, every change leaves a record here.";
-"这个提交只包含空目录或元数据变化。" = "This commit only contains empty folders or metadata changes.";
-"把这个文件恢复到选中提交时的内容" = "Restore this file to the selected commit";
-"回滚整个文件夹" = "Roll back the whole folder";
-"回滚整个文件夹到该版本" = "Roll back the whole folder to this version";
+"回滚到该版本" = "Roll back to this version";
 "回滚确认" = "Confirm rollback";
-"文件夹会回到这个版本，之后的提交从当前分支移除。未提交的改动会先自动保存，回滚前的状态也会备份到隐藏 ref（refs/filevault/backup，可用 git 找回），不会永久丢失。" = "The folder returns to this version and later commits are removed from the branch. Uncommitted edits are saved first, and the pre-rollback state is kept in a hidden ref (refs/filevault/backup) so nothing is lost permanently.";
+"文件夹中受版本管理的内容会回到这个版本，其后的提交从当前分支移除。被忽略的文件、大文件和嵌套仓库保持原样；已绑定的远程仓库不会跟着回退（之后「拉取远程更新」可能把版本带回来）。未提交的改动会先自动保存，回滚前的状态备份到隐藏 ref（refs/filevault/backup，可用 git 找回），不会永久丢失。" = "Version-managed content in this folder returns to this version, and later commits are removed from the branch. Ignored files, large files and nested repositories stay as they are; a bound remote is not rolled back (pulling from it later can bring the version back). Uncommitted edits are saved first, and the pre-rollback state is kept in a hidden ref (refs/filevault/backup) so nothing is lost permanently.";
 "查看历史版本" = "View history";
-"提交记录" = "Commits";
 "最近提交" = "Latest commit";
 "正在加载提交历史…" = "Loading history…";
 "还没有提交记录" = "No commits yet";
@@ -169,13 +126,10 @@
 "自动提交失败" = "Auto-commit failed";
 "推送失败" = "Push failed";
 "远程仓库身份验证失败" = "Remote authentication failed";
-"远程仓库连接失败（" = "Remote connection failed (";
 "身份验证失败或已过期——请在设置中重新保存访问令牌（或检查 SSH 密钥/gh 登录状态）" = "Authentication failed or expired — re-save your access token in Settings (or check your SSH key / gh login)";
 "发现新版本" = "Update available";
 "更新失败，将自动重试" = "Update failed — will retry automatically";
 "更新检查失败，将在后台重试" = "Update check failed — will retry in the background";
-"已是最新版本（v" = "Already up to date (v";
-"更新失败：" = "Update failed: ";
 "正在下载更新" = "Downloading update";
 "正在校验更新…" = "Verifying update…";
 "正在安装更新…" = "Installing update…";
@@ -234,43 +188,19 @@
 "已保存地址，但「用户名 + 访问令牌」还需要填写访问令牌（令牌只写进本机凭证库，不写进 git 配置）" = "Remote saved, but the user name + access token mode still needs a token (it is stored in the local credential store, never in git config).";
 "（本机没有钥匙串助手，令牌保存在仅本人可读的本机文件）" = " (no keychain helper on this Mac — the token lives in a user-only readable local file)";
 "本机凭证库不可用（请确认 git 安装完整）" = "The local credential store is unavailable (check that git is installed completely)";
-"凭证写入本机凭证库失败: " = "Writing to the local credential store failed: ";
 
 /* 诊断报告 */
 "FileVault 诊断报告" = "FileVault diagnostics report";
-"生成时间: " = "Generated: ";
-"版本: " = "Version: ";
-"环境: " = "Environment: ";
-"架构: " = "Architecture: ";
-"语言: " = "Language: ";
-"许可: " = "Licence: ";
-"（无账号、无订阅）" = " (no account, no subscription)";
-"应用" = "App";
-"配置（已脱敏）" = "Config (redacted)";
-"受保护的目录（已脱敏）" = "Protected folders (redacted)";
-"隐私说明" = "Privacy";
 "本报告不含任何文件内容、远程地址或账号；路径已替换为 ~。" = "This report contains no file contents, remote URLs or accounts; home paths are replaced with ~.";
-"（无法序列化配置）" = " (could not serialise config)";
-"（未加载配置）" = " (config not loaded)";
-"（无）" = " (none)";
+"（无法序列化配置）" = "(could not serialize the config)";
+"（未加载配置）" = "(config not loaded)";
+"（无）" = "(none)";
 "诊断包生成失败，请检查目标位置是否可写" = "Could not create the diagnostics bundle — check that the destination is writable";
 
 /* 更新安全 / 历史错误 */
-"更新包不是本应用（" = "Update bundle is not this app (";
-"更新包签名团队不一致（" = "Update bundle signed by a different team (";
-"更新包签名校验失败：" = "Update bundle signature check failed: ";
-"更新包签名校验未通过：" = "Update bundle signature check failed: ";
-"该版本（" = "That version (";
-"路径不合法：" = "Invalid path: ";
-"找不到提交 " = "Commit not found: ";
-"回滚失败：" = "Rollback failed: ";
 "未知错误" = "unknown error";
-"凭证写入钥匙串失败: " = "Could not write credential to the keychain: ";
-"凭证擦除失败: " = "Could not erase the credential: ";
-"git credential-osxkeychain 不可用（请确认 git 安装完整）" = "git credential-osxkeychain is unavailable (check your git installation)";
 "codesign --verify 未通过" = "codesign --verify failed";
 "已回滚到上一版本" = "Rolled back to the previous version";
-"新版本连续 3 次未能正常启动，已自动恢复到 v" = "The new version failed to start 3 times, so FileVault restored v";
 
 /* 自动生成的提交信息（仅影响新提交） */
 "auto: 初始版本" = "auto: initial version";
@@ -278,31 +208,16 @@
 "backup: 恢复前自动保存未提交改动" = "backup: saved uncommitted work before restore";
 
 /* 空态 / 其他 */
-"这个目录里还没有子文件夹" = "No subfolders in this directory yet";
-"在根目录下新建文件夹后，会自动成为独立版本库。" = "New folders created here automatically become their own repositories.";
-"在根目录下新建文件夹后，这里会列出对应的版本库。" = "New folders created here will be listed as repositories.";
-"尚未添加目录" = "No folders yet";
 "向受保护的文件夹写入文件，几秒后就会自动记录第一个版本。" = "Write a file into a protected folder and the first version is recorded within seconds.";
-"添加一个根目录，其中的每个文件夹都会自动拥有版本历史。" = "Add a folder — every subfolder inside gets its own automatic history.";
-"选一个文件夹，它下面的每个子文件夹都会自动拥有独立的版本历史。" = "Pick a folder — each subfolder inside gets its own independent history.";
 "云端已最新" = "Up to date in the cloud";
 "本地版本已保留" = "Local version kept";
 "正在等待上传" = "Waiting to upload";
-"个文件" = " files";
-"还没有受保护的目录" = "No protected folders yet";
-"文件时光机" = "A time machine for your files";
-"选择目录…" = "Choose folder…";
-"添加根目录失败" = "Could not add the folder";
 "100 MB（GitHub 硬限制）" = "100 MB (GitHub hard limit)";
 "不限制（未配置远端）" = "No limit (no remote)";
 "不限制（远端未提供单文件上限）" = "No limit (remote publishes none)";
-"仓库健康" = "Repository health";
 "跟随系统" = "Follow System";
 "语言" = "Language";
 "默认跟随系统；切换后会自动重启应用" = "Follows macOS by default; switching restarts the app";
-"%d 个仓库" = "%d repos";
-"%d 个仓库受守护" = "%d repos protected";
-"%d 个仓库推送失败，点击菜单查看" = "%d repos failed to push — open the menu for details";
 "路径不合法：%@（不能是绝对路径或包含 ..）" = "Invalid path: %@ (must be relative and must not contain ..)";
 "该版本（%@）里没有文件 %@，无法恢复" = "That version (%@) has no file %@ — cannot restore";
 "找不到提交 %@，可能已被清理" = "Commit %@ not found — it may have been pruned";
@@ -330,7 +245,6 @@
 "Git 未就绪" = "Git not ready";
 "检查中…" = "Checking…";
 "正在检查更新…" = "Checking for updates…";
-"没有子文件夹" = "No subfolders";
 "没有文件变更" = "No file changes";
 "还没有提交历史" = "No commit history yet";
 "FileVault 菜单" = "FileVault menu";
@@ -338,12 +252,8 @@
 " · ⚠️ 超过 2GB" = " · ⚠️ over 2GB";
 "## 应用" = "## App";
 "## 配置（已脱敏）" = "## Config (redacted)";
-"## 受保护的目录（已脱敏）" = "## Protected folders (redacted)";
 "## 隐私说明" = "## Privacy";
 
-"%d 个仓库受守护 · %@" = "%d repos protected · %@";
-"分布在 %d 个根目录" = "across %d folders";
-"· %d 个文件" = "· %d files";
 "%d 次提交 · %@" = "%d commits · %@";
 " · 最近 %@" = " · updated %@";
 
@@ -351,26 +261,17 @@
 "%@（%d）" = "%@ (%d)";
 "1 次提交 · %@" = "1 commit · %@";
 
-"还有 %d 个目录…" = "%d more folders…";
 
-"展开根目录" = "Expand folder";
-"折叠根目录" = "Collapse folder";
-"全部展开" = "Expand all";
-"全部折叠" = "Collapse all";
 
 "正在打开 %@…" = "Opening %@…";
 "✓ 已打开 %@（%@ 版本）" = "✓ Opened %@ (version %@)";
 "⚠️ 打开失败: %@" = "⚠️ Could not open: %@";
-"用默认应用打开这个版本的文件" = "Open this version with the default app";
 "无法打开 %@（版本内容缺失或不可读）" = "Could not open %@ (content missing or unreadable)";
 
 /* v4.0: 根目录 = 一个仓库（取消子文件夹层级） */
 "%d 个文件夹" = "%d folders";
 "%@（%@）" = "%@ (%@)";
-"受保护的文件夹" = "Protected folders";
 "受保护文件夹" = "Protected folders";
-"一个文件夹 = 一个版本库" = "One folder = one repository";
-"在设置里添加一个文件夹，这里就会显示它的历史。" = "Add a folder in Settings and its history shows up here.";
 "尚未添加任何文件夹——先在设置中添加文件夹" = "No protected folders yet — add one in Settings";
 "%d 个文件夹受守护 · %@" = "%d folders protected · %@";
 "全部纳入版本管理" = "Everything under version control";
@@ -408,8 +309,62 @@
 "复制完整哈希" = "Copy full hash";
 "已复制完整哈希" = "Full hash copied";
 "把这个文件恢复到选中版本" = "Restore this file to the selected version";
-"把这个文件夹的所有内容恢复到选中版本" = "Restore everything in this folder to the selected version";
-"回滚整个文件夹…" = "Roll back the whole folder…";
+"把这个文件夹中受版本管理的内容回滚到选中版本（其后的提交从当前分支移除）" = "Roll version-managed content in this folder back to the selected version (later commits are removed from the branch)";
+"回滚到该版本…" = "Roll back to this version…";
 "已选择 %@" = "Selected %@";
 "在设置里添加一个文件夹，它里面每次改动都会在这里留下一条记录。" = "Add a folder in Settings and every change inside it shows up here.";
 "这个文件夹被保护后，每次改动都会自动留下一条记录。" = "Once this folder is protected, every change leaves a record here.";
+
+/* v4.0.3: interpolated UI strings, unified 文件夹 wording, localized core errors & diagnostics */
+"文件时光机 · %@" = "A time machine for your files · %@";
+"在 Finder 中打开：%@" = "Reveal in Finder: %@";
+"在 Finder 中打开 %@" = "Reveal in Finder: %@";
+"移除 %@（仓库保留在磁盘）" = "Remove %@ (the repository stays on disk)";
+"FileVault-诊断-%@.zip" = "FileVault-Diagnostics-%@.zip";
+"受保护的文件夹" = "Protected folders";
+"还没有受保护的文件夹" = "No protected folders yet";
+"尚未添加文件夹" = "No folders yet";
+"还有 %d 个文件夹…" = "%d more folders…";
+"添加文件夹失败" = "Could not add the folder";
+"FileVault 只是不再守卫这个文件夹，已经生成的 .git 历史不会被删除。" = "FileVault simply stops protecting this folder; the .git history it already created is not deleted.";
+"影响所有受保护的文件夹" = "Applies to all protected folders";
+"选择文件夹…" = "Choose folder…";
+"文件夹不存在或不可访问" = "The folder is missing or cannot be accessed";
+"## 受保护的文件夹（已脱敏）" = "## Protected folders (redacted)";
+"远程仓库连接失败（%@）" = "Could not connect to the remote (%@)";
+"凭证写入本机凭证库失败：%@" = "Could not write the credential to the credential store: %@";
+"凭证擦除失败：%@" = "Could not erase the credential: %@";
+"gh 命令超时（%ds）" = "gh timed out (%ds)";
+"git --version 无法执行：%@" = "'git --version' could not run: %@";
+"安装后 git 无法执行：%@" = "git could not run after installation: %@";
+"tar 退出码 %d" = "tar exited with code %d";
+"更新包签名校验未通过：%@" = "Update signature check failed: %@";
+"更新包签名校验失败：%@" = "Update signature verification failed: %@";
+"更新包不是本应用（%@ ≠ %@）" = "The update is not this app (%@ ≠ %@)";
+"更新包签名团队不一致（%@ ≠ %@）" = "The update is signed by a different team (%@ ≠ %@)";
+"无" = "none";
+"生成时间: %@" = "Generated: %@";
+"版本: %@" = "Version: %@";
+"架构: %@" = "Architecture: %@";
+"语言: %@" = "Language: %@";
+"许可: %@（无账号、无订阅）" = "License: %@ (no account, no subscription)";
+"环境: %@" = "Environment: %@";
+"auto: 新建文件夹 " = "auto: new folder ";
+"无法预览这张图片" = "Could not preview this image";
+"可以用默认应用打开查看" = "Open it with the default app to view it";
+"恢复" = "Restore";
+/* v4.0.4: 历史窗口完整文件树 */
+"变更" = "Changed";
+"全部" = "All";
+"切换变更文件与完整文件树" = "Switch between changed files and the full file tree";
+"展开全部" = "Expand all";
+"折叠全部" = "Collapse all";
+"正在读取该版本的文件…" = "Reading files in this version…";
+"无法列出该版本的文件" = "Couldn't list files in this version";
+"这个版本里没有文件" = "No files in this version";
+"文件较多，仅显示前 %d 个" = "Many files — showing the first %d";
+"「%@」共有 %d 个文件" = "“%@” has %d files in total";
+"⚠️ 无法列出文件：%@" = "⚠️ Couldn't list files: %@";
+"这是子模块" = "This is a submodule";
+"这里只记录子模块的提交号，不能直接预览或恢复。" = "Only the submodule's commit ID is recorded here — it can't be previewed or restored.";
+

@@ -27,6 +27,13 @@ public final class CommitEngine: @unchecked Sendable {
     private var busyKeys: Set<String> = []
     private var recheckKeys: Set<String> = []
 
+    private let pendingLock = NSLock()
+    /// Changed paths (relative to the root) reported by the watcher since the
+    /// last commit run — used to materialise brand-new empty folders.
+    private var pendingPaths: [String: Set<String>] = [:]
+    /// When watching of a root started: only folders created after this are new.
+    private var watchStartedAt: [String: Date] = [:]
+
     public init(repoManager: RepoManager, debouncer: Debouncer, pause: PauseController) {
         self.repoManager = repoManager
         self.debouncer = debouncer
@@ -35,10 +42,47 @@ public final class CommitEngine: @unchecked Sendable {
 
     /// Called by WatcherEngine via the service: debounce-touch the root repo (FR-04).
     public func handleActivity(root: String) {
+        handleActivity(root: root, paths: [])
+    }
+
+    /// Same, with the paths that actually changed (relative to the root).
+    public func handleActivity(root: String, paths: [String]) {
         if ProcessInfo.processInfo.environment["FV_DEBUG"] != nil {
-            print("[FV_DEBUG] t=\(Int(Date().timeIntervalSince1970) % 1000) activity root=\(root)")
+            print("[FV_DEBUG] t=\(Int(Date().timeIntervalSince1970) % 1000) activity root=\(root) paths=\(paths.count)")
+        }
+        if !paths.isEmpty {
+            pendingLock.lock()
+            pendingPaths[root, default: []].formUnion(paths)
+            pendingLock.unlock()
         }
         debouncer.touch(root)
+    }
+
+    /// Mark the moment a root started being watched (new-folder detection).
+    public func registerRoot(_ root: String) {
+        pendingLock.lock()
+        watchStartedAt[root] = Date()
+        pendingLock.unlock()
+    }
+
+    /// Forget a root that is no longer watched.
+    public func unregisterRoot(_ root: String) {
+        pendingLock.lock()
+        watchStartedAt.removeValue(forKey: root)
+        pendingPaths.removeValue(forKey: root)
+        pendingLock.unlock()
+    }
+
+    /// Take (and clear) the changed paths reported for a root.
+    private func takePendingPaths(_ root: String) -> [String] {
+        pendingLock.lock(); defer { pendingLock.unlock() }
+        let paths = pendingPaths.removeValue(forKey: root) ?? []
+        return Array(paths)
+    }
+
+    private func watchStart(for root: String) -> Date {
+        pendingLock.lock(); defer { pendingLock.unlock() }
+        return watchStartedAt[root] ?? .distantPast
     }
 
     /// Debounce fired: run the commit pipeline for the repo at key (FR-04).
@@ -72,7 +116,17 @@ public final class CommitEngine: @unchecked Sendable {
             print("[FV_DEBUG] t=\(Int(Date().timeIntervalSince1970) % 1000) pipeline enter \(repoPath)")
         }
         // v4.0: the repo IS the root, so the pause scope is the repo path itself.
+        // While paused the pending paths stay queued for the resume commit.
         guard !pause.isPaused(root: repoPath) else { return }
+        // Git cannot track empty directories: a folder created while we watch
+        // would otherwise never appear in history. Give brand-new empty folders
+        // a hidden marker file so their creation becomes a real version.
+        let pending = takePendingPaths(repoPath)
+        let markerFolders = pending.isEmpty
+            ? []
+            : await repoManager.materializeEmptyDirectoryMarkers(path: repoPath,
+                                                                 candidates: pending,
+                                                                 since: watchStart(for: repoPath))
         let entries = (try? await repoManager.status(path: repoPath)) ?? []
         if ProcessInfo.processInfo.environment["FV_DEBUG"] != nil {
             print("[FV_DEBUG] status entries=\(entries.count)")
@@ -87,7 +141,17 @@ public final class CommitEngine: @unchecked Sendable {
         let committable = entries.filter { !excludedSet.contains($0.path) }
         do {
             guard !committable.isEmpty else { return }
-            let hash = try await repoManager.commitAll(path: repoPath, knownEntries: committable)
+            // Marker files are an implementation detail: hide them from the
+            // commit subject. A folder-only commit gets a readable message.
+            let markerPaths = Set(markerFolders.map { $0 + "/" + RepoManager.emptyFolderMarker })
+            let visibleEntries = committable.filter { !markerPaths.contains($0.path) }
+            let folderOnly = visibleEntries.isEmpty && !markerFolders.isEmpty
+            let message = folderOnly
+                ? "auto: 新建文件夹 " + markerFolders.joined(separator: "、")
+                : nil
+            let subjectEntries = visibleEntries.isEmpty ? committable : visibleEntries
+            let hash = try await repoManager.commitAll(path: repoPath, message: message,
+                                                       knownEntries: subjectEntries)
             if !hash.isEmpty {
                 onCommit?(repoPath, hash, Self.describe(entries: entries, excluded: excluded))
             }

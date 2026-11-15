@@ -98,10 +98,17 @@ public enum UpdateSignature {
 
         public var errorDescription: String? {
             switch self {
-            case .missingInfoPlist: return "更新包缺少 Info.plist"
-            case .invalidSignature(let detail): return "更新包签名校验失败：\(detail)"
-            case .wrongIdentifier(let expected, let got): return "更新包不是本应用（\(got) ≠ \(expected)）"
-            case .teamChanged(let current, let new): return "更新包签名团队不一致（\(new ?? "无") ≠ \(current ?? "无")）"
+            case .missingInfoPlist:
+                return NSLocalizedString("更新包缺少 Info.plist", comment: "update guard")
+            case .invalidSignature(let detail):
+                return String(format: NSLocalizedString("更新包签名校验失败：%@", comment: "update guard"), detail)
+            case .wrongIdentifier(let expected, let got):
+                return String(format: NSLocalizedString("更新包不是本应用（%@ ≠ %@）", comment: "update guard"),
+                              got, expected)
+            case .teamChanged(let current, let new):
+                let none = NSLocalizedString("无", comment: "update guard: none")
+                return String(format: NSLocalizedString("更新包签名团队不一致（%@ ≠ %@）", comment: "update guard"),
+                              new ?? none, current ?? none)
             }
         }
     }
@@ -119,7 +126,9 @@ public enum UpdateSignature {
                               referenceBundle: URL? = nil) throws {
         let info = inspect(newBundle)
         guard info.identifier != nil else { throw Failure.missingInfoPlist }
-        guard info.signatureValid else { throw Failure.invalidSignature("codesign --verify 未通过") }
+        guard info.signatureValid else {
+            throw Failure.invalidSignature(NSLocalizedString("codesign --verify 未通过", comment: "update guard"))
+        }
         guard info.identifier == expectedIdentifier else {
             throw Failure.wrongIdentifier(expectedIdentifier, info.identifier ?? "")
         }

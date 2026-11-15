@@ -120,21 +120,21 @@ public extension GitMirror {
     /// control. See docs/07-Git自动安装与镜像源.md for the measurement table.
     static let defaultLadder: [GitMirror] = [
         GitMirror(id: "github",
-                  name: "GitHub 官方",
+                  name: NSLocalizedString("GitHub 官方", comment: "git mirror name"),
                   template: "https://github.com/desktop/dugite-native/releases/download/{tag}/{asset}"),
         GitMirror(id: "ghfast",
-                  name: "ghfast.top 加速",
+                  name: NSLocalizedString("ghfast.top 加速", comment: "git mirror name"),
                   template: "https://ghfast.top/https://github.com/desktop/dugite-native/releases/download/{tag}/{asset}"),
         GitMirror(id: "gh-proxy",
-                  name: "gh-proxy.com 加速",
+                  name: NSLocalizedString("gh-proxy.com 加速", comment: "git mirror name"),
                   template: "https://gh-proxy.com/https://github.com/desktop/dugite-native/releases/download/{tag}/{asset}"),
         GitMirror(id: "ghproxy-cfd",
-                  name: "ghproxy.cfd 加速",
+                  name: NSLocalizedString("ghproxy.cfd 加速", comment: "git mirror name"),
                   template: "https://ghproxy.cfd/https://github.com/desktop/dugite-native/releases/download/{tag}/{asset}"),
         // Project-owned mirror: the same payload re-published on FileVault's own
         // releases, so a dead third-party accelerator never leaves users stuck.
         GitMirror(id: "filevault",
-                  name: "FileVault 自建镜像",
+                  name: NSLocalizedString("FileVault 自建镜像", comment: "git mirror name"),
                   template: "https://github.com/wjw1-Evan/FileVault/releases/download/git-{version}/{asset}"),
     ]
 }
@@ -325,18 +325,23 @@ public final class GitBinaryProvisioner: GitProvisioning, @unchecked Sendable {
                 progress?(.extracting, 0, mirror.name)
                 try Self.extract(archive: payload, into: unboxed)
                 guard let gitRoot = Self.locateGitRoot(in: unboxed) else {
-                    throw GitProvisionError.extractFailed("压缩包内没有找到 git")
+                    throw GitProvisionError.extractFailed(
+                        NSLocalizedString("压缩包内没有找到 git", comment: "git provision error"))
                 }
                 let candidate = gitRoot.appendingPathComponent("bin/git").path
                 progress?(.validating, 0, mirror.name)
                 guard Self.verifies(candidate) else {
-                    throw GitProvisionError.validationFailed("git --version 无法执行：\(candidate)")
+                    throw GitProvisionError.validationFailed(
+                        String(format: NSLocalizedString("git --version 无法执行：%@", comment: "git provision error"),
+                               candidate))
                 }
                 try Self.pruneUnusedHelpers(in: gitRoot, fileManager: fm)
                 try install(gitRoot, for: build)
                 let final = gitExecutable(in: targetDirectory(for: build))
                 guard Self.verifies(final) else {
-                    throw GitProvisionError.validationFailed("安装后 git 无法执行：\(final)")
+                    throw GitProvisionError.validationFailed(
+                        String(format: NSLocalizedString("安装后 git 无法执行：%@", comment: "git provision error"),
+                               final))
                 }
                 progress?(.ready, 1, final)
                 return final
@@ -406,7 +411,8 @@ public final class GitBinaryProvisioner: GitProvisioning, @unchecked Sendable {
         }
         guard removed > 0 else { return 0 }
         guard verifies(gitRoot.appendingPathComponent("bin/git").path) else {
-            throw GitProvisionError.validationFailed("移除非必需组件后 git 无法执行")
+            throw GitProvisionError.validationFailed(
+                NSLocalizedString("移除非必需组件后 git 无法执行", comment: "git provision error"))
         }
         return removed
     }
@@ -470,7 +476,11 @@ public final class GitBinaryProvisioner: GitProvisioning, @unchecked Sendable {
         guard process.terminationStatus == 0 else {
             let detail = String(decoding: err.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
                 .trimmingCharacters(in: .whitespacesAndNewlines)
-            throw GitProvisionError.extractFailed(detail.isEmpty ? "tar 退出码 \(process.terminationStatus)" : detail)
+            throw GitProvisionError.extractFailed(
+                detail.isEmpty
+                    ? String(format: NSLocalizedString("tar 退出码 %d", comment: "git provision error"),
+                             process.terminationStatus)
+                    : detail)
         }
     }
 

@@ -19,5 +19,5 @@ public enum AppBrand {
     public static let privacyURL = "https://github.com/wjw1-Evan/FileVault/blob/main/PRIVACY.md"
 
     /// FileVault is free to use, with no account, trial or activation.
-    public static let pricingNote = "永久免费"
+    public static let pricingNote = NSLocalizedString("永久免费", comment: "pricing note")
 }

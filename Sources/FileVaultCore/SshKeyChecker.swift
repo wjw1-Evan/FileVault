@@ -25,6 +25,6 @@ public final class SshKeyChecker: @unchecked Sendable {
 
     /// Human-readable guidance shown in settings when SSH remote is configured without a key.
     public var guidance: String? {
-        hasPublicKey ? nil : "未检测到 SSH 密钥。请在终端运行 ssh-keygen 生成，并把公钥添加到你的 Git 托管平台。"
+        hasPublicKey ? nil : NSLocalizedString("未检测到 SSH 密钥。请在终端运行 ssh-keygen 生成，并把公钥添加到你的 Git 托管平台。", comment: "ssh guidance")
     }
 }

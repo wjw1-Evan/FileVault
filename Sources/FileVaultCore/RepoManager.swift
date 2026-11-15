@@ -118,6 +118,65 @@ public final class RepoManager: @unchecked Sendable {
         return !entries.isEmpty
     }
 
+    // MARK: - Empty folders
+
+    /// Hidden marker that makes an otherwise empty folder versionable.
+    public static let emptyFolderMarker = ".gitkeep"
+
+    /// Git cannot track empty directories, so a brand-new empty folder would
+    /// never show up in history. Write a hidden marker into each such folder —
+    /// only when everything inside it is ignored (e.g. .DS_Store) — and return
+    /// the folder paths (relative to the repo root) that got one.
+    public func materializeEmptyDirectoryMarkers(path: String, candidates: [String],
+                                                 since: Date) async -> [String] {
+        let fm = FileManager.default
+        var marked: [String] = []
+        var seen = Set<String>()
+        for raw in candidates {
+            let rel = raw.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            guard !rel.isEmpty, seen.insert(rel).inserted else { continue }
+            let comps = rel.split(separator: "/")
+            guard !comps.contains(where: { $0 == ".git" }) else { continue }
+            let full = (path as NSString).appendingPathComponent(rel)
+            // Real directories only: never follow symlinks (a marker could land
+            // outside the protected folder) and never touch ignored folders
+            // (node_modules/ etc.).
+            let url = URL(fileURLWithPath: full)
+            guard let values = try? url.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey,
+                                                                 .creationDateKey]),
+                  values.isDirectory == true, values.isSymbolicLink != true else { continue }
+            // Only folders CREATED while we were watching count as new. An old
+            // empty folder that merely gets touched (Finder .DS_Store, mtime)
+            // must not produce a "new folder" version.
+            guard let created = values.creationDate, created >= since else { continue }
+            if let r = try? await runner.run(["check-ignore", "-q", rel], cwd: path), r.exitCode == 0 {
+                continue
+            }
+            let markerRel = rel + "/" + Self.emptyFolderMarker
+            if let r = try? await runner.run(["check-ignore", "-q", markerRel], cwd: path), r.exitCode == 0 {
+                continue
+            }
+            let children = (try? fm.contentsOfDirectory(atPath: full)) ?? []
+            // A folder with real content is committed through that content;
+            // only folders whose entries are all ignored need a marker.
+            var versionable = false
+            for child in children {
+                let childRel = rel + "/" + child
+                if let r = try? await runner.run(["check-ignore", "-q", childRel], cwd: path), r.exitCode == 0 {
+                    continue
+                }
+                versionable = true
+                break
+            }
+            guard !versionable else { continue }
+            let keep = (full as NSString).appendingPathComponent(Self.emptyFolderMarker)
+            if fm.fileExists(atPath: keep) { continue }
+            guard fm.createFile(atPath: keep, contents: Data()) else { continue }
+            marked.append(rel)
+        }
+        return marked
+    }
+
     /// Commit everything: add -A, build summary message from staged diff, commit.
     /// Returns the new commit hash.
     @discardableResult

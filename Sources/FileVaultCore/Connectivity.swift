@@ -12,17 +12,18 @@ public extension SyncManager {
     func testConnectivity(repoPath: String) async -> ConnectivityResult {
         let hasRemote = await repoManager.remoteURL(path: repoPath) != nil
         guard hasRemote else {
-            return ConnectivityResult(ok: false, detail: "未配置远程仓库")
+            return ConnectivityResult(ok: false, detail: NSLocalizedString("未配置远程仓库", comment: "connectivity"))
         }
         do {
             let r = try await repoManager.runner.run(["ls-remote", "origin", "HEAD"], cwd: repoPath, timeout: 20)
             if r.succeeded {
-                return ConnectivityResult(ok: true, detail: "连接成功")
+                return ConnectivityResult(ok: true, detail: NSLocalizedString("连接成功", comment: "connectivity"))
             }
-            let reason = r.stderr.split(separator: "\n").last.map(String.init) ?? "未知错误"
+            let reason = r.stderr.split(separator: "\n").last.map(String.init)
+                ?? NSLocalizedString("未知错误", comment: "connectivity")
             return ConnectivityResult(ok: false, detail: reason)
         } catch {
-            return ConnectivityResult(ok: false, detail: "连接超时或无法执行 git")
+            return ConnectivityResult(ok: false, detail: NSLocalizedString("连接超时或无法执行 git", comment: "connectivity"))
         }
     }
 }

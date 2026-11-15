@@ -111,7 +111,90 @@ final class LocalizationTests: XCTestCase {
         XCTAssertEqual(AppLanguage.storedValue(ConfigStore(directory: dir).load().general.language), .system)
     }
 
+    // MARK: - Interpolated strings
+
+    /// SwiftUI looks up an interpolated Text("...\(value)...") as a *format*
+    /// key ("...%@..."). A Chinese literal with interpolation therefore needs a
+    /// matching format entry, but chineseLiterals(in:) skips those — this test
+    /// closes that gap for the app target (core strings are technical/log data).
+    func testInterpolatedChineseLiteralsHaveFormatTranslations() throws {
+        let table = try Self.parseStrings()
+        func canon(_ s: String) -> String {
+            s.replacingOccurrences(of: "%(?:\\d+\\$)?[-+ 0#]*\\d*(?:\\.\\d+)?[a-zA-Z@]",
+                                   with: "%", options: .regularExpression)
+        }
+        let tableKeys = Set(table.keys.map(canon))
+        var missing: [String] = []
+        for file in try appSourceFiles() {
+            let raw = try String(contentsOfFile: file, encoding: .utf8)
+            for literal in interpolatedChineseLiterals(in: raw) where !tableKeys.contains(canon(literal)) {
+                missing.append(literal)
+            }
+        }
+        XCTAssertTrue(missing.isEmpty,
+                      "missing format translations (\(missing.count)): \(Set(missing).sorted().joined(separator: " | "))")
+    }
+
     // MARK: - Source scanning helpers
+
+    private func appSourceFiles() throws -> [String] {
+        try sourceFiles().filter { $0.contains("/Sources/FileVaultApp/") }
+    }
+
+    /// Chinese string literals containing \(...) interpolation, each
+    /// interpolation collapsed to "%"; comments and triple-quoted blocks skipped.
+    private func interpolatedChineseLiterals(in source: String) -> [String] {
+        let chars = Array(source)
+        var result: [String] = []
+        var i = 0
+        while i < chars.count {
+            if chars[i] == "/", i + 1 < chars.count, chars[i + 1] == "/" {
+                while i < chars.count, chars[i] != "\n" { i += 1 }
+                continue
+            }
+            guard chars[i] == "\"" else { i += 1; continue }
+            if i + 2 < chars.count, chars[i + 1] == "\"", chars[i + 2] == "\"" {
+                i += 3
+                continue
+            }
+            var literal = ""
+            var interpolated = false
+            var closed = false
+            i += 1
+            while i < chars.count {
+                let ch = chars[i]
+                if ch == "\\" {
+                    if i + 1 < chars.count, chars[i + 1] == "(" {
+                        interpolated = true
+                        literal.append("%")
+                        i += 2
+                        var depth = 1
+                        while i < chars.count, depth > 0 {
+                            if chars[i] == "(" { depth += 1 }
+                            if chars[i] == ")" { depth -= 1 }
+                            i += 1
+                        }
+                        continue
+                    }
+                    if i + 1 < chars.count {
+                        literal.append(chars[i + 1])
+                        i += 2
+                        continue
+                    }
+                }
+                if ch == "\"" { closed = true; i += 1; break }
+                if ch == "\n" { break }
+                literal.append(ch)
+                i += 1
+            }
+            if closed, interpolated, literal.contains("%"),
+               literal.range(of: "[\\u4e00-\\u9fff]", options: .regularExpression) != nil {
+                result.append(literal)
+            }
+        }
+        return result
+    }
+
 
     private func sourceFiles() throws -> [String] {
         let thisFile = URL(fileURLWithPath: #filePath)

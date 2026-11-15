@@ -15,9 +15,12 @@ public enum CredentialStore {
 
         public var errorDescription: String? {
             switch self {
-            case .helperUnavailable: return "本机凭证库不可用（请确认 git 安装完整）"
-            case .storeFailed(let m): return "凭证写入本机凭证库失败: " + m
-            case .eraseFailed(let m): return "凭证擦除失败: " + m
+            case .helperUnavailable:
+                return NSLocalizedString("本机凭证库不可用（请确认 git 安装完整）", comment: "credential error")
+            case .storeFailed(let m):
+                return String(format: NSLocalizedString("凭证写入本机凭证库失败：%@", comment: "credential error"), m)
+            case .eraseFailed(let m):
+                return String(format: NSLocalizedString("凭证擦除失败：%@", comment: "credential error"), m)
             }
         }
     }

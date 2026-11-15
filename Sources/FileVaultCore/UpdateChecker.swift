@@ -47,12 +47,18 @@ public enum UpdateError: Error, LocalizedError, Equatable {
 
     public var errorDescription: String? {
         switch self {
-        case .noRelease: return "未找到可用发布版本（网络不可达或 GitHub 受限）"
-        case .noAsset: return "发布版本缺少应用资产"
-        case .downloadFailed: return "下载更新失败"
-        case .checksumMismatch: return "更新包校验失败，已中止安装"
-        case .notBundled: return "仅 .app 包内运行时支持自动更新"
-        case .signatureRejected(let detail): return "更新包签名校验未通过：\(detail)"
+        case .noRelease:
+            return NSLocalizedString("未找到可用发布版本（网络不可达或 GitHub 受限）", comment: "update error")
+        case .noAsset:
+            return NSLocalizedString("发布版本缺少应用资产", comment: "update error")
+        case .downloadFailed:
+            return NSLocalizedString("下载更新失败", comment: "update error")
+        case .checksumMismatch:
+            return NSLocalizedString("更新包校验失败，已中止安装", comment: "update error")
+        case .notBundled:
+            return NSLocalizedString("仅 .app 包内运行时支持自动更新", comment: "update error")
+        case .signatureRejected(let detail):
+            return String(format: NSLocalizedString("更新包签名校验未通过：%@", comment: "update error"), detail)
         }
     }
 }

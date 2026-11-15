@@ -48,10 +48,55 @@ public extension HistoryService {
             throw GitCommandError(command: "diff-tree", exitCode: r.exitCode, stderr: r.stderr)
         }
         return r.stdout.split(separator: "\n").map(String.init).filter { !$0.isEmpty }
+            // The hidden marker only exists so Git can track folder creation;
+            // it is an implementation detail, not a user-visible changed file.
+            .filter { line in
+                let path = line.split(separator: "\t", maxSplits: 1).last.map(String.init) ?? line
+                return (path as NSString).lastPathComponent != RepoManager.emptyFolderMarker
+            }
     }
 }
 
 public extension HistoryService {
+    /// COMPLETE file listing of one commit (v4.0.4 "full file tree").
+    ///
+    /// `changedFiles` only reports what the commit touched; this returns the whole
+    /// snapshot, so files the commit did not modify can be browsed, previewed and
+    /// restored too. `-z` disables git's path quoting (raw UTF-8, spaces and tabs
+    /// stay literal), and records are "<mode> <type> <sha>\t<path>".
+    /// The hidden `.gitkeep` folder marker is filtered out, as in changedFiles.
+    func filesAtCommit(repoPath: String, hash: String,
+                       limit: Int = 10_000) async throws -> CommitFileList {
+        guard hash.range(of: "^[0-9a-fA-F]{4,40}$", options: .regularExpression) != nil else {
+            throw HistoryError.commitNotFound(hash)
+        }
+        let r = try await repoManager.runner.run(
+            ["ls-tree", "-r", "-z", "--full-tree", hash],
+            cwd: repoPath
+        )
+        guard r.succeeded else {
+            if r.stderr.contains("not a tree object") || r.stderr.contains("Not a valid object name") {
+                throw HistoryError.commitNotFound(hash)
+            }
+            throw GitCommandError(command: "ls-tree", exitCode: r.exitCode, stderr: r.stderr)
+        }
+        let cap = max(1, limit)
+        var entries: [CommitTreeEntry] = []
+        var truncated = false
+        for record in r.stdout.split(separator: "\u{0}", omittingEmptySubsequences: true) {
+            guard let tab = record.firstIndex(of: "\t") else { continue }
+            let meta = record[record.startIndex..<tab]
+            let path = String(record[record.index(after: tab)...])
+            guard !path.isEmpty else { continue }
+            // Folder marker is an implementation detail, not a user-visible file.
+            if (path as NSString).lastPathComponent == RepoManager.emptyFolderMarker { continue }
+            if entries.count >= cap { truncated = true; break }
+            let mode = String(meta.split(separator: " ").first ?? "")
+            entries.append(CommitTreeEntry(path: path, mode: mode))
+        }
+        return CommitFileList(entries: entries, truncated: truncated)
+    }
+
     /// Version timeline of ONE file: commits that touched it, newest first (v2.2.0).
     /// NUL-separated fields — see RepoManager.log (subject may contain "|").
     func fileHistory(repoPath: String, file: String, limit: Int = 100) async throws -> [CommitInfo] {
@@ -96,6 +141,50 @@ public extension HistoryService {
     /// v3.4.3: the history window can "open" a historical version of a file.
     /// `GitRunner` captures stdout as text (fine for diffs, lossy for images or
     /// PDFs), so the blob is streamed straight into a file handle here.
+    /// Raw bytes of one file at the given commit (binary-safe; images, PDFs, ...).
+    ///
+    /// fileContent returns GitRunner's UTF-8 stdout, which is lossy for binary
+    /// blobs. This pipes the exact blob into memory, reading before waiting so a
+    /// full pipe buffer can never dead-lock the process.
+    func fileData(repoPath: String, hash: String, file: String) async throws -> Data {
+        try RepoManager.validateRepoRelativePath(file)
+        guard hash.range(of: "^[0-9a-fA-F]{4,40}$", options: .regularExpression) != nil else {
+            throw HistoryError.commitNotFound(hash)
+        }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: repoManager.runner.gitExecutable)
+        process.arguments = ["-C", repoPath, "show", "\(hash):\(file)"]
+        process.environment = Self.gitEnvironment(for: repoManager.runner)
+        let outPipe = Pipe()
+        let errPipe = Pipe()
+        process.standardOutput = outPipe
+        process.standardError = errPipe
+        do {
+            try process.run()
+        } catch {
+            throw HistoryError.fileNotInCommit(file: file, hash: String(hash.prefix(7)))
+        }
+        let data = outPipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
+        guard process.terminationStatus == 0 else {
+            let detail = String(decoding: errData, as: UTF8.self)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            throw detail.isEmpty
+                ? HistoryError.fileNotInCommit(file: file, hash: String(hash.prefix(7)))
+                : HistoryError.exportFailed(file: file)
+        }
+        return data
+    }
+
+    /// Environment for a direct git invocation: a bundled git needs GIT_EXEC_PATH
+    /// and friends, which GitRunner carries but child Processes do not inherit.
+    static func gitEnvironment(for runner: GitRunner) -> [String: String] {
+        var env = ProcessInfo.processInfo.environment
+        for (key, value) in runner.baseEnvironment { env[key] = value }
+        return env
+    }
+
     func exportFile(repoPath: String, hash: String, file: String, to destination: URL) async throws {
         try RepoManager.validateRepoRelativePath(file)
         guard hash.range(of: "^[0-9a-fA-F]{4,40}$", options: .regularExpression) != nil else {
@@ -113,6 +202,7 @@ public extension HistoryService {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: repoManager.runner.gitExecutable)
         process.arguments = ["-C", repoPath, "show", "\(hash):\(file)"]
+        process.environment = Self.gitEnvironment(for: repoManager.runner)
         process.standardOutput = handle
         let errPipe = Pipe()
         process.standardError = errPipe

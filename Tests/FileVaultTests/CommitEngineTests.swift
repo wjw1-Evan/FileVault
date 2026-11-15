@@ -82,6 +82,96 @@ final class CommitEngineTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(n1, 2)
     }
 
+
+    /// Git cannot track empty directories: a folder created while FileVault is
+    /// watching must still become a version (via a hidden marker file, so a
+    /// rollback can recreate the folder).
+    func testEmptyFolderCreationCommits() async throws {
+        let repo = root + "/vault"
+        service.updateGeneral { $0.debounceSeconds = 1 }
+        try FileManager.default.createDirectory(atPath: repo + "/new-empty", withIntermediateDirectories: true)
+        let n = await waitForCommits(2, repo: repo)
+        XCTAssertGreaterThanOrEqual(n, 2, "creating an empty folder must auto-commit")
+
+        let log = try await service.repoManager.log(path: repo, max: 10)
+        let subject = log.first?.subject ?? ""
+        XCTAssertTrue(subject.contains("新建文件夹"), "folder-only commit needs a readable subject: \(subject)")
+        XCTAssertTrue(subject.contains("new-empty"), "subject names the new folder: \(subject)")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: repo + "/new-empty/.gitkeep"),
+                      "the marker keeps the empty folder versionable")
+        let tracked = await service.repoManager.listFiles(path: repo)
+        XCTAssertTrue(tracked.contains("new-empty/.gitkeep"), "marker is tracked: \(tracked)")
+
+        // The marker is an implementation detail — not a user-visible file.
+        let changed = try await service.history.changedFiles(repoPath: repo, hash: log[0].hash)
+        XCTAssertTrue(changed.isEmpty, "marker must be hidden from the changed-file list: \(changed)")
+    }
+
+    /// Folders that are ignored on purpose (node_modules/ etc.) must stay out
+    /// of history and must never receive a marker file.
+    func testEmptyFolderInsideIgnoredDirectoryDoesNotCommit() async throws {
+        let repo = root + "/vault"
+        service.updateGeneral { $0.debounceSeconds = 1 }
+        try FileManager.default.createDirectory(atPath: repo + "/node_modules/empty",
+                                                withIntermediateDirectories: true)
+        try? await Task.sleep(nanoseconds: 2_500_000_000)
+        let log = try await service.repoManager.log(path: repo, max: 10)
+        XCTAssertEqual(log.count, 1, "ignored folders must not create versions")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: repo + "/node_modules/empty/.gitkeep"))
+    }
+
+
+
+    /// A pre-existing empty folder must not be "versioned" just because some
+    /// event touches it later (Finder .DS_Store, mtime change, ...).
+    func testTouchingPreExistingEmptyFolderDoesNotCreateVersion() async throws {
+        let base = TestSupport.makeTempDir("preexist")
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let repo = base + "/vault"
+        try? FileManager.default.createDirectory(atPath: repo + "/old-empty", withIntermediateDirectories: true)
+        TestSupport.write("seed", to: repo + "/seed.md")
+        let service = FileVaultService(configDirectory: URL(fileURLWithPath: base + "/cfg"))
+        try await service.start()
+        try await service.addRoot(path: repo)
+        service.updateGeneral { $0.debounceSeconds = 1 }
+        // Not a creation: just a metadata change on the existing folder.
+        try? FileManager.default.setAttributes([.modificationDate: Date()], ofItemAtPath: repo + "/old-empty")
+        try? await Task.sleep(nanoseconds: 2_500_000_000)
+        let log = try await service.repoManager.log(path: repo, max: 10)
+        XCTAssertEqual(log.count, 1, "an old empty folder is not a new version: \(log.map(\.subject))")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: repo + "/old-empty/.gitkeep"))
+    }
+
+    /// Finder can leave an ignored .DS_Store in a brand-new folder; it is
+    /// still an empty folder as far as versioning is concerned.
+    func testFolderWithOnlyIgnoredFileStillCommits() async throws {
+        let repo = root + "/vault"
+        service.updateGeneral { $0.debounceSeconds = 1 }
+        try FileManager.default.createDirectory(atPath: repo + "/ds", withIntermediateDirectories: true)
+        TestSupport.write("x", to: repo + "/ds/.DS_Store")
+        let n = await waitForCommits(2, repo: repo)
+        XCTAssertGreaterThanOrEqual(n, 2, "an ignored-only folder still becomes a version")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: repo + "/ds/.gitkeep"))
+        let tracked = await service.repoManager.listFiles(path: repo)
+        XCTAssertTrue(tracked.contains("ds/.gitkeep"))
+        XCTAssertFalse(tracked.contains("ds/.DS_Store"), "ignored file stays out of the repo")
+    }
+
+    /// Creating a folder together with its first file is a normal content
+    /// commit (no folder-only message, no marker noise in the subject).
+    func testFolderWithFileUsesContentSubject() async throws {
+        let repo = root + "/vault"
+        service.updateGeneral { $0.debounceSeconds = 1 }
+        try FileManager.default.createDirectory(atPath: repo + "/docs", withIntermediateDirectories: true)
+        TestSupport.write("hello", to: repo + "/docs/a.md")
+        let n = await waitForCommits(2, repo: repo)
+        XCTAssertGreaterThanOrEqual(n, 2)
+        let log = try await service.repoManager.log(path: repo, max: 10)
+        let subject = log.first?.subject ?? ""
+        XCTAssertTrue(subject.contains("a.md"), "content commit names the file: \(subject)")
+        XCTAssertFalse(subject.contains("新建文件夹"), "normal commits keep the content subject")
+    }
+
     func testDeleteCommitsAsDeletion() async throws {
         let repo = root + "/vault"
         TestSupport.write("d1", to: repo + "/work/d.md")

@@ -84,6 +84,16 @@ enum SmokeTest {
                 waited2 += 0.5
             }
             print("[SMOKE][debug] commits=\(logs.count) subjects=\(logs.map(\.subject))")
+            // 5.5 complete file tree of the newest commit (v4.0.4): files the
+            // commit did not touch must still be listed and readable.
+            if let head = logs.first {
+                let list = (try? await service.history.filesAtCommit(repoPath: root, hash: head.hash)) ?? CommitFileList(entries: [])
+                let paths = Set(list.entries.map(\.path))
+                check("full tree lists untouched files",
+                      paths.contains("note.md") && paths.contains("lunwen/a.md"))
+                let note = try? await service.history.fileContent(repoPath: root, hash: head.hash, file: "note.md")
+                check("full tree file readable", note == "root note")
+            }
             // Roll the WHOLE folder back to its oldest commit (the initial
             // version captured at addRoot) and verify the nested file is v1.
             if let first = logs.last, logs.count >= 2 {

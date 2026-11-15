@@ -108,7 +108,7 @@ struct MenuContentView: View {
     private var rootsSection: some View {
         if app.roots.isEmpty {
             VStack(alignment: .leading, spacing: 7) {
-                Text("尚未添加根目录")
+                Text("尚未添加文件夹")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
                 Button("去设置添加…") { app.open("settings") }

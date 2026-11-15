@@ -257,9 +257,9 @@ public enum GitEnvError: Error, LocalizedError {
     public var errorDescription: String? {
         switch self {
         case .notFound:
-            return "未找到可用的 git，请安装 Xcode Command Line Tools 后重试"
+            return NSLocalizedString("未找到可用的 git，请安装 Xcode Command Line Tools 后重试", comment: "git setup error")
         case .installFailed:
-            return "git 自动安装未完成，请手动安装后重试"
+            return NSLocalizedString("git 自动安装未完成，请手动安装后重试", comment: "git setup error")
         case .provisionFailed(let detail):
             return String(format: NSLocalizedString("git 自动下载安装失败（已逐个尝试备用下载地址）。\n%@\n可以在「设置 → 诊断」导出诊断包，或手动安装 Xcode Command Line Tools 后重启应用。", comment: "git setup error"), detail)
         }

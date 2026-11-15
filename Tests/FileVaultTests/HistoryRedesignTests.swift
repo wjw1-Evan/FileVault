@@ -1,3 +1,4 @@
+import AppKit
 import XCTest
 @testable import FileVaultCore
 @testable import FileVaultApp
@@ -48,10 +49,22 @@ final class HistoryPreviewKindTests: XCTestCase {
         }
     }
 
+    func testImageExtensionsArePreviewedInline() {
+        for path in ["cover.png", "设计/封面.PNG", "photo.JPG", "a.jpeg", "anim.gif",
+                     "shot.heic", "pic.webp", "scan.tiff", "icon.icns"] {
+            XCTAssertEqual(HistoryPreviewKind.classify(path: path), .image, path)
+        }
+    }
+
     func testBinaryExtensionsAreNotInlined() {
-        for path in ["cover.png", "设计/封面.PNG", "scan.pdf", "archive.zip", "doc.docx"] {
+        for path in ["scan.pdf", "archive.zip", "doc.docx", "movie.mp4"] {
             XCTAssertEqual(HistoryPreviewKind.classify(path: path), .binary, path)
         }
+    }
+
+    func testImagePreviewLimitIsReasonable() {
+        XCTAssertGreaterThanOrEqual(HistoryPreviewKind.imagePreviewLimit, 4 * 1024 * 1024)
+        XCTAssertLessThanOrEqual(HistoryPreviewKind.imagePreviewLimit, 64 * 1024 * 1024)
     }
 
     func testTextPreviewLimitIsReasonable() {
@@ -92,6 +105,38 @@ final class HistoryPreviewModelTests: XCTestCase {
         XCTAssertNil(model.selectedFile)
         XCTAssertEqual(model.preview, .none)
     }
+
+    /// Images are decoded and shown inline; the raw blob must be exact.
+    @MainActor
+    func testSelectingAnImageLoadsInlinePreview() async throws {
+        let base = TestSupport.makeTempDir("hist-image")
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let vault = base + "/vault"
+        try? FileManager.default.createDirectory(atPath: vault, withIntermediateDirectories: true)
+        let png = try XCTUnwrap(Data(base64Encoded:
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="))
+        try png.write(to: URL(fileURLWithPath: vault + "/pic.png"))
+        let service = FileVaultService(configDirectory: URL(fileURLWithPath: base + "/cfg"))
+        try await service.start()
+        try await service.addRoot(path: vault)
+
+        let model = HistoryModel()
+        model.bind(AppState(service: service))
+        for _ in 0..<60 where model.files.isEmpty {
+            try await Task.sleep(nanoseconds: 100_000_000)
+        }
+        model.selectFile("pic.png")
+        for _ in 0..<60 {
+            if case .image = model.preview { break }
+            try await Task.sleep(nanoseconds: 100_000_000)
+        }
+        guard case .image(let data) = model.preview else {
+            XCTFail("expected inline image preview, got \(model.preview)")
+            return
+        }
+        XCTAssertEqual(data, png, "the exact blob must be handed to the preview")
+        XCTAssertNotNil(NSImage(data: data), "AppKit can decode the previewed bytes")
+    }
 }
 
 final class HistoryFileSizeTests: XCTestCase {
@@ -119,6 +164,32 @@ final class HistoryFileSizeTests: XCTestCase {
         }
     }
 }
+
+
+    func testFileDataReturnsExactBinaryBlob() async throws {
+        let base = TestSupport.makeTempDir("hist-data")
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let repo = base + "/repo"
+        try? FileManager.default.createDirectory(atPath: repo, withIntermediateDirectories: true)
+        let repos = RepoManager(runner: TestSupport.newRunner())
+        _ = try await repos.ensureRepo(at: repo)
+        // Not valid UTF-8: must still round-trip byte-for-byte.
+        let bytes = Data((0..<768).map { UInt8(($0 * 37) % 256) })
+        try bytes.write(to: URL(fileURLWithPath: repo + "/blob.bin"))
+        _ = try await repos.commitAll(path: repo)
+        let commits = try await repos.log(path: repo)
+        let hash = try XCTUnwrap(commits.first?.hash)
+        let history = HistoryService(repoManager: repos)
+
+        let got = try await history.fileData(repoPath: repo, hash: hash, file: "blob.bin")
+        XCTAssertEqual(got, bytes)
+        do {
+            _ = try await history.fileData(repoPath: repo, hash: hash, file: "missing.bin")
+            XCTFail("missing file must throw")
+        } catch {
+            XCTAssertTrue(error is HistoryError, "got \(error)")
+        }
+    }
 
 final class ConfigDirectoryOverrideTests: XCTestCase {
     func testFVConfigDirOverridesDefaultDirectory() {

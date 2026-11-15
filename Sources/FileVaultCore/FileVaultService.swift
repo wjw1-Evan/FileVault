@@ -117,6 +117,7 @@ public final class FileVaultService: @unchecked Sendable {
             cfg.roots.append(ManagedRoot(path: p))
             configStore.save(cfg)
         }
+        fireStateChange()
     }
 
     /// Stop watching and forget a root (repos on disk are left untouched).
@@ -127,9 +128,11 @@ public final class FileVaultService: @unchecked Sendable {
         watchers.removeValue(forKey: p)
         roots.removeAll { $0 == p }
         lock.unlock()
+        commitEngine.unregisterRoot(p)
         var cfg = configStore.load()
         cfg.roots.removeAll { $0.path == p }
         configStore.save(cfg)
+        fireStateChange()
     }
 
     /// Attach an existing root: prepare its repo and start its watcher.
@@ -158,8 +161,9 @@ public final class FileVaultService: @unchecked Sendable {
         watchers[p] = w
         if !roots.contains(p) { roots.append(p) }
         lock.unlock()
-        w.start(onActivity: { [weak self] in
-            self?.commitEngine.handleActivity(root: p)
+        commitEngine.registerRoot(p)
+        w.start(onActivityPaths: { [weak self] paths in
+            self?.commitEngine.handleActivity(root: p, paths: paths)
         })
     }
 
@@ -167,6 +171,7 @@ public final class FileVaultService: @unchecked Sendable {
 
     public func setGlobalPaused(_ p: Bool) async {
         pause.setGlobalPaused(p)
+        fireStateChange()
         // FR-13: resuming triggers a full check so paused changes get committed.
         if !p {
             await commitAllNow()
@@ -180,6 +185,7 @@ public final class FileVaultService: @unchecked Sendable {
             cfg.roots[idx].paused = p
             configStore.save(cfg)
         }
+        fireStateChange()
         if !p {
             await commitEngine.commitAllDirty(root: resolved(root))
         }
@@ -265,5 +271,7 @@ public final class FileVaultService: @unchecked Sendable {
 
 public enum FileVaultServiceError: LocalizedError {
     case rootMissing
-    public var errorDescription: String? { "根目录不存在或不可访问" }
+    public var errorDescription: String? {
+        NSLocalizedString("文件夹不存在或不可访问", comment: "service error")
+    }
 }

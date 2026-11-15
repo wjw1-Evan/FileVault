@@ -177,6 +177,83 @@ final class HistoryModelTests: XCTestCase {
         XCTAssertEqual(model.commits.count, 1)
     }
 
+
+    /// While the History window is open, background auto-commits must refresh
+    /// the timeline without any manual action (v2.6.5 state listener).
+    @MainActor
+    func testAutoCommitRefreshesOpenHistory() async throws {
+        let (model, _, base) = try await makeModel()
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        for _ in 0..<40 where model.commits.isEmpty {
+            try await Task.sleep(nanoseconds: 100_000_000)
+        }
+        XCTAssertEqual(model.commits.count, 1, "initial history loaded")
+        TestSupport.write("v2", to: base + "/vault/s.md")
+        for _ in 0..<120 where model.commits.count < 2 {
+            try await Task.sleep(nanoseconds: 200_000_000)
+        }
+        XCTAssertGreaterThanOrEqual(model.commits.count, 2,
+                                    "open history must refresh after an auto-commit")
+    }
+
+
+    /// Adding or removing a protected folder while History is open must update
+    /// the folder picker without reopening the window.
+    @MainActor
+    func testOpenHistoryTracksFolderListChanges() async throws {
+        let base = TestSupport.makeTempDir("histroots")
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let vault = base + "/vault"
+        try? FileManager.default.createDirectory(atPath: vault, withIntermediateDirectories: true)
+        TestSupport.write("s", to: vault + "/s.md")
+        let service = FileVaultService(configDirectory: URL(fileURLWithPath: base + "/cfg"))
+        try await service.start()
+        let model = HistoryModel()
+        model.bind(AppState(service: service))
+        XCTAssertTrue(model.roots.isEmpty)
+
+        try await service.addRoot(path: vault)
+        for _ in 0..<50 where model.roots.isEmpty {
+            try await Task.sleep(nanoseconds: 100_000_000)
+        }
+        XCTAssertEqual(model.roots, [vault], "new folder shows up without reopening")
+        XCTAssertEqual(model.selectedRepo, vault)
+
+        await service.removeRoot(path: vault)
+        for _ in 0..<50 where !model.roots.isEmpty {
+            try await Task.sleep(nanoseconds: 100_000_000)
+        }
+        XCTAssertTrue(model.roots.isEmpty, "removed folder disappears without reopening")
+        XCTAssertNil(model.selectedRepo)
+        XCTAssertEqual(model.statusText, "尚未添加任何文件夹——先在设置中添加文件夹")
+    }
+
+
+    /// Commits made outside FileVault (terminal, fetch/pull) fire no app event;
+    /// the fallback poll must pick them up without reopening the window.
+    @MainActor
+    func testPeriodicRefreshCatchesExternalCommits() async throws {
+        let (model, service, base) = try await makeModel()
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let repo = base + "/vault"
+        for _ in 0..<40 where model.commits.isEmpty {
+            try await Task.sleep(nanoseconds: 100_000_000)
+        }
+        XCTAssertEqual(model.commits.count, 1)
+
+        // Direct git commit: same effect as a manual terminal commit, no event.
+        TestSupport.write("manual", to: repo + "/s.md")
+        _ = try await service.repoManager.commitAll(path: repo, message: "manual commit")
+        XCTAssertEqual(model.commits.count, 1, "no state event -> model still stale")
+
+        model.periodicRefresh()
+        for _ in 0..<40 where model.commits.count < 2 {
+            try await Task.sleep(nanoseconds: 100_000_000)
+        }
+        XCTAssertGreaterThanOrEqual(model.commits.count, 2, "fallback poll refreshes history")
+        XCTAssertEqual(model.commits.first?.subject, "manual commit")
+    }
+
     @MainActor
     func testRestoreFeedbackAndCommitCount() async throws {
         let (model, service, base) = try await makeModel()

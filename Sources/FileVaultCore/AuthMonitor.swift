@@ -24,7 +24,7 @@ public enum AuthClassifier {
 
     /// Human guidance for an auth-related failure.
     public static func guidance() -> String {
-        "身份验证失败或已过期——请在设置中重新保存访问令牌（或检查 SSH 密钥/gh 登录状态）"
+        NSLocalizedString("身份验证失败或已过期——请在设置中重新保存访问令牌（或检查 SSH 密钥/gh 登录状态）", comment: "auth guidance")
     }
 }
 
@@ -108,8 +108,10 @@ public final class AuthMonitor: @unchecked Sendable {
             lock.unlock()
             if !conn.ok && !alreadyAlerted {
                 let message = AuthClassifier.isAuthRelated(conn.detail)
-                    ? AuthClassifier.guidance() + "（" + conn.detail + "）"
-                    : "远程仓库连接失败（" + conn.detail + "）"
+                    ? String(format: NSLocalizedString("%@（%@）", comment: "auth guidance detail"),
+                             AuthClassifier.guidance(), conn.detail)
+                    : String(format: NSLocalizedString("远程仓库连接失败（%@）", comment: "auth monitor"),
+                             conn.detail)
                 onAuthIssue(repo, message)
             }
         }

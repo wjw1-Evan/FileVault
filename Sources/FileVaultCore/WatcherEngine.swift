@@ -144,9 +144,17 @@ public final class WatcherEngine {
     }
 
     public func start(onActivity: @escaping @Sendable () -> Void) {
+        start(onActivityPaths: { _ in onActivity() })
+    }
+
+    /// Like start(onActivity:), but also reports the changed paths relative to
+    /// the watched root. The commit pipeline needs them to recognise brand-new
+    /// empty folders (Git cannot track an empty directory by itself).
+    public func start(onActivityPaths: @escaping @Sendable ([String]) -> Void) {
         let root = realRoot
         source.start(paths: [root]) { eventPaths in
-            var relevant = false
+            var relative: [String] = []
+            var seen = Set<String>()
             for p in eventPaths {
                 // Events for the root itself (attributes) carry no content change.
                 guard p.hasPrefix(root + "/") else { continue }
@@ -156,10 +164,9 @@ public final class WatcherEngine {
                 // user's own git tooling, nested repos) or the debounce would
                 // retrigger itself forever.
                 if comps.contains(where: { $0 == ".git" }) { continue }
-                relevant = true
-                break
+                if seen.insert(rel).inserted { relative.append(rel) }
             }
-            if relevant { onActivity() }
+            if !relative.isEmpty { onActivityPaths(relative) }
         }
     }
 

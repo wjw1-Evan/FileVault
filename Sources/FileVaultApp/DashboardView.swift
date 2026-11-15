@@ -209,7 +209,7 @@ struct DashboardView: View {
                        tint: .blue,
                        value: "\(model.rootCount)",
                        label: "受保护文件夹",
-                       caption: model.rootRows.isEmpty ? "尚未添加目录" : "全部纳入版本管理")
+                       caption: model.rootRows.isEmpty ? "尚未添加文件夹" : "全部纳入版本管理")
             FVStatTile(symbol: "clock.fill",
                        tint: .purple,
                        value: model.lastActivity.map(FVTime.relative) ?? "—",
@@ -297,13 +297,13 @@ struct DashboardView: View {
 
     private var rootsCard: some View {
         VStack(spacing: 0) {
-            FVSectionHeader(title: "受保护的目录",
+            FVSectionHeader(title: "受保护的文件夹",
                             trailing: String(format: NSLocalizedString("%d 个文件夹", comment: "dashboard caption"),
                                              model.rootCount))
             FVHairline(leading: 0)
             if model.rootsEmpty {
                 FVEmptyState(symbol: "folder.badge.plus",
-                             title: "还没有受保护的目录",
+                             title: "还没有受保护的文件夹",
                              message: "添加一个文件夹，里面的所有文件都会自动拥有版本历史。",
                              actionTitle: "打开设置",
                              action: { openWindow(id: "settings") })
@@ -321,7 +321,7 @@ struct DashboardView: View {
                         Button {
                             openWindow(id: "settings")
                         } label: {
-                            Text(String(format: NSLocalizedString("还有 %d 个目录…", comment: "dashboard overflow"),
+                            Text(String(format: NSLocalizedString("还有 %d 个文件夹…", comment: "dashboard overflow"),
                                         model.rootRows.count - Self.maxRootRows))
                                 .font(FVTheme.metaFont)
                                 .foregroundStyle(.secondary)
@@ -341,7 +341,7 @@ struct DashboardView: View {
                     HStack(spacing: 6) {
                         Image(systemName: "plus.circle.fill")
                             .font(.system(size: 11))
-                        Text("添加根目录…")
+                        Text("添加文件夹…")
                             .font(.system(size: 11, weight: .medium))
                         Spacer()
                     }
@@ -399,9 +399,9 @@ struct DashboardView: View {
                 Label("查看历史版本", systemImage: "clock.arrow.circlepath")
             }
             Spacer()
-            Text("自动提交已开启")
+            Text(app.paused ? "自动提交已暂停" : "自动提交已开启")
                 .font(.system(size: 10))
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(app.paused ? Color.orange : Color.secondary)
         }
         .controlSize(.regular)
         .padding(.top, 2)

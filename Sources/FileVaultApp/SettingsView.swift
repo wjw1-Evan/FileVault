@@ -193,7 +193,7 @@ final class SettingsModel: ObservableObject {
     func exportDiagnostics() {
         guard let svc = service, let app else { return }
         let panel = NSSavePanel()
-        panel.nameFieldStringValue = "FileVault-诊断-\(Self.dayStamp()).zip"
+        panel.nameFieldStringValue = String(format: NSLocalizedString("FileVault-诊断-%@.zip", comment: "diagnostics file name"), Self.dayStamp())
         panel.allowedContentTypes = [.zip]
         guard panel.runModal() == .OK, let dest = panel.url else { return }
         let report = SupportBundle.report(appVersion: app.version,
@@ -302,7 +302,7 @@ final class SettingsModel: ObservableObject {
                 reload()
             } catch {
                 // Never swallow add-root failures silently (v2.6.1).
-                await alert(NSLocalizedString("添加根目录失败", comment: "settings alert"), error.localizedDescription)
+                await alert(NSLocalizedString("添加文件夹失败", comment: "settings alert"), error.localizedDescription)
             }
         }
     }
@@ -637,7 +637,7 @@ struct SettingsView: View {
             }
             Button("取消", role: .cancel) { removeTarget = nil }
         } message: {
-            Text("FileVault 只是不再守卫这个目录，已经生成的 .git 历史不会被删除。")
+            Text("FileVault 只是不再守卫这个文件夹，已经生成的 .git 历史不会被删除。")
         }
     }
 
@@ -663,7 +663,7 @@ struct SettingsView: View {
     private var generalCard: some View {
         VStack(spacing: 0) {
             FVSectionHeader(title: "通用",
-                            subtitle: "影响所有受保护目录",
+                            subtitle: "影响所有受保护的文件夹",
                             trailing: app.version.isEmpty ? nil : "v\(app.version)")
             FVHairline(leading: 0)
             if LaunchAtLogin.available {
@@ -941,9 +941,9 @@ struct SettingsView: View {
     private var emptyRootsCard: some View {
         VStack(spacing: 0) {
             FVEmptyState(symbol: "folder.badge.plus",
-                         title: "还没有受保护的目录",
+                         title: "还没有受保护的文件夹",
                          message: "选一个文件夹，它里面的所有文件都会自动拥有版本历史。",
-                         actionTitle: "选择目录…",
+                         actionTitle: "选择文件夹…",
                          action: { model.showFileImporter = true })
         }
         .fvCard()

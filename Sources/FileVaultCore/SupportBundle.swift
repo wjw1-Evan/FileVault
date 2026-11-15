@@ -19,30 +19,35 @@ public enum SupportBundle {
         let os = ProcessInfo.processInfo.operatingSystemVersionString
         let arch = ProcessInfo.processInfo.machineHardwareName ?? "unknown"
         var lines: [String] = []
-        lines.append("FileVault 诊断报告")
-        lines.append("生成时间: " + ISO8601DateFormatter().string(from: now))
+        lines.append(NSLocalizedString("FileVault 诊断报告", comment: "diagnostics report"))
+        lines.append(String(format: NSLocalizedString("生成时间: %@", comment: "diagnostics report"),
+                            ISO8601DateFormatter().string(from: now)))
         lines.append("")
-        lines.append("## 应用")
-        lines.append("版本: " + appVersion)
-        lines.append("Bundle ID: " + bundleIdentifier)
-        lines.append("macOS: " + os)
-        lines.append("架构: " + arch)
-        lines.append("语言: " + Locale.current.identifier)
-        lines.append("许可: " + AppBrand.pricingNote + "（无账号、无订阅）")
+        lines.append(NSLocalizedString("## 应用", comment: "diagnostics report"))
+        lines.append(String(format: NSLocalizedString("版本: %@", comment: "diagnostics report"), appVersion))
+        lines.append(String(format: NSLocalizedString("Bundle ID: %@", comment: "diagnostics report"), bundleIdentifier))
+        lines.append(String(format: NSLocalizedString("macOS: %@", comment: "diagnostics report"), os))
+        lines.append(String(format: NSLocalizedString("架构: %@", comment: "diagnostics report"), arch))
+        lines.append(String(format: NSLocalizedString("语言: %@", comment: "diagnostics report"),
+                            Locale.current.identifier))
+        lines.append(String(format: NSLocalizedString("许可: %@（无账号、无订阅）", comment: "diagnostics report"),
+                            AppBrand.pricingNote))
         lines.append("")
-        lines.append("## Git")
-        lines.append("环境: " + (gitDescription ?? "未检测到"))
+        lines.append(NSLocalizedString("## Git", comment: "diagnostics report"))
+        lines.append(String(format: NSLocalizedString("环境: %@", comment: "diagnostics report"),
+                            gitDescription ?? NSLocalizedString("未检测到", comment: "diagnostics report")))
         lines.append("")
-        lines.append("## 受保护的目录（已脱敏）")
+        lines.append(NSLocalizedString("## 受保护的文件夹（已脱敏）", comment: "diagnostics report"))
         if roots.isEmpty {
-            lines.append("（无）")
+            lines.append(NSLocalizedString("（无）", comment: "diagnostics report"))
         } else {
             for root in roots {
-                lines.append("- " + Self.masked(root) + "（1 个仓库）")
+                lines.append("- " + Self.masked(root)
+                             + NSLocalizedString("（1 个仓库）", comment: "diagnostics report"))
             }
         }
         lines.append("")
-        lines.append("## 配置（已脱敏）")
+        lines.append(NSLocalizedString("## 配置（已脱敏）", comment: "diagnostics report"))
         if let config {
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
@@ -50,14 +55,15 @@ public enum SupportBundle {
                let json = String(data: data, encoding: .utf8) {
                 lines.append(Self.masked(json))
             } else {
-                lines.append("（无法序列化配置）")
+                lines.append(NSLocalizedString("（无法序列化配置）", comment: "diagnostics report"))
             }
         } else {
-            lines.append("（未加载配置）")
+            lines.append(NSLocalizedString("（未加载配置）", comment: "diagnostics report"))
         }
         lines.append("")
-        lines.append("## 隐私说明")
-        lines.append("本报告不含任何文件内容、远程地址或账号；路径已替换为 ~。")
+        lines.append(NSLocalizedString("## 隐私说明", comment: "diagnostics report"))
+        lines.append(NSLocalizedString("本报告不含任何文件内容、远程地址或账号；路径已替换为 ~。",
+                                       comment: "diagnostics report"))
         return lines.joined(separator: "\n") + "\n"
     }
 
@@ -101,7 +107,9 @@ public enum SupportBundle {
 
     public enum DiagnosticsError: Error, LocalizedError {
         case exportFailed
-        public var errorDescription: String? { "诊断包生成失败，请检查目标位置是否可写" }
+        public var errorDescription: String? {
+            NSLocalizedString("诊断包生成失败，请检查目标位置是否可写", comment: "diagnostics error")
+        }
     }
 
     // MARK: - Helpers

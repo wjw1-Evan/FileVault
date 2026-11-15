@@ -25,15 +25,25 @@ enum FilePreviewState: Equatable {
     case none
     case loading
     case text(String)
+    case image(Data)      // raw image bytes, rendered inline
     case binary(Int)      // byte size
     case tooLarge(Int)    // byte size
     case deleted
     case failed(String)
+    case submodule
+}
+
+/// Which list the detail pane shows (v4.0.4): the files this commit touched,
+/// or the complete snapshot ("full file tree") at that commit.
+enum FileListMode: Equatable {
+    case changed
+    case all
 }
 
 /// Cheap extension-based classification: inline as text or hand to the default app.
 enum HistoryPreviewKind: Equatable {
     case text
+    case image
     case binary
 
     static let textExtensions: Set<String> = [
@@ -43,13 +53,23 @@ enum HistoryPreviewKind: Equatable {
         "tex", "bib", "sql", "diff", "patch", "plist",
     ]
 
+    /// Formats NSImage can decode; previewed inline in the history pane.
+    static let imageExtensions: Set<String> = [
+        "png", "jpg", "jpeg", "jfif", "gif", "heic", "heif", "webp", "bmp", "tif", "tiff",
+        "ico", "icns",
+    ]
+
     /// Text blobs larger than this are not inlined.
     static let textPreviewLimit = 250 * 1024
+    /// Images larger than this are not decoded inline (memory guard).
+    static let imagePreviewLimit = 20 * 1024 * 1024
 
     static func classify(path: String) -> HistoryPreviewKind {
         let ext = (path as NSString).pathExtension.lowercased()
         if ext.isEmpty { return .text }
-        return textExtensions.contains(ext) ? .text : .binary
+        if textExtensions.contains(ext) { return .text }
+        if imageExtensions.contains(ext) { return .image }
+        return .binary
     }
 }
 
@@ -105,6 +125,20 @@ final class HistoryModel: ObservableObject {
     @Published var commits: [CommitInfo] = []
     @Published var selectedCommitHash: String?
     @Published var files: [ChangedFile] = []
+    /// "[changed | all]" selector in the detail pane.
+    @Published var fileListMode: FileListMode = .changed
+    /// Complete snapshot of the selected commit, as a folder/file tree.
+    @Published var treeNodes: [HistoryTreeNode] = []
+    @Published var treeFileCount = 0
+    @Published var treeTruncated = false
+    @Published var treeLoading = false
+    @Published var treeError: String?
+    /// Folders currently expanded in the tree view.
+    @Published var expandedDirs: Set<String> = []
+    /// Submodule paths in the snapshot (recorded commit only, no content).
+    @Published var submodulePaths: Set<String> = []
+    /// path -> A/M/D status character of the selected commit (tree badges).
+    @Published var changedStatus: [String: String] = [:]
     @Published var statusText = NSLocalizedString("选择一个提交，查看并恢复它包含的文件", comment: "history status")
     /// Local filter over the loaded commit subjects / short hashes.
     @Published var searchText = ""
@@ -117,6 +151,9 @@ final class HistoryModel: ObservableObject {
     private var loadGeneration = 0
     private var filesGeneration = 0
     private var previewGeneration = 0
+    private var treeGeneration = 0
+    /// Commit whose snapshot is currently loaded (tree cache key).
+    private var treeCommitHash: String?
     private var currentCommit: CommitInfo?
     private var pendingStateReload: Task<Void, Never>?
 
@@ -131,10 +168,13 @@ final class HistoryModel: ObservableObject {
     }
 
     func bind(_ app: AppState) {
-        guard self.app == nil else { return }
         self.app = app
-        reloadRepos()
-        listenerToken = app.service?.addStateListener { [weak self] in
+        if roots.isEmpty { reloadRepos() }
+        // The window may be hidden and shown again: onDisappear removed the
+        // listener, so re-register it here (otherwise refresh would silently
+        // stop after the first close).
+        guard listenerToken == nil, let svc = app.service else { return }
+        listenerToken = svc.addStateListener { [weak self] in
             Task { @MainActor in self?.handleExternalStateChange() }
         }
     }
@@ -145,15 +185,52 @@ final class HistoryModel: ObservableObject {
         pendingStateReload?.cancel()
     }
 
-    /// While visible, background auto-commits refresh the lists too; rapid
-    /// state flips coalesce through one debounced task (v2.6.5).
+    /// While visible, background auto-commits and folder add/remove refresh the
+    /// lists too; rapid state flips coalesce through one debounced task (v2.6.5).
     private func handleExternalStateChange() {
         pendingStateReload?.cancel()
         pendingStateReload = Task { [weak self] in
             try? await Task.sleep(nanoseconds: 400_000_000)
             guard !Task.isCancelled else { return }
-            await self?.reloadCommits(preserveSelection: true)
+            self?.refreshAfterExternalChange()
         }
+    }
+
+    private func refreshAfterExternalChange() {
+        guard let svc = app?.service else { return }
+        let latest = svc.rootsSnapshot()
+        if latest != roots {
+            let previous = selectedRoot
+            roots = latest
+            if latest.isEmpty {
+                selectedRoot = nil
+                populateRepos()
+                return
+            }
+            if previous == nil || !latest.contains(previous!) {
+                selectedRoot = latest.first
+                populateRepos()
+                return
+            }
+            // The selected folder survived; fall through to a commit reload.
+        }
+        // Cheap HEAD check first: sync-status flips and duplicate notifications
+        // must not reload (or flicker) the history while the user is reading it.
+        guard let repo = selectedRepo else { return }
+        Task { [weak self] in
+            let head = try? await svc.repoManager.resolveHead(path: repo)
+            await MainActor.run {
+                guard let self, self.selectedRepo == repo else { return }
+                if let head, self.commits.first?.hash == head { return }
+                self.reloadCommits(preserveSelection: true)
+            }
+        }
+    }
+
+    /// Fallback poll for changes that produce no app event (e.g. a commit made
+    /// from a terminal). Cheap no-op when HEAD did not move.
+    func periodicRefresh() {
+        refreshAfterExternalChange()
     }
 
     func reloadRepos() {
@@ -165,11 +242,15 @@ final class HistoryModel: ObservableObject {
 
     private func populateRepos() {
         guard app?.service != nil, let root = selectedRoot else {
+            loadGeneration += 1
+            selectedRepo = nil
             files = []
             commits = []
             selectedCommitHash = nil
             selectedFile = nil
             preview = .none
+            changedStatus = [:]
+            resetTreeState()
             statusText = NSLocalizedString("尚未添加任何文件夹——先在设置中添加文件夹", comment: "history status")
             return
         }
@@ -195,7 +276,10 @@ final class HistoryModel: ObservableObject {
         loadGeneration += 1
         let generation = loadGeneration
         let preservedHash = preserveSelection ? selectedCommitHash : nil
-        statusText = NSLocalizedString("正在加载提交历史…", comment: "history status")
+        // Background refreshes must not flash a loading status over the footer.
+        if !preserveSelection {
+            statusText = NSLocalizedString("正在加载提交历史…", comment: "history status")
+        }
         Task { [weak self] in
             guard let self else { return }
             let raw = (try? await svc.history.commits(repoPath: repo, limit: 100)) ?? []
@@ -216,6 +300,13 @@ final class HistoryModel: ObservableObject {
                 return
             }
             self.commits = list
+            // New commits do not change the content of the commit the user is
+            // reading: keep the selection, its file list and the preview intact.
+            if preserveSelection, let preservedHash,
+               list.contains(where: { $0.hash == preservedHash }),
+               self.selectedCommitHash == preservedHash, !self.files.isEmpty {
+                return
+            }
             var target = 0
             if let preservedHash, let idx = list.firstIndex(where: { $0.hash == preservedHash }) {
                 target = idx
@@ -238,10 +329,14 @@ final class HistoryModel: ObservableObject {
               let hash = selectedCommitHash,
               let commit = commits.first(where: { $0.hash == hash }) else {
             files = []
+            changedStatus = [:]
+            resetTreeState()
             statusText = NSLocalizedString("选择一个提交以查看其包含的文件", comment: "history status")
             return
         }
         currentCommit = commit
+        changedStatus = [:]
+        resetTreeState()
         filesGeneration += 1
         let generation = filesGeneration
         Task { [weak self] in
@@ -253,6 +348,7 @@ final class HistoryModel: ObservableObject {
                 let path = parts.count > 1 ? String(parts[1]) : line
                 return ChangedFile(id: path, status: parts.count > 1 ? String(parts[0]) : "?", path: path)
             }
+            self.changedStatus = Dictionary(uniqueKeysWithValues: self.files.map { ($0.path, $0.statusCharacter) })
             // Keep the file the user was reading when possible; otherwise
             // auto-preview the first changed file so the pane is never empty.
             if let previousFile, self.files.contains(where: { $0.path == previousFile }) {
@@ -264,6 +360,8 @@ final class HistoryModel: ObservableObject {
                 ? String(format: NSLocalizedString("「%@」没有文件变更", comment: "history status"), commit.subject)
                 : String(format: NSLocalizedString("「%@」包含 %d 个文件", comment: "history status"),
                          commit.subject, self.files.count)
+            // The tree is lazy: only load it when that pane is actually visible.
+            if self.fileListMode == .all { self.loadFileTree() }
         }
     }
 
@@ -274,6 +372,121 @@ final class HistoryModel: ObservableObject {
         loadChangedFiles()
     }
 
+    // MARK: - Full file tree (v4.0.4)
+
+    /// Switch between the commit's changed files and its complete snapshot.
+    /// The snapshot is loaded lazily and cached per commit.
+    func setFileListMode(_ mode: FileListMode) {
+        guard mode != fileListMode else { return }
+        fileListMode = mode
+        if mode == .all { loadFileTree() }
+        refreshStatusForMode()
+    }
+
+    /// Load the complete snapshot of the selected commit.
+    ///
+    /// `git ls-tree` returns every file at that commit, not just the ones the
+    /// commit touched, so unchanged files become browsable and restorable too.
+    func loadFileTree(force: Bool = false) {
+        guard let svc = app?.service, let repo = selectedRepo,
+              let hash = selectedCommitHash,
+              let commit = commits.first(where: { $0.hash == hash }) else {
+            resetTreeState()
+            return
+        }
+        if !force, treeCommitHash == commit.hash, !treeNodes.isEmpty { return }
+        treeGeneration += 1
+        let generation = treeGeneration
+        treeCommitHash = commit.hash
+        treeNodes = []
+        treeFileCount = 0
+        treeTruncated = false
+        treeError = nil
+        treeLoading = true
+        submodulePaths = []
+        expandedDirs = []
+        refreshStatusForMode()
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                let list = try await svc.history.filesAtCommit(repoPath: repo, hash: commit.hash)
+                guard generation == self.treeGeneration else { return }
+                let nodes = HistoryTree.build(entries: list.entries)
+                self.treeNodes = nodes
+                self.treeFileCount = list.count
+                self.treeTruncated = list.truncated
+                self.submodulePaths = Set(list.entries.filter { $0.kind == .submodule }.map(\.path))
+                self.treeLoading = false
+                // Folders start fully expanded one level deep so the tree is
+                // immediately browsable; a selected file is revealed to its root.
+                var expanded = Set(nodes.filter(\.isDirectory).map(\.path))
+                if let file = self.selectedFile {
+                    expanded.formUnion(HistoryTree.ancestorDirectories(of: file))
+                }
+                self.expandedDirs = expanded
+                self.refreshStatusForMode()
+            } catch {
+                guard generation == self.treeGeneration else { return }
+                self.treeLoading = false
+                self.treeError = error.localizedDescription
+                self.refreshStatusForMode()
+            }
+        }
+    }
+
+    /// Footer text follows the visible list: changed-file counts vs snapshot.
+    private func refreshStatusForMode() {
+        guard let commit = currentCommit else { return }
+        // Never overwrite an operation result (restore/open/rollback feedback).
+        if statusText.hasPrefix("✓") || statusText.hasPrefix("⚠️") { return }
+        switch fileListMode {
+        case .changed:
+            statusText = files.isEmpty
+                ? String(format: NSLocalizedString("「%@」没有文件变更", comment: "history status"), commit.subject)
+                : String(format: NSLocalizedString("「%@」包含 %d 个文件", comment: "history status"),
+                         commit.subject, files.count)
+        case .all:
+            if treeLoading {
+                statusText = NSLocalizedString("正在读取该版本的文件…", comment: "history status")
+            } else if let treeError {
+                statusText = String(format: NSLocalizedString("⚠️ 无法列出文件：%@", comment: "history status"),
+                                    treeError)
+            } else {
+                statusText = String(format: NSLocalizedString("「%@」共有 %d 个文件", comment: "history status"),
+                                    commit.subject, treeFileCount)
+            }
+        }
+    }
+
+    func toggleDirectory(_ path: String) {
+        if expandedDirs.contains(path) {
+            expandedDirs.remove(path)
+        } else {
+            expandedDirs.insert(path)
+        }
+    }
+
+    var areAllFoldersExpanded: Bool {
+        guard !treeNodes.isEmpty else { return false }
+        return expandedDirs == HistoryTree.allDirectoryPaths(treeNodes)
+    }
+
+    func setAllFoldersExpanded(_ expanded: Bool) {
+        expandedDirs = expanded ? HistoryTree.allDirectoryPaths(treeNodes) : []
+    }
+
+    private func resetTreeState() {
+        treeGeneration += 1
+        treeNodes = []
+        treeFileCount = 0
+        treeTruncated = false
+        treeLoading = false
+        treeError = nil
+        treeCommitHash = nil
+        expandedDirs = []
+        submodulePaths = []
+    }
+
     // MARK: - File preview (v4.0.1 history redesign)
 
     /// Select a file in the detail pane and load its preview at the commit.
@@ -282,6 +495,10 @@ final class HistoryModel: ObservableObject {
         selectedFile = path
         previewGeneration += 1
         let generation = previewGeneration
+        // Reveal the file inside the tree view (also when switching modes).
+        if let path, !path.isEmpty {
+            expandedDirs.formUnion(HistoryTree.ancestorDirectories(of: path))
+        }
         guard let path, let svc = app?.service, let repo = selectedRepo, let commit = currentCommit else {
             preview = .none
             return
@@ -290,27 +507,45 @@ final class HistoryModel: ObservableObject {
             preview = .deleted
             return
         }
+        if submodulePaths.contains(path) {
+            preview = .submodule
+            return
+        }
         let kind = HistoryPreviewKind.classify(path: path)
         preview = .loading
         Task { [weak self] in
             guard let self else { return }
             let size = (try? await svc.history.fileSize(repoPath: repo, hash: commit.hash, file: path)) ?? 0
             guard generation == self.previewGeneration else { return }
-            if kind == .binary {
+            switch kind {
+            case .binary:
                 self.preview = .binary(size)
-                return
-            }
-            if size > HistoryPreviewKind.textPreviewLimit {
-                self.preview = .tooLarge(size)
-                return
-            }
-            do {
-                let text = try await svc.history.fileContent(repoPath: repo, hash: commit.hash, file: path)
-                guard generation == self.previewGeneration else { return }
-                self.preview = .text(text)
-            } catch {
-                guard generation == self.previewGeneration else { return }
-                self.preview = .failed(error.localizedDescription)
+            case .image:
+                guard size <= HistoryPreviewKind.imagePreviewLimit else {
+                    self.preview = .tooLarge(size)
+                    return
+                }
+                do {
+                    let data = try await svc.history.fileData(repoPath: repo, hash: commit.hash, file: path)
+                    guard generation == self.previewGeneration else { return }
+                    self.preview = NSImage(data: data) != nil ? .image(data) : .binary(size)
+                } catch {
+                    guard generation == self.previewGeneration else { return }
+                    self.preview = .failed(error.localizedDescription)
+                }
+            case .text:
+                guard size <= HistoryPreviewKind.textPreviewLimit else {
+                    self.preview = .tooLarge(size)
+                    return
+                }
+                do {
+                    let text = try await svc.history.fileContent(repoPath: repo, hash: commit.hash, file: path)
+                    guard generation == self.previewGeneration else { return }
+                    self.preview = .text(text)
+                } catch {
+                    guard generation == self.previewGeneration else { return }
+                    self.preview = .failed(error.localizedDescription)
+                }
             }
         }
     }
@@ -437,13 +672,23 @@ struct HistoryView: View {
         }
         .frame(minWidth: 980, minHeight: 620)
         .fvCanvas()
-        .task { model.bind(app) }
+        .task {
+            model.bind(app)
+            // Fallback poll: catches commits made outside FileVault (terminal,
+            // a fetch/pull, another tool) which fire no app event. The HEAD
+            // comparison makes it a no-op when nothing changed.
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 15_000_000_000)
+                guard !Task.isCancelled else { break }
+                model.periodicRefresh()
+            }
+        }
         .onDisappear { model.unbind() }
         .confirmationDialog("回滚确认", isPresented: $confirmRollback, titleVisibility: .visible) {
-            Button("回滚整个文件夹到该版本", role: .destructive) { model.rollback() }
+            Button("回滚到该版本", role: .destructive) { model.rollback() }
             Button("取消", role: .cancel) {}
         } message: {
-            Text("文件夹会回到这个版本，之后的提交从当前分支移除。未提交的改动会先自动保存，回滚前的状态也会备份到隐藏 ref（refs/filevault/backup，可用 git 找回），不会永久丢失。")
+            Text("文件夹中受版本管理的内容会回到这个版本，其后的提交从当前分支移除。被忽略的文件、大文件和嵌套仓库保持原样；已绑定的远程仓库不会跟着回退（之后「拉取远程更新」可能把版本带回来）。未提交的改动会先自动保存，回滚前的状态备份到隐藏 ref（refs/filevault/backup，可用 git 找回），不会永久丢失。")
         }
     }
 
@@ -528,7 +773,7 @@ struct HistoryView: View {
 
     private var noRoots: some View {
         FVEmptyState(symbol: "folder.badge.plus",
-                     title: "还没有受保护的目录",
+                     title: "还没有受保护的文件夹",
                      message: "在设置里添加一个文件夹，它里面每次改动都会在这里留下一条记录。",
                      actionTitle: "打开设置",
                      action: { openWindow(id: "settings") })
@@ -673,44 +918,140 @@ struct HistoryView: View {
     private var filesSection: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 7) {
-                Text("变更文件")
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(.tertiary)
-                Text("\(model.files.count)")
+                Picker("", selection: Binding(
+                    get: { model.fileListMode },
+                    set: { model.setFileListMode($0) }
+                )) {
+                    Text("变更").tag(FileListMode.changed)
+                    Text("全部").tag(FileListMode.all)
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .controlSize(.small)
+                .frame(width: 112)
+                .help("切换变更文件与完整文件树")
+                Text(fileCountText)
                     .font(.system(size: 9.5, weight: .medium))
                     .foregroundStyle(.tertiary)
                     .monospacedDigit()
                 Spacer(minLength: 0)
+                if model.fileListMode == .all && !model.treeNodes.isEmpty {
+                    Button(model.areAllFoldersExpanded ? "折叠全部" : "展开全部") {
+                        model.setAllFoldersExpanded(!model.areAllFoldersExpanded)
+                    }
+                    .buttonStyle(.borderless)
+                    .controlSize(.small)
+                    .font(.system(size: 10))
+                }
             }
             .padding(.horizontal, 18)
             .padding(.top, 10)
             .padding(.bottom, 5)
 
-            if model.files.isEmpty {
-                Text("没有文件变更")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.tertiary)
-                    .padding(.horizontal, 18)
-                    .padding(.vertical, 10)
+            if model.fileListMode == .changed {
+                changedFilesList
             } else {
-                ScrollView {
-                    VStack(spacing: 2) {
-                        ForEach(model.files) { file in
-                            ChangedFileRow(file: file,
-                                           selected: file.path == model.selectedFile,
-                                           onSelect: { model.selectFile(file.path) },
-                                           onOpen: { model.openFile(file.path) },
-                                           onRestore: { model.restoreFile(file.path) })
-                        }
-                    }
-                    .padding(.horizontal, 8)
-                    .padding(.bottom, 6)
-                }
-                // Fit the rows instead of reserving a fixed 220pt band: with
-                // two files that band left a large dead gap above the preview.
-                .frame(height: filesListHeight)
+                fullTreeList
             }
         }
+    }
+
+    private var fileCountText: String {
+        model.fileListMode == .changed ? "\(model.files.count)" : "\(model.treeFileCount)"
+    }
+
+    @ViewBuilder
+    private var changedFilesList: some View {
+        if model.files.isEmpty {
+            Text("没有文件变更")
+                .font(.system(size: 11))
+                .foregroundStyle(.tertiary)
+                .padding(.horizontal, 18)
+                .padding(.vertical, 10)
+        } else {
+            ScrollView {
+                VStack(spacing: 2) {
+                    ForEach(model.files) { file in
+                        ChangedFileRow(file: file,
+                                       selected: file.path == model.selectedFile,
+                                       onSelect: { model.selectFile(file.path) },
+                                       onOpen: { model.openFile(file.path) },
+                                       onRestore: { model.restoreFile(file.path) })
+                    }
+                }
+                .padding(.horizontal, 8)
+                .padding(.bottom, 6)
+            }
+            // Fit the rows instead of reserving a fixed 220pt band: with
+            // two files that band left a large dead gap above the preview.
+            .frame(height: filesListHeight)
+        }
+    }
+
+    @ViewBuilder
+    private var fullTreeList: some View {
+        if model.treeLoading {
+            HStack(spacing: 8) {
+                ProgressView().controlSize(.small)
+                Text("正在读取该版本的文件…")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 18)
+            .padding(.vertical, 10)
+        } else if let error = model.treeError {
+            VStack(alignment: .leading, spacing: 3) {
+                Text("无法列出该版本的文件")
+                    .font(.system(size: 11, weight: .medium))
+                Text(error)
+                    .font(.system(size: 9.5))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+            .padding(.horizontal, 18)
+            .padding(.vertical, 10)
+        } else if model.treeNodes.isEmpty {
+            Text("这个版本里没有文件")
+                .font(.system(size: 11))
+                .foregroundStyle(.tertiary)
+                .padding(.horizontal, 18)
+                .padding(.vertical, 10)
+        } else {
+            ScrollView {
+                LazyVStack(spacing: 1) {
+                    ForEach(treeRows, id: \.node.id) { row in
+                        TreeRow(row: row,
+                                status: model.changedStatus[row.node.path],
+                                selected: !row.node.isDirectory && row.node.path == model.selectedFile,
+                                isExpanded: model.expandedDirs.contains(row.node.path),
+                                onToggle: { model.toggleDirectory(row.node.path) },
+                                onSelect: { model.selectFile(row.node.path) },
+                                onOpen: { model.openFile(row.node.path) },
+                                onRestore: { model.restoreFile(row.node.path) })
+                    }
+                    if model.treeTruncated {
+                        Text(String(format: NSLocalizedString("文件较多，仅显示前 %d 个", comment: "history tree"),
+                                    model.treeFileCount))
+                            .font(.system(size: 9.5))
+                            .foregroundStyle(.tertiary)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 6)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+                .padding(.horizontal, 8)
+                .padding(.bottom, 6)
+            }
+            .frame(height: treeListHeight)
+        }
+    }
+
+    private var treeRows: [HistoryTreeRow] {
+        HistoryTree.flatten(model.treeNodes, expanded: model.expandedDirs)
+    }
+
+    private var treeListHeight: CGFloat {
+        min(CGFloat(treeRows.count) * 24 + 14, 300)
     }
 
     private var filesListHeight: CGFloat {
@@ -734,7 +1075,8 @@ struct HistoryView: View {
                         .truncationMode(.middle)
                 }
                 Spacer(minLength: 8)
-                if let path = model.selectedFile, !model.isDeleted(path) {
+                if let path = model.selectedFile, !model.isDeleted(path),
+                   !model.submodulePaths.contains(path) {
                     Button {
                         model.openFile(path)
                     } label: {
@@ -790,6 +1132,31 @@ struct HistoryView: View {
                 )
                 .padding(.horizontal, 18)
                 .padding(.bottom, 12)
+            case .image(let data):
+                if let image = NSImage(data: data) {
+                    VStack(spacing: 6) {
+                        Image(nsImage: image)
+                            .resizable()
+                            .interpolation(.high)
+                            .scaledToFit()
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            .padding(10)
+                        Text(Self.imageInfo(data, image))
+                            .font(.system(size: 9.5))
+                            .foregroundStyle(.tertiary)
+                            .padding(.bottom, 6)
+                    }
+                    .background(
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .fill(Color.primary.opacity(0.035))
+                    )
+                    .padding(.horizontal, 18)
+                    .padding(.bottom, 12)
+                } else {
+                    previewNote(symbol: "photo",
+                                title: "无法预览这张图片",
+                                detail: "可以用默认应用打开查看")
+                }
             case .binary(let size):
                 previewNote(symbol: "doc.richtext",
                             title: "无法在应用内预览",
@@ -808,6 +1175,10 @@ struct HistoryView: View {
                 previewNote(symbol: "exclamationmark.triangle",
                             title: "预览失败",
                             detail: message)
+            case .submodule:
+                previewNote(symbol: "shippingbox",
+                            title: "这是子模块",
+                            detail: "这里只记录子模块的提交号，不能直接预览或恢复。")
             }
         }
     }
@@ -856,13 +1227,13 @@ struct HistoryView: View {
                 HStack(spacing: 4) {
                     Image(systemName: "arrow.uturn.backward")
                         .font(.system(size: 9))
-                    Text("回滚整个文件夹…")
+                    Text("回滚到该版本…")
                         .font(.system(size: 11))
                 }
             }
             .controlSize(.small)
             .disabled(commit == nil)
-            .help("把这个文件夹的所有内容恢复到选中版本")
+            .help("把这个文件夹中受版本管理的内容回滚到选中版本（其后的提交从当前分支移除）")
         }
         .padding(.horizontal, 18)
         .padding(.vertical, 10)
@@ -888,6 +1259,15 @@ struct HistoryView: View {
 
     private static func sizeText(_ bytes: Int) -> String {
         ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)
+    }
+
+    /// "1920 × 1080 · 480 KB" for the image preview caption.
+    private static func imageInfo(_ data: Data, _ image: NSImage) -> String {
+        let bytes = sizeText(data.count)
+        if let rep = NSBitmapImageRep(data: data) {
+            return "\(rep.pixelsWide) × \(rep.pixelsHigh) · \(bytes)"
+        }
+        return bytes
     }
 }
 
@@ -998,11 +1378,20 @@ private struct ChangedFileRow: View {
                 .buttonStyle(.borderless)
                 .help("用默认应用打开这个版本")
                 Button(action: onRestore) {
-                    Image(systemName: "clock.arrow.circlepath")
-                        .font(.system(size: 10))
-                        .foregroundStyle(.secondary)
+                    HStack(spacing: 3) {
+                        Image(systemName: "arrow.uturn.backward")
+                            .font(.system(size: 9, weight: .semibold))
+                        Text("恢复")
+                            .font(.system(size: 10, weight: .medium))
+                    }
+                    .foregroundStyle(Color.accentColor)
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 2)
+                    .background(
+                        Capsule().fill(Color.accentColor.opacity(0.12))
+                    )
                 }
-                .buttonStyle(.borderless)
+                .buttonStyle(.plain)
                 .help("把这个文件恢复到选中版本")
             }
         }
@@ -1015,6 +1404,117 @@ private struct ChangedFileRow: View {
         )
         .contentShape(Rectangle())
         .onTapGesture(perform: onSelect)
+        .onHover { hovering = $0 }
+    }
+}
+
+// MARK: - Full-tree row (v4.0.4)
+
+/// One row of the complete file tree: folders toggle expansion; files select
+/// for preview and offer open/restore, just like the changed-file rows.
+private struct TreeRow: View {
+    let row: HistoryTreeRow
+    let status: String?
+    let selected: Bool
+    let isExpanded: Bool
+    let onToggle: () -> Void
+    let onSelect: () -> Void
+    let onOpen: () -> Void
+    let onRestore: () -> Void
+    @State private var hovering = false
+
+    private var node: HistoryTreeNode { row.node }
+
+    private var statusCharacter: String? {
+        status.map { String($0.prefix(1)) }
+    }
+
+    private var statusTint: Color {
+        switch statusCharacter {
+        case "A": return .green
+        case "D": return .red
+        case "R": return .blue
+        case "T": return .purple
+        default: return .orange
+        }
+    }
+
+    var body: some View {
+        HStack(spacing: 6) {
+            if node.isDirectory {
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 8, weight: .bold))
+                    .foregroundStyle(.tertiary)
+                    .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                    .frame(width: 10)
+                Image(systemName: isExpanded ? "folder.fill" : "folder")
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(Color.orange.opacity(0.85))
+                    .frame(width: 14)
+                Text(node.name)
+                    .font(.system(size: 11.5, weight: .medium))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Text("\(node.fileCount)")
+                    .font(.system(size: 9, design: .monospaced))
+                    .foregroundStyle(.tertiary)
+            } else if statusCharacter != nil {
+                Text(statusCharacter ?? "")
+                    .font(.system(size: 9, weight: .bold, design: .monospaced))
+                    .foregroundStyle(statusTint)
+                    .frame(width: 14)
+                Text(node.name)
+                    .font(.system(size: 11.5))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            } else {
+                Image(systemName: node.kind == .submodule ? "shippingbox" : "doc.text")
+                    .font(.system(size: 9.5))
+                    .foregroundStyle(.tertiary)
+                    .frame(width: 14)
+                Text(node.name)
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(node.kind == .submodule ? .secondary : .primary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            Spacer(minLength: 4)
+            if !node.isDirectory, hovering || selected, node.kind != .submodule {
+                Button(action: onOpen) {
+                    Image(systemName: "arrow.up.forward.app")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.borderless)
+                .help("用默认应用打开这个版本")
+                Button(action: onRestore) {
+                    HStack(spacing: 3) {
+                        Image(systemName: "arrow.uturn.backward")
+                            .font(.system(size: 9, weight: .semibold))
+                        Text("恢复")
+                            .font(.system(size: 10, weight: .medium))
+                    }
+                    .foregroundStyle(Color.accentColor)
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 2)
+                    .background(Capsule().fill(Color.accentColor.opacity(0.12)))
+                }
+                .buttonStyle(.plain)
+                .help("把这个文件恢复到选中版本")
+            }
+        }
+        .padding(.leading, 8 + CGFloat(row.depth) * 14)
+        .padding(.trailing, 10)
+        .padding(.vertical, 4)
+        .background(
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .fill(selected ? Color.accentColor.opacity(0.10)
+                      : (hovering ? Color.primary.opacity(0.04) : Color.clear))
+        )
+        .contentShape(Rectangle())
+        .onTapGesture {
+            if node.isDirectory { onToggle() } else { onSelect() }
+        }
         .onHover { hovering = $0 }
     }
 }

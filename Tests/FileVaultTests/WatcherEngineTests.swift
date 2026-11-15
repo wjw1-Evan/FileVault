@@ -42,6 +42,15 @@ final class ActivityFlag: @unchecked Sendable {
     var fired: Bool { lock.lock(); defer { lock.unlock() }; return value }
 }
 
+/// Thread-safe holder for the changed paths delivered to the activity callback.
+final class ActivityPathsFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: [String] = []
+
+    func set(_ paths: [String]) { lock.lock(); stored = paths; lock.unlock() }
+    var paths: [String] { lock.lock(); defer { lock.unlock() }; return stored }
+}
+
 final class WatcherEngineTests: XCTestCase {
     private func makeTempBase(_ name: String) throws -> URL {
         let base = URL(fileURLWithPath: NSTemporaryDirectory()).resolvingSymlinksInPath()
@@ -111,6 +120,26 @@ final class WatcherEngineTests: XCTestCase {
         defer { engine.stop() }
         source.emit([engine.realRoot])
         XCTAssertFalse(flag.fired, "attribute events on the root itself carry no content change")
+    }
+
+
+    /// The activity callback reports the changed paths (relative to the root)
+    /// with .git internals filtered out — the commit pipeline uses them to
+    /// detect brand-new empty folders.
+    func testActivityCarriesChangedRelativePaths() throws {
+        let base = try makeTempBase("wpaths")
+        defer { try? FileManager.default.removeItem(at: base) }
+        let source = FakeChangeSource()
+        let engine = WatcherEngine(rootPath: base.path, source: source)
+        let box = ActivityPathsFlag()
+        engine.start(onActivityPaths: { box.set($0) })
+        defer { engine.stop() }
+        source.emit([engine.realRoot + "/new-folder",
+                     engine.realRoot + "/.git/index",
+                     engine.realRoot + "/docs/a.md",
+                     engine.realRoot + "/new-folder"])
+        XCTAssertEqual(box.paths, ["new-folder", "docs/a.md"],
+                       "relative, de-duplicated, .git filtered")
     }
 
     // MARK: - Real FSEvents end-to-end
