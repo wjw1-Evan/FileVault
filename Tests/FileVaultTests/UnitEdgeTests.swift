@@ -42,6 +42,39 @@ final class CommitMessageTests: XCTestCase {
         XCTAssertTrue(msg.contains("修改 edit.md"))
         XCTAssertTrue(msg.contains("删除 old.log"))
     }
+
+    /// v4.0.1: a 5-second burst of edits must keep the subject bounded — at most
+    /// five names IN TOTAL, remaining groups summarised by count.
+    func testMixedGroupsNeverExceedFiveNames() {
+        let entries = (1...5).map { entry(.added, "add" + String($0) + ".md") }
+            + (1...4).map { entry(.modified, "mod" + String($0) + ".md") }
+            + (1...2).map { entry(.deleted, "del" + String($0) + ".md") }
+        let msg = RepoManager.buildCommitMessage(entries: entries, additions: 9, deletions: 3)
+        XCTAssertTrue(msg.hasPrefix("auto: 11 处变更 (+9 -3)"), msg)
+        XCTAssertEqual(msg.components(separatedBy: "、").count, 5, "exactly five names: \(msg)")
+        XCTAssertTrue(msg.contains("修改 4 个文件"), msg)
+        XCTAssertTrue(msg.contains("删除 2 个文件"), msg)
+        XCTAssertFalse(msg.contains("mod1.md"), msg)
+    }
+
+    /// When the first group alone exceeds the budget, keep its total visible.
+    func testOversizedGroupCarriesTotalCount() {
+        let entries = (1...9).map { entry(.added, "f" + String($0) + ".md") }
+        let msg = RepoManager.buildCommitMessage(entries: entries, additions: 9, deletions: 0)
+        XCTAssertTrue(msg.contains("等 9 个文件"), msg)
+        XCTAssertEqual(msg.components(separatedBy: "、").count, 5, msg)
+    }
+
+    /// Same basename in two folders must be distinguishable in the title.
+    func testDuplicateBasenamesFallBackToRelativePaths() {
+        let entries = [
+            StatusEntry(change: .modified, path: "笔记/a.md"),
+            StatusEntry(change: .modified, path: "写作/a.md"),
+        ]
+        let msg = RepoManager.buildCommitMessage(entries: entries, additions: 2, deletions: 2)
+        XCTAssertTrue(msg.contains("笔记/a.md"), msg)
+        XCTAssertTrue(msg.contains("写作/a.md"), msg)
+    }
 }
 
 /// GitRunner timeout with a fake git that sleeps (real timeout verification).

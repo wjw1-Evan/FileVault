@@ -97,6 +97,30 @@ final class RepoManagerTests: XCTestCase {
         XCTAssertFalse(repos.isRepo(at: repo + "/nested"))
     }
 
+    /// v4.0.1 regression: git status used to collapse a brand-new directory into
+    /// one "dir/" entry, so the message said "新增 dir" and the large-file guard
+    /// could not see the files inside.
+    func testStatusExpandsFilesInBrandNewDirectory() async throws {
+        _ = try await repos.ensureRepo(at: repo)
+        let dir = repo + "/新目录/子层"
+        try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        TestSupport.write("a", to: dir + "/one.md")
+        TestSupport.write("b", to: dir + "/two.md")
+
+        let entries = try await repos.status(path: repo)
+        let addedPaths = entries.filter { $0.change == .added }.map(\.path)
+        XCTAssertEqual(Set(addedPaths), ["新目录/子层/one.md", "新目录/子层/two.md"],
+                       "untracked files inside a new directory must be enumerated")
+
+        _ = try await repos.commitAll(path: repo)
+        let log = try await repos.log(path: repo)
+        let subject = try XCTUnwrap(log.first?.subject)
+        XCTAssertTrue(subject.contains("2 处变更"), subject)
+        XCTAssertTrue(subject.contains("one.md"), subject)
+        XCTAssertTrue(subject.contains("two.md"), subject)
+        XCTAssertFalse(subject.contains("新目录"), "must list files, not the directory: \(subject)")
+    }
+
     func testCommitAllAndMessageFormat() async throws {
         _ = try await repos.ensureRepo(at: repo)
         TestSupport.write("line1\nline2", to: repo + "/note.md")

@@ -67,8 +67,12 @@ public final class RepoManager: @unchecked Sendable {
     // MARK: - Status / Commit
 
     /// Parse `git status --porcelain` into structured entries (FR-04 fallback check).
+    ///
+    /// `--untracked-files=all` matters: the default collapses a brand-new
+    /// directory into ONE entry ("dir/"), which used to hide the files inside
+    /// it from the commit message AND from the large-file exclusion check.
     public func status(path: String) async throws -> [StatusEntry] {
-        let r = try await runner.run(["status", "--porcelain"], cwd: path)
+        let r = try await runner.run(["status", "--porcelain", "--untracked-files=all"], cwd: path)
         guard r.succeeded else { return [] }
         return r.stdout.split(separator: "\n").compactMap { line -> StatusEntry? in
             let l = String(line)
@@ -176,26 +180,43 @@ public final class RepoManager: @unchecked Sendable {
     }
 
     /// Build the auto commit message (FR-05):
-    /// `auto: N 处变更 (+X -Y)，新增 a.md，修改 b.txt，删除 c.log` (max 5 files listed).
+    /// `auto: N 处变更 (+X -Y)，新增 a.md，修改 b.txt，删除 c.log`
+    ///
+    /// At most FIVE file names are listed IN TOTAL. A group that does not fit
+    /// is summarised by count ("修改 3 个文件") so a 5-second burst of edits can
+    /// never produce an unbounded commit subject. When two changed files share
+    /// a basename, the relative path is used so the message stays unambiguous.
     static func buildCommitMessage(entries: [StatusEntry], additions: Int, deletions: Int) -> String {
         var added: [String] = []
         var modified: [String] = []
         var deleted: [String] = []
+        let nameCounts = Dictionary(grouping: entries, by: \.displayName).mapValues(\.count)
+        func label(_ entry: StatusEntry) -> String {
+            (nameCounts[entry.displayName] ?? 0) > 1 ? entry.path : entry.displayName
+        }
         for e in entries {
             switch e.change {
-            case .added: added.append(e.displayName)
-            case .modified, .renamed, .typeChanged: modified.append(e.displayName)
-            case .deleted: deleted.append(e.displayName)
-            case .other: modified.append(e.displayName)
+            case .added: added.append(label(e))
+            case .modified, .renamed, .typeChanged: modified.append(label(e))
+            case .deleted: deleted.append(label(e))
+            case .other: modified.append(label(e))
             }
         }
         let total = entries.count
         var parts: [String] = []
-        func take(_ list: [String]) -> [String] { Array(list.prefix(5 - parts.count)) }
-        func appendGroup(_ verb: String, _ list: [String]) -> Void {
-            let names = take(list)
-            if !names.isEmpty {
-                parts.append(verb + " " + names.joined(separator: "、"))
+        var remainingNames = 5
+        func appendGroup(_ verb: String, _ list: [String]) {
+            guard !list.isEmpty else { return }
+            if remainingNames > 0 {
+                let shown = Array(list.prefix(remainingNames))
+                remainingNames -= shown.count
+                if shown.count == list.count {
+                    parts.append(verb + " " + shown.joined(separator: "、"))
+                } else {
+                    parts.append(verb + " " + shown.joined(separator: "、") + " 等 \(list.count) 个文件")
+                }
+            } else {
+                parts.append(verb + " \(list.count) 个文件")
             }
         }
         appendGroup("新增", added)

@@ -44,6 +44,25 @@ final class LargeFilePipelineTests: XCTestCase {
         return count
     }
 
+    /// v4.0.1: untracked directories are expanded, so the 100 MiB guard also
+    /// catches a huge file dropped into a brand-new folder.
+    func testLargeFileInBrandNewDirectoryIsExcluded() async throws {
+        let dir = repo + "/fresh"
+        try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        XCTAssertTrue(TestSupport.writeSparse(dir + "/huge.bin", bytes: 120 * 1024 * 1024))
+        TestSupport.write("small", to: dir + "/small.md")
+
+        let n = await waitForCommits(2, repo: repo)
+        XCTAssertGreaterThanOrEqual(n, 2, "auto-commit should still fire")
+        let log = try await service.repoManager.log(path: repo, max: 5)
+        XCTAssertTrue(log.contains { $0.subject.contains("small.md") },
+                      "small file committed, got: \(log.map(\.subject))")
+        XCTAssertFalse(log.contains { $0.subject.contains("huge.bin") },
+                       "large file must not be committed")
+        let excludeFile = try String(contentsOfFile: repo + "/.git/info/exclude", encoding: .utf8)
+        XCTAssertTrue(excludeFile.contains("fresh/huge.bin"), excludeFile)
+    }
+
     func testPipelineExcludesLargeFileButCommitsSmall() async throws {
         // Root-level file (used to break ENOTDIR in addRoot) is committed too.
         TestSupport.write("top", to: repo + "/top.md")
