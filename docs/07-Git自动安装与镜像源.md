@@ -63,7 +63,7 @@ Rosetta 说明：如果 x86_64 版 App 跑在 Apple Silicon 上，会通过 `sys
 | 2 | ghfast | `https://ghfast.top/https://github.com/.../{tag}/{asset}` | ≈ **302 KB/s**，稳定 |
 | 3 | gh-proxy | `https://gh-proxy.com/https://github.com/.../{tag}/{asset}` | ≈ **90 KB/s**，可用但慢 |
 | 4 | ghproxy-cfd | `https://ghproxy.cfd/https://github.com/.../{tag}/{asset}` | ≈ **20 KB/s**，最后手段 |
-| 5 | filevault | `https://github.com/wjw1-Evan/FileVault/releases/download/git-{version}/{asset}` | 项目自建镜像（上传同一份包后生效），完全在自己控制下 |
+| 5 | filevault | `https://github.com/wjw1-Evan/FileVault/releases/download/git-{version}/{asset}` | **已上线**：release `git-2.56.1` 已上传 arm64/x64 两个包（206 可下，sha256 与代码锁定值一致），完全自己控制 |
 
 实测**当前不可用**（2026-11-15，已从默认列表剔除，保留记录供以后复查）：
 
@@ -132,6 +132,20 @@ Rosetta 说明：如果 x86_64 版 App 跑在 Apple Silicon 上，会通过 `sys
 3. 同步改 `scripts/vendor-git.sh` 顶部四个常量（VERSION / TAG / ASSET_VERSION_TOKEN / ASSET_SHA）；
 4. 更新本文档第 3 节表格；
 5. `swift test --filter GitProvisionerTests`（含"清单自洽"测试）。
+
+**更新自建镜像（第 5 个地址）**
+
+```bash
+# 注意：必须加 --prerelease，否则这个"资源发布"会抢到 releases/latest，
+# 让 App 的自动更新拿到错误的最新版本（更新器只认 vX.Y.Z 应用发布）。
+gh release create git-2.56.1 --prerelease --title "git 2.56.1 镜像包" \
+  --notes "sha256 / 大小见 docs/07" \
+  dugite-native-v2.56.1-238326e-macOS-arm64.tar.gz dugite-native-v2.56.1-238326e-macOS-x64.tar.gz
+# 上传后确认 latest 仍是应用版本：
+gh api repos/wjw1-Evan/FileVault/releases/latest --jq .tag_name
+```
+
+文件名必须与 `GitBuildCatalog` 里的 `asset` 完全一致，否则 App 端拼出的 URL 404。
 
 **镜像失效**
 
