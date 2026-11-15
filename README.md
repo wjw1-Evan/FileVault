@@ -46,6 +46,15 @@ FileVault 常驻 macOS 菜单栏，对一个受管根目录下的**第一层子�
 
 **进度只在菜单里看（v3.1.7）**：更新不再弹出任何窗口或对话框。打开菜单栏图标即可看到一行实时状态——`正在下载更新 42%… · 840 KB / 2 MB` → `正在校验更新…` → `正在安装更新…` → `更新完成，正在重启…`；手动「检查更新…」的结果也写在菜单里（如 `已是最新版本（v3.1.5）`、`更新失败：…`），不会打断你正在做的事。
 
+## 许可与试用（商用）
+
+- **试用**：安装即获得 14 天全功能试用；起始时间写入钥匙串，删除应用重装不会重置。
+- **试用结束后**：停止「新建自动版本」，但**历史查看、单文件恢复、整仓回滚始终可用**——数据绝不锁死。
+- **激活**：设置 → 许可与支持，粘贴激活码。激活码是 **Ed25519 离线签名**令牌，校验不需要联网，信息只存本机钥匙串。
+- **签发**：发行方使用 `scripts/issue-license.swift` 生成授权码，私钥不随应用分发（`~/.filevault/license-signing-key`，请离线备份）。
+- **法务**：[最终用户许可协议](LICENSE) · [隐私政策](PRIVACY.md)（无遥测、无云端中转、不上传文件内容）。
+- **商用化差距与路线**：[06 商用化方案](docs/06-商用化方案.md)。
+
 ## 下载安装
 
 **最新发布：[v3.1.7](https://github.com/wjw1-Evan/FileVault/releases/tag/v3.1.7)** — [FileVault-3.1.7.zip](https://github.com/wjw1-Evan/FileVault/releases/download/v3.1.7/FileVault-3.1.7.zip)（sha256 `35af5ea6…f4e49057`）
@@ -56,7 +65,7 @@ FileVault 常驻 macOS 菜单栏，对一个受管根目录下的**第一层子�
 
 ```bash
 swift build          # 构建
-swift test           # 运行全部测试（52 项）
+swift test           # 运行全部测试（158 项）
 .build/debug/FileVaultApp            # 启动菜单栏应用
 .build/debug/FileVaultApp --smoke    # 无 UI 冒烟自检
 swift run FileVaultApp --help        # 命令行参数
@@ -73,7 +82,9 @@ ditto -c -k --keepParent build/FileVault.app dist/FileVault-1.0.0.zip
 
 - 产物：`FileVault.app`（LSUIElement 菜单栏模式、bundle 通知可用、设置内可开启「登录时启动」）
 - Release 实测：RSS 54–60MB、空闲 CPU **0.07%**（事件驱动刷新后，较轮询架构降低约 14 倍）、二进制 0.8MB
-- 代码签名为 ad-hoc（本地验证）；对外分发需正式开发者证书
+- 本地构建默认 ad-hoc 签名；**对外分发必须正式签名 + 公证**：
+  `CODESIGN_IDENTITY="Developer ID Application: 你的名字 (TEAMID)" NOTARY_PROFILE=fv-notary ./scripts/make_app.sh 3.2.0`
+  （公证需先执行一次 `xcrun notarytool store-credentials fv-notary --apple-id … --team-id … --password …`）
 
 ## 仓库卫生：GitHub 100 MiB 限制
 
@@ -86,4 +97,4 @@ GitHub 对普通 Git 仓库的单文件有 **100 MiB 硬限制**（50 MiB 起警
 
 完整方案与应急处理：[GitHub 100 MB 文件限制解决方案](docs/05-GitHub-100MB限制解决方案.md)
 
-文档：[产品需求文档](docs/01-产品需求文档-PRD.md) · [技术架构](docs/02-技术架构方案.md) · [开发路线图](docs/03-开发路线图.md) · [风险与竞品](docs/04-风险与竞品分析.md) · [GitHub 大文件方案](docs/05-GitHub-100MB限制解决方案.md)
+文档：[产品需求文档](docs/01-产品需求文档-PRD.md) · [技术架构](docs/02-技术架构方案.md) · [开发路线图](docs/03-开发路线图.md) · [风险与竞品](docs/04-风险与竞品分析.md) · [GitHub 大文件方案](docs/05-GitHub-100MB限制解决方案.md) · [商用化方案](docs/06-商用化方案.md) · [许可协议](LICENSE) · [隐私政策](PRIVACY.md)
