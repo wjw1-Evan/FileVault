@@ -75,7 +75,7 @@ final class DashboardModel: ObservableObject {
     }
 }
 
-/// Main dashboard (status overview + recent activity + protected roots).
+/// Main dashboard (native GroupBox styling, v3.1.0).
 struct DashboardView: View {
     @EnvironmentObject var app: AppState
     @Environment(\.openWindow) private var openWindow
@@ -83,89 +83,79 @@ struct DashboardView: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 12) {
-                headerCard
-                activityCard
-                rootsCard
+            VStack(alignment: .leading, spacing: 16) {
+                header
+                activityGroupBox
+                rootsGroupBox
                 footerButtons
             }
-            .padding(16)
+            .padding(20)
         }
-        .frame(minWidth: 620, minHeight: 560)
-        .background(Color(nsColor: .windowBackgroundColor))
+        .frame(minWidth: 620, minHeight: 540)
         .task { model.bind(app) }
     }
 
-    private var headerCard: some View {
-        card {
-            HStack(spacing: 8) {
-                Image(systemName: "clock.arrow.circlepath")
-                    .font(.system(size: 18))
-                    .foregroundStyle(Color.accentColor)
-                Text("FileVault — 文件时光机")
-                    .font(.system(size: 15, weight: .semibold))
-            }
+    private var header: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("FileVault — 文件时光机")
+                .font(.title2.weight(.semibold))
             Text(model.stateLine)
-                .font(.system(size: 13))
                 .foregroundStyle(.secondary)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    private var activityCard: some View {
-        card {
-            Text("最近活动").font(.system(size: 14, weight: .semibold))
-            if model.activity.isEmpty {
-                Text("还没有任何提交——向文件夹写入文件后会自动记录")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            } else {
-                ForEach(model.activity) { item in
-                    HStack(spacing: 6) {
-                        Image(systemName: "checkmark.circle")
-                            .foregroundStyle(.green)
-                            .font(.system(size: 12))
-                        Text(item.date.formatted(.dateTime.month().day().hour().minute()))
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .monospacedDigit()
-                        Text(item.repoName)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        Text(item.subject)
-                            .font(.caption)
-                            .lineLimit(1)
-                            .truncationMode(.tail)
+    private var activityGroupBox: some View {
+        GroupBox("最近活动") {
+            VStack(alignment: .leading, spacing: 6) {
+                if model.activity.isEmpty {
+                    Text("还没有任何提交——向文件夹写入文件后会自动记录")
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(model.activity) { item in
+                        HStack(spacing: 6) {
+                            Image(systemName: "checkmark.circle")
+                                .foregroundStyle(.green)
+                            Text(item.date.formatted(.dateTime.month().day().hour().minute()))
+                                .monospacedDigit()
+                            Text(item.repoName)
+                                .foregroundStyle(.secondary)
+                            Text(item.subject)
+                                .lineLimit(1)
+                                .truncationMode(.tail)
+                            Spacer()
+                        }
+                        .font(.callout)
                     }
                 }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
-    private var rootsCard: some View {
-        card {
-            Text("受保护的目录").font(.system(size: 14, weight: .semibold))
-            if model.rootsEmpty {
-                Text("尚未添加根目录——点击下方「设置」添加")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            ForEach(model.rootRows, id: \.id) { row in
-                HStack(spacing: 6) {
-                    Image(systemName: "folder").font(.system(size: 13))
-                    Text(row.name).font(.system(size: 13))
-                    Text("\(row.count) 个仓库")
-                        .font(.caption)
+    private var rootsGroupBox: some View {
+        GroupBox("受保护的目录") {
+            VStack(alignment: .leading, spacing: 8) {
+                if model.rootsEmpty {
+                    Text("尚未添加根目录——点击下方「设置」添加")
                         .foregroundStyle(.secondary)
-                    Spacer()
-                    Button("打开") { app.openPath(row.path) }
-                        .controlSize(.small)
+                }
+                ForEach(model.rootRows, id: \.id) { row in
+                    HStack {
+                        Label(row.name, systemImage: "folder")
+                        Text("\(row.count) 个仓库")
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Button("打开") { app.openPath(row.path) }
+                    }
                 }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
     private var footerButtons: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 10) {
             Button {
                 openWindow(id: "settings")
             } label: {
@@ -176,18 +166,7 @@ struct DashboardView: View {
             } label: {
                 Label("历史", systemImage: "clock.arrow.circlepath")
             }
+            Spacer()
         }
-    }
-
-    @ViewBuilder
-    private func card<Content: View>(@ViewBuilder content: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            content()
-        }
-        .padding(14)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color(nsColor: .textBackgroundColor))
-        .clipShape(RoundedRectangle(cornerRadius: 10))
-        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color(nsColor: .separatorColor), lineWidth: 1))
     }
 }

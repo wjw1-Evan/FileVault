@@ -237,9 +237,7 @@ struct HistoryView: View {
             Button("回滚整个文件夹到此版本", role: .destructive) { confirmRollback = true }
                 .padding([.leading, .bottom], 12)
         }
-        .padding(.bottom, 12)
         .frame(minWidth: 660, minHeight: 520)
-        .background(Color(nsColor: .windowBackgroundColor))
         .task { model.bind(app) }
         .onDisappear { model.unbind() }
         .confirmationDialog("回滚确认", isPresented: $confirmRollback, titleVisibility: .visible) {

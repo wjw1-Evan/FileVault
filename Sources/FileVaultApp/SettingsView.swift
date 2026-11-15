@@ -98,7 +98,7 @@ final class SettingsModel: ObservableObject {
         }
     }
 
-    /// Async fill: url/toggle/health/status/auth (v1.2.x async refill port).
+    /// Async fill: url/toggle/health/status/auth.
     private func fillRepoDetails(id: String) {
         guard let svc = service else { return }
         Task { [weak self] in
@@ -376,32 +376,26 @@ final class SettingsModel: ObservableObject {
     }
 }
 
-// MARK: - View
+// MARK: - View (native Form styling)
 
 struct SettingsView: View {
     @EnvironmentObject var app: AppState
     @Environment(\.openWindow) private var openWindow
     @StateObject private var model = SettingsModel()
     @State private var removeTarget: RootCard?
-    @State private var showCreateRepoAlert = false
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 12) {
-                generalCard
-                ForEach($model.rootCards) { $card in
-                    rootCard($card)
-                }
-                HStack {
-                    Button("＋ 添加根目录…") { model.showFileImporter = true }
-                        .controlSize(.large)
-                    Spacer()
-                }
+        Form {
+            generalSection
+            ForEach($model.rootCards) { $card in
+                rootSection($card)
             }
-            .padding(13)
+            Section {
+                Button("＋ 添加根目录…") { model.showFileImporter = true }
+            }
         }
+        .formStyle(.grouped)
         .frame(minWidth: 660, minHeight: 560)
-        .background(Color(nsColor: .windowBackgroundColor))
         .task { model.bind(app) }
         .fileImporter(isPresented: $model.showFileImporter, allowedContentTypes: [.folder]) { result in
             if case .success(let url) = result {
@@ -412,6 +406,12 @@ struct SettingsView: View {
             Alert(title: Text(alert.ok ? "✅ 连接成功" : "⚠️ 连接失败"),
                   message: Text(alert.detail),
                   dismissButton: .default(Text("好")))
+        }
+        .sheet(item: $model.gitignoreEditor) { editor in
+            GitignoreSheet(state: editor) { draft in
+                model.saveGitignore(GitignoreEditorState(repoPath: editor.repoPath,
+                                                         repoName: editor.repoName, draft: draft))
+            }
         }
         .alert("在 GitHub 创建私有仓库并绑定", isPresented: Binding(
             get: { model.createRepoTarget != nil },
@@ -427,94 +427,65 @@ struct SettingsView: View {
         } message: {
             Text("输入仓库名（将创建为当前 gh 账号下的私有仓库）：")
         }
-        .sheet(item: $model.gitignoreEditor) { editor in
-            GitignoreSheet(state: editor) { draft in
-                model.saveGitignore(GitignoreEditorState(repoPath: editor.repoPath,
-                                                         repoName: editor.repoName, draft: draft))
-            }
-        }
     }
 
-    // MARK: General card
+    // MARK: General
 
-    private var generalCard: some View {
-        cardView {
-            Text("通用设置").font(.system(size: 14, weight: .semibold))
-            Divider()
-            HStack(spacing: 16) {
-                if LaunchAtLogin.available {
-                    Toggle("登录时启动", isOn: Binding(
-                        get: { model.loginIntent },
-                        set: { model.toggleLoginIntent($0) }))
+    private var generalSection: some View {
+        Section("通用设置") {
+            if LaunchAtLogin.available {
+                Toggle("登录时启动", isOn: Binding(
+                    get: { model.loginIntent },
+                    set: { model.toggleLoginIntent($0) }))
+            }
+            Toggle("推送失败通知", isOn: Binding(
+                get: { model.notificationsEnabled },
+                set: { model.notificationsEnabled = $0; model.commitGeneral() }))
+            Toggle("自动检查更新", isOn: Binding(
+                get: { model.autoCheckUpdates },
+                set: { model.autoCheckUpdates = $0; model.commitGeneral() }))
+            Picker("自动提交延迟", selection: Binding(
+                get: { model.debounceSeconds },
+                set: { model.debounceSeconds = $0; model.commitGeneral() })) {
+                ForEach([2, 5, 10, 30], id: \.self) { s in Text("\(s) 秒").tag(s) }
+            }
+            LabeledContent("大文件阈值") {
+                HStack(spacing: 4) {
+                    TextField("", text: Binding(
+                        get: { model.thresholdText },
+                        set: { model.thresholdText = $0; model.commitGeneral() }))
+                        .frame(width: 60)
+                    Text("MB（超过此大小的文件自动排除出版本管理）")
+                        .foregroundStyle(.secondary)
+                        .font(.caption)
                 }
-                Toggle("推送失败通知", isOn: Binding(
-                    get: { model.notificationsEnabled },
-                    set: { model.notificationsEnabled = $0; model.commitGeneral() }))
-                Toggle("自动检查更新", isOn: Binding(
-                    get: { model.autoCheckUpdates },
-                    set: { model.autoCheckUpdates = $0; model.commitGeneral() }))
             }
-            HStack(spacing: 8) {
-                Text("自动提交延迟").font(.system(size: 12))
-                Picker("", selection: Binding(
-                    get: { model.debounceSeconds },
-                    set: { model.debounceSeconds = $0; model.commitGeneral() })) {
-                    ForEach([2, 5, 10, 30], id: \.self) { s in Text("\(s) 秒").tag(s) }
-                }
-                .frame(width: 100)
-                Text("（文件变动后等待静默的秒数）")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+            LabeledContent("配置文件") {
+                Button("打开配置文件") { model.openConfigFile() }
             }
-            HStack(spacing: 8) {
-                Text("大文件阈值").font(.system(size: 12))
-                TextField("200", text: Binding(
-                    get: { model.thresholdText },
-                    set: { model.thresholdText = $0; model.commitGeneral() }))
-                    .frame(width: 70)
-                    .textFieldStyle(.roundedBorder)
-                Text("MB（超过此大小的文件自动排除出版本管理）")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            Button("打开配置文件") { model.openConfigFile() }
         }
     }
 
     // MARK: Root card
 
-    private func rootCard(_ card: Binding<RootCard>) -> some View {
-        cardView {
-            HStack(spacing: 8) {
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(card.wrappedValue.name).font(.system(size: 14, weight: .semibold))
-                    Text(card.wrappedValue.path)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                }
-                Spacer()
-                Toggle("暂停", isOn: Binding(
-                    get: { card.wrappedValue.paused },
-                    set: { model.pauseRoot(card.wrappedValue, to: $0) }))
-                    .toggleStyle(.checkbox)
-                Button {
-                    app.openPath(card.wrappedValue.path)
-                } label: {
-                    Label("打开", systemImage: "arrow.up.forward.app")
-                }
-                Button("移除", role: .destructive) { removeTarget = card.wrappedValue }
-            }
-            Divider()
-            ForEach(card.wrappedValue.repos) { section in
-                repoSection(section)
-                if card.wrappedValue.repos.last?.id != section.id { Divider() }
-            }
-            if card.wrappedValue.repos.isEmpty {
-                Text("此根目录暂无子文件夹")
-                    .font(.system(size: 11))
+    private func rootSection(_ card: Binding<RootCard>) -> some View {
+        Section("\(card.wrappedValue.name)（\(card.wrappedValue.repos.count) 个仓库）") {
+            LabeledContent("路径") {
+                Text(card.wrappedValue.path)
                     .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+            }
+            Toggle("暂停", isOn: Binding(
+                get: { card.wrappedValue.paused },
+                set: { model.pauseRoot(card.wrappedValue, to: $0) }))
+            LabeledContent("操作") {
+                HStack {
+                    Button("在 Finder 中打开") { app.openPath(card.wrappedValue.path) }
+                    Button("移除根目录", role: .destructive) { removeTarget = card.wrappedValue }
+                }
+            }
+            ForEach(card.wrappedValue.repos) { section in
+                repoRows(section)
             }
         }
         .confirmationDialog("移除根目录？", isPresented: Binding(
@@ -529,36 +500,28 @@ struct SettingsView: View {
     }
 
     @ViewBuilder
-    private func repoSection(_ section: RepoSection) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
+    private func repoRows(_ section: RepoSection) -> some View {
+        GroupBox {
             HStack(spacing: 6) {
                 Image(systemName: section.statusGlyph)
                     .foregroundStyle(section.statusColor)
-                    .font(.system(size: 12, weight: .medium))
-                Text(section.name).font(.system(size: 13, weight: .medium))
+                Text(section.name).font(.body.weight(.medium))
                 Text(section.health)
-                    .font(.system(size: 11))
+                    .font(.caption)
                     .foregroundStyle(.secondary)
+                Spacer()
+            }
+            LabeledContent("远程仓库地址") {
+                TextField("留空 = 仅本地", text: model.urlBinding(section.id))
+                    .onSubmit { model.saveRepo(section.id) }
+            }
+            Toggle("自动推送", isOn: model.autoPushBinding(section.id))
+            Picker("身份验证", selection: model.authModeBinding(section.id)) {
+                Text("自动（gh 凭证助手）").tag(RepoManager.AuthMode.auto)
+                Text("用户名 + 访问令牌").tag(RepoManager.AuthMode.pat)
+                Text("SSH 密钥").tag(RepoManager.AuthMode.ssh)
             }
             HStack(spacing: 8) {
-                TextField("远程仓库地址（留空 = 仅本地，回车保存）",
-                          text: model.urlBinding(section.id))
-                    .textFieldStyle(.roundedBorder)
-                    .frame(minWidth: 360)
-                    .onSubmit { model.saveRepo(section.id) }
-                Toggle("自动推送", isOn: model.autoPushBinding(section.id))
-                    .toggleStyle(.checkbox)
-            }
-            HStack(spacing: 6) {
-                Text("身份验证").font(.system(size: 12))
-                Picker("", selection: model.authModeBinding(section.id)) {
-                    Text("自动（gh 凭证助手）").tag(RepoManager.AuthMode.auto)
-                    Text("用户名 + 访问令牌").tag(RepoManager.AuthMode.pat)
-                    Text("SSH 密钥").tag(RepoManager.AuthMode.ssh)
-                }
-                .frame(width: 200)
-            }
-            HStack(spacing: 6) {
                 Button("保存") { model.saveRepo(section.id) }
                 Button("立即推送") { model.pushNow(section.id) }
                 Button("测试连接") { model.testConnection(section.id) }
@@ -567,26 +530,12 @@ struct SettingsView: View {
                 Button("建仓") { model.createRepoTarget = section.id }
                     .help("在 GitHub 创建私有仓库并绑定")
             }
-            .controlSize(.small)
             if let msg = model.message(section.id) {
                 Text(msg.0)
-                    .font(.system(size: 10.5))
+                    .font(.caption)
                     .foregroundStyle(msg.1)
-                    .lineLimit(1)
             }
         }
-    }
-
-    @ViewBuilder
-    private func cardView<Content: View>(@ViewBuilder content: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            content()
-        }
-        .padding(14)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color(nsColor: .textBackgroundColor))
-        .clipShape(RoundedRectangle(cornerRadius: 10))
-        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color(nsColor: .separatorColor), lineWidth: 1))
     }
 }
 
@@ -604,18 +553,21 @@ struct GitignoreSheet: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 10) {
             Text("忽略规则 — \(state.repoName)")
-                .font(.system(size: 14, weight: .semibold))
+                .font(.headline)
             TextEditor(text: $draft)
                 .font(.system(size: 12, design: .monospaced))
-                .border(Color(nsColor: .separatorColor))
-            Button("保存（改动会被自动提交）") {
-                onSave(draft)
-                dismiss()
+                .frame(minHeight: 240)
+            HStack {
+                Spacer()
+                Button("保存（改动会被自动提交）") {
+                    onSave(draft)
+                    dismiss()
+                }
             }
         }
-        .padding(12)
-        .frame(width: 520, height: 380)
+        .padding(16)
+        .frame(width: 520, height: 400)
     }
 }
