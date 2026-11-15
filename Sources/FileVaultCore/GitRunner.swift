@@ -97,7 +97,17 @@ public final class GitRunner: Sendable {
             try? inPipe.fileHandleForWriting.close()
         }
 
-        try process.run()
+        do {
+            try process.run()
+        } catch {
+            // The pipe readers above are ALREADY waiting for EOF. If the spawn
+            // fails, nothing will ever close the write ends and both global-
+            // queue threads block forever — 64 of those and GCD hits its soft
+            // limit, starving the whole process under load (full-suite hang).
+            outPipe.fileHandleForWriting.closeFile()
+            errPipe.fileHandleForWriting.closeFile()
+            throw error
+        }
 
         let exitSem = DispatchSemaphore(value: 0)
         process.terminationHandler = { _ in exitSem.signal() }
@@ -109,7 +119,14 @@ public final class GitRunner: Sendable {
             throw GitCommandError(command: args.joined(separator: " "), exitCode: -9, stderr: "git command timed out after \(timeout)s")
         }
 
-        group.wait()
+        // Defense in depth: normally EOF arrives as soon as the child exits.
+        // If some fd-holding descendant keeps the pipes open, proceed with the
+        // captured data instead of deadlocking a global-queue thread forever.
+        if group.wait(timeout: .now() + 10) == .timedOut {
+            outPipe.fileHandleForWriting.closeFile()
+            errPipe.fileHandleForWriting.closeFile()
+            _ = group.wait(timeout: .now() + 2)
+        }
         process.terminationHandler = nil
 
         return GitResult(

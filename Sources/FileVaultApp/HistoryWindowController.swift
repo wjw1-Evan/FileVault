@@ -3,7 +3,7 @@ import FileVaultCore
 
 /// History window (v2.5.0 simplified): repo pickers + commit table + per-file
 /// inline restore. No mode switching — one list, one click per file.
-final class HistoryWindowController: NSWindowController, NSTableViewDelegate, NSTableViewDataSource, NSTextFieldDelegate {
+final class HistoryWindowController: NSWindowController, NSWindowDelegate, NSTableViewDelegate, NSTableViewDataSource, NSTextFieldDelegate {
     let service: FileVaultService?
     var rootPopup: NSPopUpButton?
     var repoPopup: NSPopUpButton?
@@ -18,6 +18,9 @@ final class HistoryWindowController: NSWindowController, NSTableViewDelegate, NS
     private var filesGeneration = 0
     /// The commit whose changed files are currently displayed.
     private var currentCommit: CommitInfo?
+    /// Auto-refresh (v2.6.5): service state listener + coalescing reload task.
+    private var stateListenerToken: UUID?
+    private var pendingStateReload: Task<Void, Never>?
 
     init(service: FileVaultService?) {
         self.service = service
@@ -29,6 +32,7 @@ final class HistoryWindowController: NSWindowController, NSTableViewDelegate, NS
         win.title = "FileVault 历史"
         win.minSize = NSSize(width: 640, height: 480)
         super.init(window: win)
+        win.delegate = self
         buildUI()
     }
 
@@ -125,6 +129,9 @@ final class HistoryWindowController: NSWindowController, NSTableViewDelegate, NS
         filesLabel.lineBreakMode = .byTruncatingTail
         filesLabel.translatesAutoresizingMaskIntoConstraints = false
         host.addSubview(filesLabel)
+        // v2.6.5: buildUI previously created only a LOCAL — the property stayed
+        // nil, so every status message (正在恢复/已恢复/包含 N 个文件) was a no-op.
+        self.filesLabel = filesLabel
 
         let rollback = NSButton(title: "回滚整个文件夹到此版本", target: self, action: #selector(rollbackAction))
         rollback.target = self
@@ -162,6 +169,38 @@ final class HistoryWindowController: NSWindowController, NSTableViewDelegate, NS
     override func showWindow(_ sender: Any?) {
         super.showWindow(sender)
         reloadRepos()
+        subscribeStateListener()
+    }
+
+    func windowWillClose(_ n: Notification) {
+        unsubscribeStateListener()
+    }
+
+    /// While open, background auto-commits/pushes refresh the lists too
+    /// (v2.6.5). Rapid state flips coalesce through one debounced task.
+    private func subscribeStateListener() {
+        guard stateListenerToken == nil, let svc = service else { return }
+        stateListenerToken = svc.addStateListener { [weak self] in
+            Task { @MainActor in self?.handleExternalStateChange() }
+        }
+    }
+
+    private func unsubscribeStateListener() {
+        if let token = stateListenerToken { service?.removeStateListener(token) }
+        stateListenerToken = nil
+        pendingStateReload?.cancel()
+        pendingStateReload = nil
+    }
+
+    @MainActor
+    private func handleExternalStateChange() {
+        guard window?.isVisible == true else { return }  // showWindow refreshes anyway
+        pendingStateReload?.cancel()
+        pendingStateReload = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 400_000_000)
+            guard !Task.isCancelled else { return }
+            self?.reloadCommits(preserveSelection: true)
+        }
     }
 
     func reloadRepos() {
@@ -231,10 +270,19 @@ final class HistoryWindowController: NSWindowController, NSTableViewDelegate, NS
         }
     }
 
-    func reloadCommits() {
+    /// Reload the commit list. `preserveSelection` keeps the currently selected
+    /// commit across the reload (background auto-commits add rows on top); a
+    /// fresh operation (restore/rollback) passes false to select the new HEAD.
+    /// The changed-files list is refreshed EXPLICITLY: re-selecting the same
+    /// row does not fire tableViewSelectionDidChange, which used to leave the
+    /// file list stale after operations (v2.6.5).
+    func reloadCommits(preserveSelection: Bool = false) {
         guard let svc = service, let repo = currentRepo() else { return }
         loadGeneration += 1
         let generation = loadGeneration
+        let selectedHash: String? = preserveSelection
+            ? (table?.selectedRow).flatMap { commits.indices.contains($0) ? commits[$0].hash : nil }
+            : nil
         filesLabel?.stringValue = "正在加载提交历史…"
         Task {
             let list = (try? await svc.history.commits(repoPath: repo, limit: 100)) ?? []
@@ -248,7 +296,14 @@ final class HistoryWindowController: NSWindowController, NSTableViewDelegate, NS
                     self.filesTable?.reloadData()
                     self.filesLabel?.stringValue = "该文件夹还没有提交历史"
                 } else {
-                    self.table?.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
+                    var targetRow = 0
+                    if let selectedHash, let idx = list.firstIndex(where: { $0.hash == selectedHash }) {
+                        targetRow = idx
+                    }
+                    self.table?.selectRowIndexes(IndexSet(integer: targetRow), byExtendingSelection: false)
+                    // Deterministic: the files list must follow the selection
+                    // even when the selection index did not change.
+                    self.loadChangedFiles()
                 }
             }
         }

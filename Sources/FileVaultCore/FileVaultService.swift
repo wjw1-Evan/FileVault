@@ -13,6 +13,9 @@ public final class FileVaultService: @unchecked Sendable {
     public private(set) var watchers: [String: WatcherEngine] = [:]
     private var roots: [String] = []
     public var onStateChange: (@Sendable () -> Void)?
+    /// Multicast observers of state changes (UI windows auto-refresh, v2.6.5).
+    private let stateListenersLock = NSLock()
+    private var stateListeners: [UUID: @Sendable () -> Void] = [:]
     /// Unified failure events for UI notifications (FR-18).
     public let onFailure = EventCallbackBox()
     public let sshChecker = SshKeyChecker()
@@ -52,11 +55,11 @@ public final class FileVaultService: @unchecked Sendable {
         }
         // Event-driven UI refresh: any sync transition or commit event notifies observers.
         sync.onStatusChange.handler = { [weak self] _, _ in
-            self?.onStateChange?()
+            self?.fireStateChange()
         }
         commitEngine.onCommit = { [weak self] repoPath, _, _ in
             guard let self else { return }
-            onStateChange?()
+            fireStateChange()
             Task { await self.sync.enqueuePush(repoPath: repoPath) }
         }
         // Load configured roots, ensure repos, start watchers.
@@ -199,12 +202,42 @@ public final class FileVaultService: @unchecked Sendable {
     public func rescanRoot(_ root: String) async {
         guard watchers[root] != nil else { return }
         _ = try? await repoManager.ensureRepos(root: root)
-        onStateChange?()
+        fireStateChange()
     }
 
     public func rootsSnapshot() -> [String] {
         lock.lock(); defer { lock.unlock() }
         return roots
+    }
+
+    // MARK: - State change observers (multicast, v2.6.5)
+
+    /// Register an additional state-change observer. Returns a token for
+    /// `removeStateListener`. The legacy single `onStateChange` closure keeps
+    /// working alongside these.
+    @discardableResult
+    public func addStateListener(_ listener: @escaping @Sendable () -> Void) -> UUID {
+        let token = UUID()
+        stateListenersLock.lock()
+        stateListeners[token] = listener
+        stateListenersLock.unlock()
+        return token
+    }
+
+    public func removeStateListener(_ token: UUID) {
+        stateListenersLock.lock()
+        stateListeners[token] = nil
+        stateListenersLock.unlock()
+    }
+
+    /// Fan a state change out to every observer. All internal emitters go
+    /// through here so windows subscribed via `addStateListener` see them too.
+    func fireStateChange() {
+        onStateChange?()
+        stateListenersLock.lock()
+        let listeners = Array(stateListeners.values)
+        stateListenersLock.unlock()
+        listeners.forEach { $0() }
     }
 
     public func watcher(for root: String) -> WatcherEngine? {

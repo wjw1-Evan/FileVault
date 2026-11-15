@@ -215,6 +215,28 @@ final class SettingsSaveFlowTests: XCTestCase {
 
 /// History window (v1.2.4): switching repos must swap commit lists, and a
 /// selected commit must show its changed files.
+/// v2.6.5: multicast state listeners (window auto-refresh foundation).
+final class StateListenerTests: XCTestCase {
+    private final class Counter {
+        private let lock = NSLock()
+        private var value = 0
+        func increment() { lock.lock(); value += 1; lock.unlock() }
+        var current: Int { lock.lock(); defer { lock.unlock() }; return value }
+    }
+
+    func testAddFireRemove() {
+        let service = FileVaultService(configDirectory: URL(fileURLWithPath: TestSupport.makeTempDir("listeners")))
+        let counter = Counter()
+        let token = service.addStateListener { counter.increment() }
+        service.fireStateChange()
+        XCTAssertEqual(counter.current, 1, "listener receives the state change")
+        service.removeStateListener(token)
+        service.fireStateChange()
+        XCTAssertEqual(counter.current, 1, "removed listener no longer fires")
+        try? FileManager.default.removeItem(atPath: service.configStore.directory.path)
+    }
+}
+
 final class HistoryWindowTests: XCTestCase {
     private var base: String!
     private var service: FileVaultService!
@@ -327,6 +349,39 @@ final class HistoryWindowTests: XCTestCase {
         await waitCommitLoad()
         XCTAssertTrue(controller.currentFolders.isEmpty)
         XCTAssertEqual(controller.repoPopup?.numberOfItems, 0, "no folders in an empty root")
+        try? FileManager.default.removeItem(atPath: base)
+    }
+
+    /// v2.6.5: after operations / background commits the lists refresh without
+    /// reopening — the file list MUST follow even when the selection index did
+    /// not change (selectRowIndexes alone fires no callback).
+    @MainActor
+    func test05ReloadRefreshesFileListAndPreservesSelection() async throws {
+        try await makeWindow()
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let repo = base + "/vault1/alpha"
+        await waitCommitLoad()
+        XCTAssertEqual(controller.commits.count, 1)
+        XCTAssertEqual(controller.table?.selectedRow, 0)
+
+        // Background commit lands while the window is open (auto-commit path).
+        TestSupport.write("y", to: repo + "/y.md")
+        _ = try await repos.commitAll(path: repo, message: "alpha adds y")
+        let preservedHash = controller.commits[0].hash
+        controller.reloadCommits(preserveSelection: true)
+        await waitCommitLoad()
+        XCTAssertEqual(controller.commits.count, 2, "new commit appears without reopening")
+        XCTAssertEqual(controller.commits[1].hash, preservedHash, "old HEAD shifted below the new one")
+        XCTAssertEqual(controller.table?.selectedRow, 1, "selection follows the preserved commit")
+        XCTAssertEqual(controller.changedFiles.first?.path, ".gitignore",
+                       "file list refreshes for the PRESERVED commit (initial commit)")
+
+        // Operation path (restore/rollback): fresh reload selects the new HEAD.
+        controller.reloadCommits()
+        await waitCommitLoad()
+        XCTAssertEqual(controller.table?.selectedRow, 0, "operation reload selects row 0")
+        XCTAssertEqual(controller.filesLabel?.stringValue.contains("包含"), true, "file list refreshed for row 0")
+        XCTAssertEqual(controller.changedFiles.first?.path, "y.md", "file list shows the new HEAD's files")
         try? FileManager.default.removeItem(atPath: base)
     }
 }
