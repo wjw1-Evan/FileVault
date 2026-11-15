@@ -173,6 +173,16 @@ final class SettingsModel: ObservableObject {
         }
     }
 
+    /// Toggling "自动检查更新" back on resumes checking immediately (v3.1.4).
+    func setAutoCheckUpdates(_ on: Bool) {
+        let wasOn = autoCheckUpdates
+        autoCheckUpdates = on
+        commitGeneral()
+        if on && !wasOn {
+            app?.resumeUpdateChecksIfEnabled()
+        }
+    }
+
     func toggleLoginIntent(_ on: Bool) {
         loginIntent = on
         Task { @MainActor in
@@ -455,7 +465,7 @@ struct SettingsView: View {
                 set: { model.notificationsEnabled = $0; model.commitGeneral() }))
             Toggle("自动检查更新", isOn: Binding(
                 get: { model.autoCheckUpdates },
-                set: { model.autoCheckUpdates = $0; model.commitGeneral() }))
+                set: { model.setAutoCheckUpdates($0) }))
             Picker("自动提交延迟", selection: Binding(
                 get: { model.debounceSeconds },
                 set: { model.debounceSeconds = $0; model.commitGeneral() })) {

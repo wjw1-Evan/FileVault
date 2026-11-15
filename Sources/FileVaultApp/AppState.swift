@@ -104,7 +104,7 @@ final class AppState: ObservableObject {
         // starved updates on flaky networks (the stuck-at-2.6.4 machine).
         if !updateCheckStarted {
             updateCheckStarted = true
-            scheduleUpdateCheck(delay: 20)
+            scheduleUpdateCheck(delay: UpdateCheckSchedule.launchDelay)
         }
         svc.onStateChange = { [weak self] in
             Task { @MainActor in await self?.refresh() }
@@ -124,15 +124,29 @@ final class AppState: ObservableObject {
         }
     }
 
+    /// Re-enabling "自动检查更新" resumes checking right away instead of
+    /// waiting for the next idle poll (v3.1.4).
+    func resumeUpdateChecksIfEnabled() {
+        guard let svc = service, svc.configStore.load().general.autoCheckUpdates else { return }
+        Task { [weak self] in await self?.checkForUpdate(silent: true) }
+    }
+
     /// Recurring update check: 20s after launch, then daily — and 10 minutes
     /// after a FAILED check (flaky networks must not starve updates).
+    ///
+    /// v3.1.4: the chain is never broken. A tick that finds auto-checking
+    /// disabled reschedules itself instead of returning, so flipping the setting
+    /// back on resumes checks without relaunching the app.
     private func scheduleUpdateCheck(delay: TimeInterval) {
         Task { [weak self] in
             try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
-            guard let self, let svc = service,
-                  svc.configStore.load().general.autoCheckUpdates else { return }
-            await checkForUpdate(silent: true)
-            let nextDelay: TimeInterval = lastUpdateCheckFailed ? 600 : 24 * 3600
+            guard let self, let svc = service else { return }
+            let enabled = svc.configStore.load().general.autoCheckUpdates
+            if UpdateCheckSchedule.shouldCheck(autoCheckEnabled: enabled) {
+                await checkForUpdate(silent: true)
+            }
+            let nextDelay = UpdateCheckSchedule.nextDelay(afterFailed: lastUpdateCheckFailed,
+                                                          autoCheckEnabled: enabled)
             scheduleUpdateCheck(delay: nextDelay)
         }
     }
@@ -265,8 +279,14 @@ final class AppState: ObservableObject {
     /// visible instead of silently starving updates (v3.1.2).
     @Published var lastUpdateCheckFailed = false
 
+    /// Guards against overlapping checks (timer tick + manual menu item +
+    /// toggling the setting back on used to be able to race).
+    private var updateCheckInFlight = false
+
     func checkForUpdate(silent: Bool) async {
-        guard let svc = service else { return }
+        guard let svc = service, !updateCheckInFlight else { return }
+        updateCheckInFlight = true
+        defer { updateCheckInFlight = false }
         let offer: ReleaseInfo?
         do {
             offer = try await updateChecker.check()
