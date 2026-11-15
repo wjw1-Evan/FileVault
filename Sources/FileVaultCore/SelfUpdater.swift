@@ -18,7 +18,12 @@ public enum SelfUpdater {
 
     /// Atomically replace the bundle at `bundleURL` with the app inside
     /// `newZipURL`, then relaunch. Old bundle kept as <name>.old for rollback.
-    public static func replace(bundleURL: URL, newZipURL: URL, relaunch: Bool = true) throws {
+    ///
+    /// `verifySignature` (default true) checks the extracted bundle's
+    /// code signature and identifier before it is allowed to replace the
+    /// running app (v3.3.0). Tests that fabricate unsigned bundles pass false.
+    public static func replace(bundleURL: URL, newZipURL: URL, relaunch: Bool = true,
+                               verifySignature: Bool = true) throws {
         let fm = FileManager.default
         guard bundleURL.pathExtension == "app" else { throw UpdateError.notBundled }
         let parent = bundleURL.deletingLastPathComponent()
@@ -40,6 +45,17 @@ public enum SelfUpdater {
             throw UpdateError.downloadFailed
         }
         let newApp = tmpExtract.appendingPathComponent(appName)
+        // 2.5 Code-signature check: the GitHub digest proves integrity against
+        // that API, not authorship. Once releases are Developer-ID signed this
+        // pins the update to the vendor's team.
+        if verifySignature {
+            do {
+                try UpdateSignature.verify(newBundle: newApp, referenceBundle: bundleURL)
+            } catch {
+                try? fm.removeItem(at: tmpExtract)
+                throw UpdateError.signatureRejected(error.localizedDescription)
+            }
+        }
         // 3. Rotate: current -> .old, new -> current, relaunch, cleanup.
         let oldURL = parent.appendingPathComponent(bundleURL.lastPathComponent + ".old")
         try? fm.removeItem(at: oldURL)

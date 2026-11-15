@@ -102,7 +102,8 @@ final class SelfUpdaterTests: XCTestCase {
         ditto.waitUntilExit()
         XCTAssertEqual(ditto.terminationStatus, 0)
         // Replace without relaunch (relaunch would open the real app in tests).
-        try SelfUpdater.replace(bundleURL: oldApp, newZipURL: zip, relaunch: false)
+        // These fabricated bundles are unsigned, so skip the signature gate.
+        try SelfUpdater.replace(bundleURL: oldApp, newZipURL: zip, relaunch: false, verifySignature: false)
         let installed = try String(contentsOf: oldApp.appendingPathComponent("Contents/MacOS/FileVaultApp"), encoding: .utf8)
         XCTAssertEqual(installed, "new-binary")
         let backup = try String(contentsOf: parent.appendingPathComponent("FileVault.app.old/Contents/MacOS/FileVaultApp"), encoding: .utf8)

@@ -67,8 +67,48 @@ final class AppState: ObservableObject {
 
     // MARK: - Lifecycle
 
+    /// Restore the previous bundle when a freshly installed update keeps
+    /// failing to start (third launch attempt). Returns true when a rollback
+    /// was performed (the caller must stop starting services).
+    private func recoverFromFailedUpdateIfNeeded() -> Bool {
+        let configDirectory = ConfigStore.defaultDirectory
+        guard let marker = UpdateGuard.consumeLaunch(configDirectory: configDirectory),
+              UpdateGuard.shouldRollback(marker),
+              let source = UpdateGuard.rollbackSource(for: Bundle.main.bundleURL) else {
+            return false
+        }
+        let fm = FileManager.default
+        let bundle = Bundle.main.bundleURL
+        let failed = bundle.deletingLastPathComponent()
+            .appendingPathComponent(bundle.lastPathComponent + ".failed")
+        try? fm.removeItem(at: failed)
+        do {
+            try fm.moveItem(at: bundle, to: failed)
+            try fm.moveItem(at: source, to: bundle)
+        } catch {
+            if fm.fileExists(atPath: failed.path), !fm.fileExists(atPath: bundle.path) {
+                try? fm.moveItem(at: failed, to: bundle)
+            }
+            UpdateGuard.markHealthy(configDirectory: configDirectory)
+            return false
+        }
+        UpdateGuard.markHealthy(configDirectory: configDirectory)
+        // Relaunch the restored version after this process exits.
+        let relaunch = Process()
+        relaunch.executableURL = URL(fileURLWithPath: "/bin/sh")
+        relaunch.arguments = ["-c", "sleep 1 && /usr/bin/open " + SelfUpdater.shellQuoted(bundle.path)]
+        try? relaunch.run()
+        notificationService.notifyFailure("已回滚到上一版本",
+                                          "新版本连续 3 次未能正常启动，已自动恢复到 v\(marker.previousVersion)。")
+        NSApp.terminate(nil)
+        return true
+    }
+
     func start() {
         guard service == nil else { return }
+        // v3.3.0: if the previous update never reached a healthy startup, put
+        // the old bundle back instead of crash-looping forever.
+        if recoverFromFailedUpdateIfNeeded() { return }
         let svc = FileVaultService()
         service = svc
         notificationService.setup()
@@ -81,6 +121,8 @@ final class AppState: ObservableObject {
             } catch {
                 self?.notificationService.notifyFailure("Git 环境未就绪", "自动安装未完成：请安装 Xcode Command Line Tools 后重启应用。")
             }
+            // The new build reached a working state → confirm the update.
+            UpdateGuard.markHealthy(configDirectory: ConfigStore.defaultDirectory)
             await self?.refresh()
             await self?.runOnboardingIfNeeded()
         }
@@ -321,6 +363,11 @@ final class AppState: ObservableObject {
             try SelfUpdater.verify(zipURL: zip, expectedSHA256: offer.sha256)
             updateActivity = UpdateActivity(phase: .installing)
             try SelfUpdater.replace(bundleURL: Bundle.main.bundleURL, newZipURL: zip, relaunch: false)
+            // Arm crash-loop detection: the marker is cleared once the new
+            // build reaches a working startup (see start()).
+            UpdateGuard.beginUpdate(configDirectory: ConfigStore.defaultDirectory,
+                                    previousVersion: version,
+                                    newVersion: offer.version)
             updateActivity = UpdateActivity(phase: .restarting)
             // Relaunch via a detached helper AFTER we exit: open issued while
             // the old instance is still alive would only activate it (v2.6.6).

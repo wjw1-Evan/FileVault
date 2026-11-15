@@ -24,12 +24,26 @@ public struct ReleaseInfo: Equatable, Sendable {
     }
 }
 
-public enum UpdateError: Error, LocalizedError {
+public enum UpdateError: Error, LocalizedError, Equatable {
     case noRelease
     case noAsset
     case downloadFailed
     case checksumMismatch
     case notBundled
+    /// The extracted bundle failed the code-signature / identity check (v3.3.0).
+    case signatureRejected(String)
+
+    public static func == (lhs: UpdateError, rhs: UpdateError) -> Bool {
+        switch (lhs, rhs) {
+        case (.noRelease, .noRelease), (.noAsset, .noAsset), (.downloadFailed, .downloadFailed),
+             (.checksumMismatch, .checksumMismatch), (.notBundled, .notBundled):
+            return true
+        case (.signatureRejected(let a), .signatureRejected(let b)):
+            return a == b
+        default:
+            return false
+        }
+    }
 
     public var errorDescription: String? {
         switch self {
@@ -38,6 +52,7 @@ public enum UpdateError: Error, LocalizedError {
         case .downloadFailed: return "下载更新失败"
         case .checksumMismatch: return "更新包校验失败，已中止安装"
         case .notBundled: return "仅 .app 包内运行时支持自动更新"
+        case .signatureRejected(let detail): return "更新包签名校验未通过：\(detail)"
         }
     }
 }

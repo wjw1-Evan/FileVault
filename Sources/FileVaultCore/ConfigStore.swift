@@ -78,12 +78,14 @@ public final class ConfigStore: @unchecked Sendable {
     private let lock = NSLock()
     private var cache: AppConfig?
 
+    /// Default on-disk location (`~/Library/Application Support/FileVault`).
+    public static var defaultDirectory: URL {
+        URL(fileURLWithPath: NSHomeDirectory())
+            .appendingPathComponent("Library/Application Support/FileVault")
+    }
+
     public init(directory: URL? = nil) {
-        if let directory {
-            self.directory = directory
-        } else {
-            self.directory = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Application Support/FileVault")
-        }
+        self.directory = directory ?? Self.defaultDirectory
     }
 
     public func load() -> AppConfig {
