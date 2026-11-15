@@ -16,18 +16,22 @@ final class MenuDataTests: XCTestCase {
         let state = AppState(service: service)
         await state.refresh()
 
-        // Headline data: count + no emoji + no manual update concept.
-        XCTAssertTrue(state.statusLine.contains("2 个仓库受守护"))
+        // Headline data: short single-line summary, no emoji, no version spam.
+        XCTAssertEqual(state.statusLine, "2 个仓库 · 正常")
+        XCTAssertLessThanOrEqual(state.statusLine.count, 20, "menu headline must stay short")
         XCTAssertFalse(state.statusLine.contains("📂"), "menu data must be emoji-free")
+        XCTAssertFalse(state.statusLine.contains("v"), "version moved out of the menu headline")
 
-        // One root entry with two repo rows, each carrying status + health.
+        // One root entry with two repo rows; rows carry name/path/status only
+        // (v3.1.5: health text was dropped to keep the menu readable).
         XCTAssertEqual(state.roots.count, 1)
         let entry = try XCTUnwrap(state.roots.first)
         XCTAssertEqual(entry.name, "vault")
         XCTAssertEqual(entry.repos.count, 2)
         XCTAssertEqual(Set(entry.repos.map(\.name)), ["alpha", "beta"])
         for repo in entry.repos {
-            XCTAssertFalse(repo.health.isEmpty, "repo row carries health info")
+            XCTAssertFalse(repo.name.isEmpty)
+            XCTAssertFalse(repo.path.isEmpty)
         }
 
         // Action data state.

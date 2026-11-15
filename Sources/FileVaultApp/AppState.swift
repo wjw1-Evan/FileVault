@@ -8,7 +8,6 @@ struct RepoRow: Identifiable, Equatable {
     let name: String
     let path: String
     let status: SyncStatus
-    let health: String
 }
 
 struct RootMenuEntry: Identifiable {
@@ -59,8 +58,6 @@ final class AppState: ObservableObject {
     var renderRequest: RenderRequest?
 
     private var statusCache: [String: SyncStatus] = [:]
-    private var healthCache: [String: String] = [:]
-    private var lastHealthFetch = Date.distantPast
     private var timer: Timer?
     private var updateCheckStarted = false
 
@@ -165,26 +162,9 @@ final class AppState: ObservableObject {
             for r in folders {
                 let st = await svc.sync.status(for: r.path)
                 statusCache[r.path] = st
-                var health = healthCache[r.path] ?? ""
-                if health.isEmpty {
-                    if let h = try? await svc.repoManager.health(path: r.path) {
-                        health = "\(h.commitCount) 次 · \(h.sizeText)"
-                        healthCache[r.path] = health
-                    }
-                }
-                rows.append(RepoRow(id: r.path, name: r.name, path: r.path, status: st, health: health))
+                rows.append(RepoRow(id: r.path, name: r.name, path: r.path, status: st))
             }
             newRoots.append(RootMenuEntry(id: root, name: (root as NSString).lastPathComponent, path: root, repos: rows))
-        }
-        if Date().timeIntervalSince(lastHealthFetch) > 60 {
-            lastHealthFetch = Date()
-            for root in rootPaths {
-                for r in svc.repoManager.firstLevelFolders(root: root) {
-                    if let h = try? await svc.repoManager.health(path: r.path) {
-                        healthCache[r.path] = "\(h.commitCount) 次 · \(h.sizeText)"
-                    }
-                }
-            }
         }
         roots = newRoots
         repoCount = count
@@ -193,15 +173,17 @@ final class AppState: ObservableObject {
         let failed = statusCache.values.contains(.failed)
         let state: String
         if paused {
-            state = "已暂停自动提交"
+            state = "已暂停"
         } else if failed {
-            state = "部分仓库推送失败，点击菜单查看"
+            state = "推送失败"
         } else if !envReady {
-            state = "Git 环境未就绪"
+            state = "Git 未就绪"
         } else {
-            state = "全部正常"
+            state = "正常"
         }
-        statusLine = "\(repoCount) 个仓库受守护 · \(state) · v\(version)"
+        // Short enough for a single menu line (v3.1.5: the version lives in
+        // 「关于 FileVault」 and the dashboard, not in the menu headline).
+        statusLine = "\(repoCount) 个仓库 · \(state)"
     }
 
     /// SF Symbol for the overall state (FR-08). Always a visible glyph.
