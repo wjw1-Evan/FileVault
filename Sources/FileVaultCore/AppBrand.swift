@@ -1,0 +1,24 @@
+import Foundation
+
+/// Central product/brand metadata (v3.2.0).
+///
+/// Everything user-facing that a rename or rebrand would touch lives here:
+/// the trademark/App Store review risk of the current name "FileVault"
+/// (it collides with macOS's disk-encryption feature) is documented in
+/// docs/04 and docs/06 — when the rename happens, this is the file to edit.
+public enum AppBrand {
+    public static let productName = "FileVault"
+    public static let bundleIdentifier = "com.filevault.FileVault"
+    public static let minimumMacOS = "14.0"
+
+    /// Support / feedback channel (shown in About + 诊断包).
+    public static let supportEmail = "support@filevault.app"
+    /// Marketing site (pricing, docs, privacy).
+    public static let websiteURL = "https://github.com/wjw1-Evan/FileVault"
+    /// Where the "购买" button sends users. Placeholder until the store page
+    /// (Paddle / Lemon Squeezy / own checkout) is live.
+    public static let purchaseURL = "https://github.com/wjw1-Evan/FileVault#pricing"
+
+    /// Days of full-featured trial before automation is paused.
+    public static let trialDays = 14
+}

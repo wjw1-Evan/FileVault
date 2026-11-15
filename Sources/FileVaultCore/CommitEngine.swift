@@ -9,6 +9,10 @@ public final class CommitEngine: @unchecked Sendable {
     public var onCommit: (@Sendable (String, String, String) -> Void)?
     /// Called when the auto-commit pipeline fails with (repoPath, errorDescription).
     public var onCommitFailure: (@Sendable (String, String) -> Void)?
+    /// Gates automated commits (licence/trial, v3.2.0). Defaults to allowed so
+    /// embedders and tests are unaffected.
+    public var isAutomationAllowed: @Sendable () -> Bool = { true }
+
     /// Effective large-file ceiling for a repo (FR-12, v3.1.3).
     ///
     /// There is no local threshold anymore: the value comes from the remote
@@ -69,6 +73,7 @@ public final class CommitEngine: @unchecked Sendable {
         if ProcessInfo.processInfo.environment["FV_DEBUG"] != nil {
             print("[FV_DEBUG] t=\(Int(Date().timeIntervalSince1970) % 1000) pipeline enter \(repoPath)")
         }
+        guard isAutomationAllowed() else { return }
         guard !pause.isPaused(root: (repoPath as NSString).deletingLastPathComponent) else { return }
         let entries = (try? await repoManager.status(path: repoPath)) ?? []
         if ProcessInfo.processInfo.environment["FV_DEBUG"] != nil {

@@ -4,6 +4,9 @@ import Foundation
 public final class FileVaultService: @unchecked Sendable {
     public let configStore: ConfigStore
     public let envGuard: GitEnvGuard
+    /// Trial/licence gate (v3.2.0). The app injects keychain-backed storage;
+    /// tests default to an in-memory store so a fresh trial is always active.
+    public let license: LicenseManager
     public let pause = PauseController()
     public private(set) var detection: GitDetection?
     public private(set) var repoManager: RepoManager!
@@ -23,9 +26,12 @@ public final class FileVaultService: @unchecked Sendable {
     public private(set) var authMonitor: AuthMonitor?
     private let lock = NSLock()
 
-    public init(configDirectory: URL? = nil, locator: GitLocator = SystemGitLocator()) {
+    public init(configDirectory: URL? = nil,
+                locator: GitLocator = SystemGitLocator(),
+                license: LicenseManager? = nil) {
         self.configStore = ConfigStore(directory: configDirectory)
         self.envGuard = GitEnvGuard(locator: locator)
+        self.license = license ?? LicenseManager(storage: InMemoryLicenseStorage())
     }
 
     /// Detect git, build services, load roots, ensure repos, start watchers.
@@ -45,6 +51,11 @@ public final class FileVaultService: @unchecked Sendable {
             self?.commitEngine.commit(forKey: key)
         }
         commitEngine = CommitEngine(repoManager: repos, debouncer: debouncer!, pause: pause)
+        // v3.2.0: after the trial ends, keep the app readable/restorable but
+        // stop creating new automatic versions until a licence is activated.
+        commitEngine.isAutomationAllowed = { [weak self] in
+            self?.license.refresh().allowsAutomation ?? true
+        }
         sync = SyncManager(repoManager: repos)
         history = HistoryService(repoManager: repos)
         commitEngine.onCommitFailure = { [weak self] repoPath, reason in
