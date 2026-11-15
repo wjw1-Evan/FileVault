@@ -91,20 +91,17 @@ header.addArrangedSubview(FVDesign.header("FileVault — 文件时光机"))
         stack.addArrangedSubview(roots)
         roots.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -28).isActive = true
 
-        // Footer actions.
+        // Footer actions. Root management (add/remove/pause) lives ONLY in
+        // 设置 — the dashboard is a status overview, so it just navigates.
         let actions = NSStackView()
         actions.orientation = .horizontal
         actions.spacing = 8
-        let addBtn = FVDesign.button("添加根目录…", action: #selector(addRootFromDashboard), target: self)
-        addBtn.image = FVDesign.lineIcon("plus.circle")
-        addBtn.imagePosition = .imageLeading
         let settingsBtn = FVDesign.button("设置", action: #selector(openSettingsFromDashboard), target: self)
         settingsBtn.image = FVDesign.lineIcon("gearshape")
         settingsBtn.imagePosition = .imageLeading
         let historyBtn = FVDesign.button("历史", action: #selector(openHistoryFromDashboard), target: self)
         historyBtn.image = FVDesign.lineIcon("clock.arrow.circlepath")
         historyBtn.imagePosition = .imageLeading
-        actions.addArrangedSubview(addBtn)
         actions.addArrangedSubview(settingsBtn)
         actions.addArrangedSubview(historyBtn)
         stack.addArrangedSubview(actions)
@@ -219,7 +216,7 @@ let nameLabel = NSTextField(labelWithString: (root as NSString).lastPathComponen
                 rootsStack?.addArrangedSubview(row)
             }
             if roots.isEmpty {
-                rootsStack?.addArrangedSubview(FVDesign.caption("尚未添加根目录——点击下方「＋ 添加根目录…」开始"))
+                rootsStack?.addArrangedSubview(FVDesign.caption("尚未添加根目录——点击下方「设置」添加"))
             }
         }
     }
@@ -229,19 +226,6 @@ let nameLabel = NSTextField(labelWithString: (root as NSString).lastPathComponen
     @objc func openRoot(_ sender: NSButton) {
         guard let root = sender.identifier?.rawValue else { return }
         NSWorkspace.shared.open(URL(fileURLWithPath: root))
-    }
-
-    @objc func addRootFromDashboard() {
-        let panel = NSOpenPanel()
-        panel.canChooseDirectories = true
-        panel.canChooseFiles = false
-        panel.message = "选择要保护的根目录（第一层子文件夹将被独立版本管理）"
-        if FVDesign.activateAndRunPanel(panel) == .OK, let url = panel.url, let svc = service {
-            Task {
-                try? await svc.addRoot(path: url.path)
-                await MainActor.run { self.refresh() }
-            }
-        }
     }
 
     @objc func openSettingsFromDashboard() {

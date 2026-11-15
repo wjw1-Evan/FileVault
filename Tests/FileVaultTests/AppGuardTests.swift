@@ -375,6 +375,23 @@ final class AddRootButtonTests: XCTestCase {
         XCTAssertNotNil(btn.action, "action must be wired")
         XCTAssertEqual(btn.action?.description.contains("addRootAction"), true)
     }
+
+    /// v2.6.3 single-entry invariant: the dashboard must NOT carry its own
+    /// add-root button — root management lives only in 设置. The duplicated
+    /// implementation had already drifted (it swallowed add failures).
+    @MainActor
+    func testDashboardHasNoAddRootButton() throws {
+        let service = FileVaultService(configDirectory: URL(fileURLWithPath: TestSupport.makeTempDir("dashbtn")))
+        let controller = DashboardWindowController(service: service)
+        defer { controller.window?.close() }
+        var found: NSButton?
+        func walk(_ v: NSView) {
+            if let b = v as? NSButton, b.title.contains("添加根目录") { found = b }
+            for sub in v.subviews { walk(sub) }
+        }
+        walk(controller.window?.contentView ?? NSView())
+        XCTAssertNil(found, "dashboard must not duplicate the 添加根目录 entry (single entry = 设置)")
+    }
 }
 
 
