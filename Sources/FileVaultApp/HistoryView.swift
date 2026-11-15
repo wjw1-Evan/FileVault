@@ -224,10 +224,10 @@ struct HistoryView: View {
         .task { model.bind(app) }
         .onDisappear { model.unbind() }
         .confirmationDialog("回滚确认", isPresented: $confirmRollback, titleVisibility: .visible) {
-            Button("回滚整个文件夹（丢弃之后的提交）", role: .destructive) { model.rollback() }
+            Button("回滚整个文件夹到该版本", role: .destructive) { model.rollback() }
             Button("取消", role: .cancel) {}
         } message: {
-            Text("此操作会丢弃之后的提交，形成一次回滚记录。")
+            Text("文件夹会回到这个版本，之后的提交从当前分支移除。未提交的改动会先自动保存，回滚前的状态也会备份到隐藏 ref（refs/filevault/backup，可用 git 找回），不会永久丢失。")
         }
     }
 

@@ -15,6 +15,10 @@ public final class HistoryService: @unchecked Sendable {
 
     /// Content of one file at a given commit.
     public func fileContent(repoPath: String, hash: String, file: String) async throws -> String {
+        try RepoManager.validateRepoRelativePath(file)
+        guard hash.range(of: "^[0-9a-fA-F]{4,40}$", options: .regularExpression) != nil else {
+            throw HistoryError.commitNotFound(hash)
+        }
         let r = try await repoManager.runner.run(["show", "\(hash):\(file)"], cwd: repoPath)
         guard r.succeeded else {
             throw GitCommandError(command: "show", exitCode: r.exitCode, stderr: r.stderr)

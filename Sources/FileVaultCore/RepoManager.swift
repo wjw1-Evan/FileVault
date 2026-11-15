@@ -297,15 +297,72 @@ public final class RepoManager: @unchecked Sendable {
         }
     }
 
-    /// Restore one file to a given commit, then commit the rollback.
+    /// Restore one file to the state it had in `hash`, then commit the rollback.
+    ///
+    /// - Rejects paths that escape the repo (absolute paths / `..` traversal).
+    /// - Preserves uncommitted edits by committing them first (v3.3.1).
+    /// - Throws when the file does not exist in that commit — the old
+    ///   implementation ignored git's exit code and silently "succeeded".
+    @discardableResult
     public func restoreFile(path: String, file: String, to hash: String) async throws -> String {
-        _ = try await runner.run(["checkout", hash, "--", file], cwd: path)
+        try Self.validateRepoRelativePath(file)
+        // Never lose data: snapshot pending changes before rewriting the file.
+        let dirty = (try? await status(path: path)) ?? []
+        if !dirty.isEmpty {
+            _ = try await commitAll(path: path, message: "backup: 恢复前自动保存未提交改动")
+        }
+        let r = try await runner.run(["checkout", hash, "--", file], cwd: path)
+        guard r.succeeded else {
+            throw HistoryError.fileNotInCommit(file: file, hash: String(hash.prefix(7)))
+        }
         return try await commitAll(path: path, message: "rollback: 恢复 \(file) 到 \(String(hash.prefix(7)))")
     }
 
-    /// Reset the whole repo to a given commit (hard rollback; needs user confirmation in UI).
+    /// Hard-reset the repo to a given commit (history moves back; UI confirms).
+    ///
+    /// Safety (v3.3.1): pending edits are committed first, and the pre-reset
+    /// HEAD is preserved in a hidden ref `refs/filevault/backup/<stamp>` so a
+    /// mistaken rollback stays recoverable with plain git (`git log <ref>`).
     public func resetRepo(path: String, to hash: String) async throws {
-        _ = try await runner.run(["reset", "--hard", hash], cwd: path)
+        let verify = try await runner.run(["rev-parse", "--verify", "\(hash)^{commit}"], cwd: path)
+        guard verify.succeeded else {
+            throw HistoryError.commitNotFound(hash)
+        }
+        let dirty = (try? await status(path: path)) ?? []
+        if !dirty.isEmpty {
+            _ = try await commitAll(path: path, message: "backup: 回滚前自动保存未提交改动")
+        }
+        if let head = try? await runner.run(["rev-parse", "HEAD"], cwd: path),
+           head.succeeded {
+            let headHash = head.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !headHash.isEmpty {
+                _ = try? await runner.run(["update-ref", "refs/filevault/backup/\(Self.backupStamp())", headHash], cwd: path)
+            }
+        }
+        let r = try await runner.run(["reset", "--hard", hash], cwd: path)
+        guard r.succeeded else {
+            throw HistoryError.resetFailed(stderr: r.stderr)
+        }
+    }
+
+    /// Reject absolute paths, empty names, NUL bytes and `..` traversal.
+    static func validateRepoRelativePath(_ file: String) throws {
+        let trimmed = file.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { throw HistoryError.invalidPath(file) }
+        guard !trimmed.hasPrefix("/") else { throw HistoryError.invalidPath(file) }
+        guard !trimmed.contains("\u{0}") else { throw HistoryError.invalidPath(file) }
+        let components = trimmed.split(separator: "/", omittingEmptySubsequences: false)
+        guard !components.contains(where: { $0 == ".." || $0 == "." }) else {
+            throw HistoryError.invalidPath(file)
+        }
+    }
+
+    static func backupStamp(_ date: Date = Date()) -> String {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.timeZone = TimeZone.current
+        f.dateFormat = "yyyyMMdd-HHmmss"
+        return f.string(from: date)
     }
 
     /// Pull with --ff-only: never auto-merges (PRD); conflicts surface as errors.
