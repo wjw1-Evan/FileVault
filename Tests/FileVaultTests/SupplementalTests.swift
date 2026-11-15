@@ -18,7 +18,7 @@ final class SupplementalTests: XCTestCase {
         model.bind(AppState(service: service))
         // Before v2.6.5 the label was never assigned, so every message write
         // was a silent no-op — this guard fails if that class of bug regresses.
-        XCTAssertEqual(model.statusText, "尚未添加任何根目录——先在设置中添加根目录")
+        XCTAssertEqual(model.statusText, "尚未添加任何文件夹——先在设置中添加文件夹")
         try? FileManager.default.removeItem(atPath: base)
     }
 
@@ -55,7 +55,7 @@ final class SupplementalTests: XCTestCase {
         try FileManager.default.createDirectory(atPath: repo + "/中文目录", withIntermediateDirectories: true)
         TestSupport.write("x", to: repo + "/中文目录/文件.md")
         let repos = RepoManager(runner: TestSupport.newRunner())
-        try await repos.ensureRepos(root: base)
+        _ = try await repos.ensureRepo(at: repo)
         let r = try await repos.runner.run(["ls-files"], cwd: repo)
         XCTAssertTrue(r.succeeded)
         XCTAssertTrue(r.stdout.contains("中文目录/文件.md"), "raw UTF-8 expected, got: \(r.stdout)")
@@ -114,7 +114,8 @@ final class SupplementalTests: XCTestCase {
         let service = FileVaultService(configDirectory: URL(fileURLWithPath: base + "/cfg"))
         try await service.start()
         try await service.addRoot(path: base + "/vault")
-        let repoPath = base + "/vault/work"
+        // v4.0: the pause scope and the repo are the managed root itself.
+        let repoPath = base + "/vault"
 
         try await service.setRootPaused(true, root: base + "/vault")
         XCTAssertEqual(service.configStore.load().roots.first?.paused, true, "pause persists")
@@ -147,7 +148,7 @@ final class SupplementalTests: XCTestCase {
         await model.refresh()
         XCTAssertTrue(model.rootsEmpty, "no roots configured → empty state")
         XCTAssertFalse(model.stateLine.contains("📂"))
-        XCTAssertTrue(model.stateLine.contains("0 个仓库受守护"))
+        XCTAssertTrue(model.stateLine.contains("0 个文件夹受守护"))
         try? FileManager.default.removeItem(atPath: base)
     }
 }

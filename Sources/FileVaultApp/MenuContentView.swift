@@ -2,14 +2,15 @@ import SwiftUI
 import FileVaultCore
 
 /// Short labels for the menu bar (v3.1.5, still used for accessibility text).
+///
+/// v4.0: a protected folder is itself the repository, so the label carries the
+/// folder name and its sync status — there are no sub-repo rows to announce.
 enum MenuLabels {
-    /// Root label, e.g. "工作（3）".
-    static func root(_ name: String, repoCount: Int) -> String {
-        String(format: NSLocalizedString("%@（%d）", comment: "menu root label"), name, repoCount)
+    /// Root label, e.g. "工作（已同步）".
+    static func root(_ name: String, status: SyncStatus) -> String {
+        String(format: NSLocalizedString("%@（%@）", comment: "menu root label"),
+               name, FVStatusMeta.forSync(status).label)
     }
-
-    /// Repo row label: the name only — status is conveyed by the dot.
-    static func repo(_ name: String) -> String { name }
 
     /// Overflow submenu title.
     static let more = "更多"
@@ -120,10 +121,7 @@ struct MenuContentView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 1) {
                     ForEach(app.roots) { root in
-                        rootHeader(root)
-                        ForEach(root.repos) { repo in
-                            RepoMenuRow(repo: repo) { app.openPath(repo.path) }
-                        }
+                        RootMenuRow(root: root) { app.openPath(root.path) }
                         if root.id != app.roots.last?.id {
                             Rectangle()
                                 .fill(FVTheme.hairline)
@@ -151,37 +149,8 @@ struct MenuContentView: View {
     }
 
     private var rootsListHeight: CGFloat {
-        let rows = CGFloat(app.roots.reduce(0) { $0 + $1.repos.count + 1 })
-        return min(rows * 26 + 12, 260)
-    }
-
-    private func rootHeader(_ root: RootMenuEntry) -> some View {
-        HStack(spacing: 7) {
-            Image(systemName: "folder.fill")
-                .font(.system(size: 10))
-                .foregroundStyle(.orange.opacity(0.9))
-            Text(root.name)
-                .font(.system(size: 10.5, weight: .semibold))
-                .lineLimit(1)
-            Text("\(root.repos.count)")
-                .font(.system(size: 9, weight: .medium))
-                .foregroundStyle(.secondary)
-                .monospacedDigit()
-            Spacer(minLength: 4)
-            Button {
-                app.openPath(root.path)
-            } label: {
-                Image(systemName: "arrow.up.forward.app")
-                    .font(.system(size: 9.5))
-                    .foregroundStyle(.secondary)
-            }
-            .buttonStyle(.plain)
-            .help("在 Finder 中打开")
-        }
-        .padding(.horizontal, 6)
-        .padding(.vertical, 5)
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel(MenuLabels.root(root.name, repoCount: root.repos.count))
+        // One row per protected folder (v4.0), plus the section's own padding.
+        min(CGFloat(app.roots.count) * 30 + 16, 260)
     }
 
     // MARK: Actions
@@ -255,33 +224,32 @@ struct MenuContentView: View {
 
 // MARK: - Rows
 
-/// One repo row: status dot, name, and a very quiet status word.
-struct RepoMenuRow: View {
-    let repo: RepoRow
+/// One protected folder: folder glyph, status dot, name, and a quiet status word.
+struct RootMenuRow: View {
+    let root: RootMenuEntry
     let action: () -> Void
     @State private var hovering = false
 
     var body: some View {
-        let meta = FVStatusMeta.forSync(repo.status)
+        let meta = FVStatusMeta.forSync(root.status)
         Button(action: action) {
             HStack(spacing: 8) {
-                Circle()
-                    .fill(meta.tint)
-                    .frame(width: 6, height: 6)
-                Text(repo.name)
+                Image(systemName: "folder.fill")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.orange.opacity(0.9))
+                Text(root.name)
                     .font(.system(size: 11.5))
                     .lineLimit(1)
                 Spacer(minLength: 4)
-                // Only surface states that need attention; "仅本地" on every
-                // row is noise when the whole vault is local.
-                if repo.status != .noRemote {
-                    Text(meta.label)
-                        .font(.system(size: 9))
-                        .foregroundStyle(.tertiary)
-                }
+                Circle()
+                    .fill(meta.tint)
+                    .frame(width: 6, height: 6)
+                Text(meta.label)
+                    .font(.system(size: 9))
+                    .foregroundStyle(.tertiary)
             }
             .padding(.horizontal, 8)
-            .padding(.vertical, 5)
+            .padding(.vertical, 6)
             .background(
                 RoundedRectangle(cornerRadius: 6, style: .continuous)
                     .fill(hovering ? Color.primary.opacity(0.06) : Color.clear)
@@ -290,7 +258,9 @@ struct RepoMenuRow: View {
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
-        .help("在 Finder 中打开 \(repo.name)")
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(MenuLabels.root(root.name, status: root.status))
+        .help("在 Finder 中打开 \(root.name)")
     }
 }
 

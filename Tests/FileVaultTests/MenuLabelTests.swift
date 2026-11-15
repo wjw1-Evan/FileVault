@@ -2,18 +2,28 @@ import XCTest
 @testable import FileVaultCore
 @testable import FileVaultApp
 
-/// Menu label helpers (v3.1.5 menu simplification).
+/// Menu label helpers (v4.0: one label per protected folder, carrying status).
 final class MenuLabelTests: XCTestCase {
     @MainActor
-    func testRootLabelCountsRepos() {
-        XCTAssertEqual(MenuLabels.root("工作", repoCount: 3), "工作（3）")
-        XCTAssertEqual(MenuLabels.root("vault", repoCount: 0), "vault（0）")
+    func testRootLabelCarriesStatus() {
+        XCTAssertEqual(MenuLabels.root("工作", status: .synced), "工作（已同步）")
+        XCTAssertEqual(MenuLabels.root("工作", status: .noRemote), "工作（仅本地）")
+        XCTAssertEqual(MenuLabels.root("vault", status: .failed), "vault（失败）")
+        XCTAssertEqual(MenuLabels.root("vault", status: .pendingPush), "vault（待推送）")
+        XCTAssertEqual(MenuLabels.root("vault", status: .pushing), "vault（同步中）")
     }
 
+    /// Every status produces a distinct, human-readable label (old repo-count
+    /// label is gone: a root is a repo, so it announces how it stands).
     @MainActor
-    func testRepoLabelIsJustTheName() {
-        XCTAssertEqual(MenuLabels.repo("论文"), "论文")
-        XCTAssertFalse(MenuLabels.repo("论文").contains("次"), "no health/commit text in menu rows")
+    func testEveryStatusHasItsOwnLabel() {
+        let all: [SyncStatus] = [.noRemote, .synced, .pendingPush, .pushing, .failed]
+        let labels = all.map { MenuLabels.root("vault", status: $0) }
+        XCTAssertEqual(Set(labels).count, all.count, "statuses must not collapse into one label")
+        for (status, label) in zip(all, labels) {
+            XCTAssertTrue(label.hasPrefix("vault（"), "label names the folder: \(label)")
+            XCTAssertTrue(label.contains(FVStatusMeta.forSync(status).label), "label carries the status: \(label)")
+        }
     }
 
     @MainActor
@@ -35,15 +45,15 @@ final class MenuLabelTests: XCTestCase {
 
         let state = AppState(service: service)
         await state.refresh()
-        XCTAssertEqual(state.statusLine, "3 个仓库 · 正常")
+        XCTAssertEqual(state.statusLine, "1 个文件夹 · 正常", "folder count, not sub-repo count")
         XCTAssertLessThanOrEqual(state.statusLine.count, 20)
 
         state.toggleGlobalPause()
         await state.refresh()
-        XCTAssertEqual(state.statusLine, "3 个仓库 · 已暂停")
+        XCTAssertEqual(state.statusLine, "1 个文件夹 · 已暂停")
 
         state.toggleGlobalPause()
         await state.refresh()
-        XCTAssertEqual(state.statusLine, "3 个仓库 · 正常")
+        XCTAssertEqual(state.statusLine, "1 个文件夹 · 正常")
     }
 }

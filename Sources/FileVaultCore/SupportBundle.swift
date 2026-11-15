@@ -14,7 +14,7 @@ public enum SupportBundle {
                               bundleIdentifier: String = AppBrand.bundleIdentifier,
                               config: AppConfig?,
                               gitDescription: String?,
-                              roots: [(path: String, repos: Int)] = [],
+                              roots: [String] = [],
                               now: Date = Date()) -> String {
         let os = ProcessInfo.processInfo.operatingSystemVersionString
         let arch = ProcessInfo.processInfo.machineHardwareName ?? "unknown"
@@ -38,7 +38,7 @@ public enum SupportBundle {
             lines.append("（无）")
         } else {
             for root in roots {
-                lines.append("- " + Self.masked(root.path) + " · \(root.repos) 个仓库")
+                lines.append("- " + Self.masked(root) + "（1 个仓库）")
             }
         }
         lines.append("")

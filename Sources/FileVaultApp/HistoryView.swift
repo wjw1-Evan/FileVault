@@ -14,8 +14,9 @@ struct ChangedFile: Identifiable {
 @MainActor
 final class HistoryModel: ObservableObject {
     @Published var roots: [String] = []
-    @Published var folders: [SubRepo] = []
     @Published var selectedRoot: String?
+    /// v4.0: the selected root IS the repo — kept as a separate optional so the
+    /// async loaders read naturally.
     @Published var selectedRepo: String?
     @Published var commits: [CommitInfo] = []
     @Published var selectedCommitHash: String?
@@ -63,36 +64,24 @@ final class HistoryModel: ObservableObject {
     }
 
     private func populateRepos() {
-        guard let svc = app?.service, let root = selectedRoot else {
-            folders = []
+        guard app?.service != nil, let root = selectedRoot else {
             files = []
             commits = []
             selectedCommitHash = nil
-            statusText = NSLocalizedString("尚未添加任何根目录——先在设置中添加根目录", comment: "history status")
+            statusText = NSLocalizedString("尚未添加任何文件夹——先在设置中添加文件夹", comment: "history status")
             return
         }
-        folders = svc.repoManager.firstLevelFolders(root: root)
-        selectedRepo = folders.first?.path
+        // v4.0: the root folder is the repository; no sub-repo picker.
+        selectedRepo = root
         loadGeneration += 1
-        if folders.isEmpty {
-            commits = []
-            files = []
-            selectedCommitHash = nil
-            statusText = NSLocalizedString("该根目录暂无子文件夹", comment: "history status")
-        } else {
-            reloadCommits()
-        }
+        reloadCommits()
     }
 
     func rootChanged(_ newRoot: String) {
+        guard newRoot != selectedRoot else { return }
         selectedRoot = newRoot
-        populateRepos()
-    }
-
-    func repoChanged(_ newRepo: String) {
-        selectedRepo = newRepo
         selectedCommitHash = nil
-        reloadCommits()
+        populateRepos()
     }
 
     /// Reload commits. `preserveSelection` keeps the selected commit across
@@ -164,6 +153,37 @@ final class HistoryModel: ObservableObject {
         guard selectedCommitHash != hash else { return }
         selectedCommitHash = hash
         loadChangedFiles()
+    }
+
+
+    // MARK: Open a historical version (v3.4.3)
+
+    /// Open the file as it existed in the selected commit, using the default app.
+    /// The blob is exported to a temp file that keeps the original name and
+    /// extension, so images/PDFs/text all open in the right application.
+    func openFile(_ file: String) {
+        guard let svc = app?.service, let repo = selectedRepo, let commit = currentCommit else { return }
+        Task { @MainActor in
+            statusText = String(format: NSLocalizedString("正在打开 %@…", comment: "history status"), file)
+            do {
+                let destination = Self.historicalTempURL(commit: commit.shortHash, file: file)
+                try await svc.history.exportFile(repoPath: repo, hash: commit.hash, file: file, to: destination)
+                NSWorkspace.shared.open(destination)
+                statusText = String(format: NSLocalizedString("✓ 已打开 %@（%@ 版本）", comment: "history status"),
+                                    file, commit.shortHash)
+            } catch {
+                statusText = String(format: NSLocalizedString("⚠️ 打开失败: %@", comment: "history status"),
+                                    error.localizedDescription)
+            }
+        }
+    }
+
+    /// Temp location for an exported historical version (keeps sub-paths).
+    static func historicalTempURL(commit: String, file: String) -> URL {
+        FileManager.default.temporaryDirectory
+            .appendingPathComponent("FileVault-History", isDirectory: true)
+            .appendingPathComponent(commit, isDirectory: true)
+            .appendingPathComponent(file)
     }
 
     /// FR-10: restore one file to the selected commit; auto-commits the change.
@@ -241,7 +261,7 @@ struct HistoryView: View {
     private var sidebar: some View {
         VStack(alignment: .leading, spacing: 0) {
             VStack(alignment: .leading, spacing: 8) {
-                Text("根目录")
+                Text("受保护的文件夹")
                     .font(.system(size: 10, weight: .semibold))
                     .foregroundStyle(.tertiary)
                 Picker("", selection: Binding(
@@ -261,36 +281,27 @@ struct HistoryView: View {
 
             FVHairline(leading: 12)
 
-            if model.folders.isEmpty {
+            if model.roots.isEmpty {
                 FVEmptyState(symbol: "folder",
-                             title: "没有子文件夹",
-                             message: "在根目录下新建文件夹后，这里会列出对应的版本库。")
+                             title: "还没有受保护的目录",
+                             message: "在设置里添加一个文件夹，这里就会显示它的历史。")
             } else {
-                List(selection: Binding(
-                    get: { model.selectedRepo },
-                    set: { if let value = $0 { model.repoChanged(value) } })) {
-                    Section {
-                        ForEach(model.folders) { folder in
-                            HStack(spacing: 7) {
-                                Image(systemName: "folder.fill")
-                                    .font(.system(size: 11))
-                                    .foregroundStyle(.orange.opacity(0.85))
-                                Text(folder.name)
-                                    .font(.system(size: 12))
-                                    .lineLimit(1)
-                            }
-                            .tag(folder.path)
-                            .listRowSeparator(.hidden)
-                        }
-                    } header: {
-                        Text("仓库")
-                            .font(.system(size: 10, weight: .semibold))
+                VStack(alignment: .leading, spacing: 7) {
+                    Text("一个文件夹 = 一个版本库")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(.secondary)
+                    if let root = model.selectedRoot {
+                        Text(root)
+                            .font(.system(size: 10))
                             .foregroundStyle(.tertiary)
+                            .lineLimit(3)
+                            .truncationMode(.middle)
+                            .textSelection(.enabled)
                     }
                 }
-                .listStyle(.sidebar)
-                .scrollContentBackground(.hidden)
-                .background(Color.clear)
+                .padding(.horizontal, 12)
+                .padding(.top, 12)
+                Spacer(minLength: 0)
             }
         }
         .background(Color.primary.opacity(0.015))
@@ -444,6 +455,9 @@ struct HistoryView: View {
                 .truncationMode(.middle)
                 .textSelection(.enabled)
             Spacer(minLength: 8)
+            Button("打开") { model.openFile(file.path) }
+                .controlSize(.small)
+                .help("用默认应用打开这个版本的文件")
             Button("恢复") { model.restoreFile(file.path) }
                 .controlSize(.small)
                 .help("把这个文件恢复到选中提交时的内容")

@@ -24,11 +24,11 @@ final class AppGuardTests: XCTestCase {
 
     func testMenuSignatureChangesWithStatus() async throws {
         let root = TestSupport.makeTempDir("sigsvc")
-        try? FileManager.default.createDirectory(atPath: root + "/vault/alpha", withIntermediateDirectories: true)
+        try? FileManager.default.createDirectory(atPath: root + "/vault", withIntermediateDirectories: true)
         let service = FileVaultService(configDirectory: URL(fileURLWithPath: root + "/cfg"))
         try await service.start()
         try await service.addRoot(path: root + "/vault")
-        let repoPath = root + "/vault/alpha"
+        let repoPath = root + "/vault"
         let s1 = AppState.menuSignature(service: service, statuses: [repoPath: .synced])
         let s2 = AppState.menuSignature(service: service, statuses: [repoPath: .failed])
         XCTAssertNotEqual(s1, s2, "failed vs synced must produce different signatures")
@@ -88,20 +88,23 @@ final class StateListenerTests: XCTestCase {
 final class FileRestoreTests: XCTestCase {
     func testFileHistoryFiltersByFile() async throws {
         let base = TestSupport.makeTempDir("fhist")
-        try? FileManager.default.createDirectory(atPath: base + "/vault/work", withIntermediateDirectories: true)
-        TestSupport.write("seed", to: base + "/vault/work/s.md")
+        let vault = base + "/vault"
+        try? FileManager.default.createDirectory(atPath: vault + "/nested", withIntermediateDirectories: true)
+        TestSupport.write("seed", to: vault + "/s.md")
         let service = FileVaultService(configDirectory: URL(fileURLWithPath: base + "/cfg"))
         try await service.start()
-        try await service.addRoot(path: base + "/vault")
+        try await service.addRoot(path: vault)
         let repos = service.repoManager!
-        TestSupport.write("v1", to: base + "/vault/work/a.md")
-        _ = try await repos.commitAll(path: base + "/vault/work", message: "a v1")
-        TestSupport.write("v2", to: base + "/vault/work/a.md")
-        _ = try await repos.commitAll(path: base + "/vault/work", message: "a v2")
-        TestSupport.write("other", to: base + "/vault/work/b.md")
-        _ = try await repos.commitAll(path: base + "/vault/work", message: "b only")
+        // The root repo versions loose files and nested ones together.
+        TestSupport.write("v1", to: vault + "/a.md")
+        _ = try await repos.commitAll(path: vault, message: "a v1")
+        TestSupport.write("v2", to: vault + "/nested/a.md")
+        TestSupport.write("v2", to: vault + "/a.md")
+        _ = try await repos.commitAll(path: vault, message: "a v2")
+        TestSupport.write("other", to: vault + "/b.md")
+        _ = try await repos.commitAll(path: vault, message: "b only")
         let history = HistoryService(repoManager: repos)
-        let timeline = try await history.fileHistory(repoPath: base + "/vault/work", file: "a.md")
+        let timeline = try await history.fileHistory(repoPath: vault, file: "a.md")
         XCTAssertEqual(timeline.count, 2, "only commits touching a.md")
         XCTAssertTrue(timeline.contains { $0.subject == "a v1" })
         XCTAssertFalse(timeline.contains { $0.subject == "b only" })
@@ -114,9 +117,10 @@ final class HistoryModelTests: XCTestCase {
     @MainActor
     private func makeModel() async throws -> (HistoryModel, FileVaultService, String) {
         let base = TestSupport.makeTempDir("histmodel")
-        try? FileManager.default.createDirectory(atPath: base + "/vault/alpha", withIntermediateDirectories: true)
-        try? FileManager.default.createDirectory(atPath: base + "/vault/beta", withIntermediateDirectories: true)
-        TestSupport.write("s", to: base + "/vault/alpha/s.md")
+        // v4.0: the root folder is the one repository (loose file + nested file).
+        try? FileManager.default.createDirectory(atPath: base + "/vault/nested", withIntermediateDirectories: true)
+        TestSupport.write("s", to: base + "/vault/s.md")
+        TestSupport.write("n", to: base + "/vault/nested/n.md")
         let service = FileVaultService(configDirectory: URL(fileURLWithPath: base + "/cfg"))
         try await service.start()
         try await service.addRoot(path: base + "/vault")
@@ -134,17 +138,18 @@ final class HistoryModelTests: XCTestCase {
         try await service.start()
         let model = HistoryModel()
         model.bind(AppState(service: service))
-        XCTAssertEqual(model.statusText, "尚未添加任何根目录——先在设置中添加根目录")
+        XCTAssertEqual(model.statusText, "尚未添加任何文件夹——先在设置中添加文件夹")
         XCTAssertTrue(model.roots.isEmpty)
         try? FileManager.default.removeItem(atPath: base)
     }
 
     @MainActor
-    func testRepoSwitchReloadsCommits() async throws {
-        let (model, _, base) = try await makeModel()
+    func testRootSwitchReloadsCommits() async throws {
+        let (model, service, base) = try await makeModel()
         defer { try? FileManager.default.removeItem(atPath: base) }
         XCTAssertEqual(model.selectedRoot, base + "/vault")
-        XCTAssertEqual(model.folders.count, 2)
+        XCTAssertEqual(model.selectedRepo, base + "/vault", "the root IS the repo")
+        XCTAssertEqual(model.roots.count, 1)
         // Async commit load: poll until it lands.
         for _ in 0..<40 where model.commits.isEmpty {
             try await Task.sleep(nanoseconds: 100_000_000)
@@ -155,22 +160,28 @@ final class HistoryModelTests: XCTestCase {
         XCTAssertFalse(model.files.isEmpty)
         XCTAssertTrue(model.statusText.contains("包含"))
 
-        // Switch to beta (also 1 commit after ensureRepos).
-        let beta = model.folders.first { $0.name == "beta" }
-        model.repoChanged(beta!.path)
-        XCTAssertEqual(model.selectedRepo, beta?.path)
+        // Add a second managed root and switch to it — selection reloads commits.
+        let second = base + "/vault2"
+        try? FileManager.default.createDirectory(atPath: second, withIntermediateDirectories: true)
+        TestSupport.write("x", to: second + "/x.md")
+        try await service.addRoot(path: second)
+        model.reloadRepos()
+        XCTAssertEqual(model.roots.count, 2)
+        let target = try XCTUnwrap(model.roots.first { $0 != base + "/vault" })
+        model.rootChanged(target)
+        XCTAssertEqual(model.selectedRoot, target)
+        XCTAssertEqual(model.selectedRepo, target)
         for _ in 0..<40 where model.commits.isEmpty {
             try await Task.sleep(nanoseconds: 100_000_000)
         }
         XCTAssertEqual(model.commits.count, 1)
-        try? FileManager.default.removeItem(atPath: base)
     }
 
     @MainActor
     func testRestoreFeedbackAndCommitCount() async throws {
         let (model, service, base) = try await makeModel()
         defer { try? FileManager.default.removeItem(atPath: base) }
-        let repoPath = base + "/vault/alpha"
+        let repoPath = base + "/vault"
         // Create a distinct second commit so restoring the first differs.
         TestSupport.write("v2", to: repoPath + "/s.md")
         _ = try await service.repoManager.commitAll(path: repoPath, message: "alpha v2")
@@ -200,8 +211,9 @@ final class SettingsModelTests: XCTestCase {
     @MainActor
     private func makeModel() async throws -> (SettingsModel, FileVaultService, String) {
         let base = TestSupport.makeTempDir("setmodel")
-        try? FileManager.default.createDirectory(atPath: base + "/vault/alpha", withIntermediateDirectories: true)
-        TestSupport.write("s", to: base + "/vault/alpha/s.md")
+        try? FileManager.default.createDirectory(atPath: base + "/vault/nested", withIntermediateDirectories: true)
+        TestSupport.write("s", to: base + "/vault/s.md")
+        TestSupport.write("n", to: base + "/vault/nested/n.md")
         let service = FileVaultService(configDirectory: URL(fileURLWithPath: base + "/cfg"))
         try await service.start()
         try await service.addRoot(path: base + "/vault")
@@ -217,8 +229,10 @@ final class SettingsModelTests: XCTestCase {
         let (model, _, base) = try await makeModel()
         defer { try? FileManager.default.removeItem(atPath: base) }
         XCTAssertEqual(model.rootCards.count, 1)
-        XCTAssertEqual(model.rootCards.first?.repos.count, 1)
-        XCTAssertEqual(model.rootCards.first?.repos.first?.name, "alpha")
+        let card = try XCTUnwrap(model.rootCards.first)
+        XCTAssertEqual(card.repo.name, "vault", "one repo per root, named after the root")
+        XCTAssertEqual(card.repo.id, card.path, "the repo id is the root path")
+        XCTAssertNotNil(model.indexOf(card.path), "indexOf maps the root path")
         XCTAssertEqual(model.debounceSeconds, 5)
     }
 
@@ -227,13 +241,13 @@ final class SettingsModelTests: XCTestCase {
     func testRemoteLimitMirrorsGitHub() async throws {
         let (model, service, base) = try await makeModel()
         defer { try? FileManager.default.removeItem(atPath: base) }
-        let repoPath = base + "/vault/alpha"
+        let repoPath = base + "/vault"
         _ = try await service.repoManager.runner.run(
             ["remote", "add", "origin", "https://github.com/acme/notes.git"], cwd: repoPath)
         model.reload()
         var limit = ""
         for _ in 0..<40 {
-            limit = model.rootCards.first?.repos.first?.remoteLimit ?? ""
+            limit = model.rootCards.first?.repo.remoteLimit ?? ""
             if limit.contains("100 MB") { break }
             try? await Task.sleep(nanoseconds: 200_000_000)
         }
@@ -245,14 +259,14 @@ final class SettingsModelTests: XCTestCase {
     func testRemoteLimitUnlimitedForLocalRemote() async throws {
         let (model, service, base) = try await makeModel()
         defer { try? FileManager.default.removeItem(atPath: base) }
-        let repoPath = base + "/vault/alpha"
+        let repoPath = base + "/vault"
         let bare = URL(fileURLWithPath: base).appendingPathComponent("remote.git")
         _ = try? await service.repoManager.runner.run(["init", "--bare", bare.path])
         _ = try await service.repoManager.runner.run(["remote", "add", "origin", bare.path], cwd: repoPath)
         model.reload()
         var limit = ""
         for _ in 0..<40 {
-            limit = model.rootCards.first?.repos.first?.remoteLimit ?? ""
+            limit = model.rootCards.first?.repo.remoteLimit ?? ""
             if limit.contains("不限制") { break }
             try? await Task.sleep(nanoseconds: 200_000_000)
         }
@@ -263,7 +277,7 @@ final class SettingsModelTests: XCTestCase {
     func testSaveRepoPersistsRemoteAndReportsFeedback() async throws {
         let (model, service, base) = try await makeModel()
         defer { try? FileManager.default.removeItem(atPath: base) }
-        let repoPath = base + "/vault/alpha"
+        let repoPath = base + "/vault"
         let bare = URL(fileURLWithPath: base).appendingPathComponent("remote.git")
         _ = try? await service.repoManager.runner.run(["init", "--bare", bare.path])
         model.urlBinding(repoPath).wrappedValue = bare.path
@@ -283,7 +297,7 @@ final class SettingsModelTests: XCTestCase {
     func testEmptyURLSaveClearsRemote() async throws {
         let (model, service, base) = try await makeModel()
         defer { try? FileManager.default.removeItem(atPath: base) }
-        let repoPath = base + "/vault/alpha"
+        let repoPath = base + "/vault"
         let bare = URL(fileURLWithPath: base).appendingPathComponent("remote.git")
         _ = try? await service.repoManager.runner.run(["init", "--bare", bare.path])
         try await service.sync.configureRemote(repoPath: repoPath, url: bare.path, autoPush: false)
@@ -317,7 +331,7 @@ final class SettingsModelTests: XCTestCase {
     func testGitignoreEditorSaveWritesFile() async throws {
         let (model, _, base) = try await makeModel()
         defer { try? FileManager.default.removeItem(atPath: base) }
-        let repoPath = base + "/vault/alpha"
+        let repoPath = base + "/vault"
         model.openGitignoreEditor(repoPath)
         var editor = try XCTUnwrap(model.gitignoreEditor)
         XCTAssertTrue(editor.draft.contains("node_modules/"), "template must preload")

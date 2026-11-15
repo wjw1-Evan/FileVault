@@ -3,7 +3,8 @@ import FileVaultCore
 
 struct ActivityItem: Identifiable, Equatable {
     let id: String
-    let repoName: String
+    /// Protected folder that produced the commit (v4.0: one repo per folder).
+    let rootName: String
     let subject: String
     let date: Date
 }
@@ -12,7 +13,7 @@ struct RootRow: Identifiable, Equatable {
     let id: String
     let name: String
     let path: String
-    let count: Int
+    let status: SyncStatus
 }
 
 enum DashboardOverall {
@@ -51,12 +52,12 @@ enum DashboardOverall {
 final class DashboardModel: ObservableObject {
     @Published var activity: [ActivityItem] = []
     @Published var rootRows: [RootRow] = []
-    @Published var repoCount = 0
+    @Published var rootCount = 0
     @Published var failedCount = 0
     @Published var pendingCount = 0
     @Published var overall: DashboardOverall = .ok
     @Published var lastActivity: Date?
-    @Published var lastRepoName = ""
+    @Published var lastRootName = ""
     @Published var rootsEmpty = false
     @Published var stateLine = "正在加载…"
 
@@ -88,47 +89,41 @@ final class DashboardModel: ObservableObject {
         guard let app = app, let svc = app.service else { return }
         var items: [ActivityItem] = []
         var rows: [RootRow] = []
-        var count = 0
         var failed = 0
         var pending = 0
         let roots = svc.rootsSnapshot()
         for root in roots {
-            let folders = svc.repoManager.firstLevelFolders(root: root)
-            count += folders.count
-            rows.append(RootRow(id: root,
-                                name: (root as NSString).lastPathComponent,
-                                path: root,
-                                count: folders.count))
-            for r in folders {
-                let st = await svc.sync.status(for: r.path)
-                if st == .failed { failed += 1 }
-                if st == .pendingPush || st == .pushing { pending += 1 }
-                if let log = try? await svc.history.commits(repoPath: r.path, limit: 3) {
-                    for c in log {
-                        items.append(ActivityItem(id: r.path + c.hash,
-                                                  repoName: r.name,
-                                                  subject: c.subject.fvDecodingGitEscapes,
-                                                  date: c.date))
-                    }
+            // v4.0: one repo per protected folder — no subfolder enumeration.
+            let name = (root as NSString).lastPathComponent
+            let st = await svc.sync.status(for: root)
+            if st == .failed { failed += 1 }
+            if st == .pendingPush || st == .pushing { pending += 1 }
+            rows.append(RootRow(id: root, name: name, path: root, status: st))
+            if let log = try? await svc.history.commits(repoPath: root, limit: 3) {
+                for c in log {
+                    items.append(ActivityItem(id: root + c.hash,
+                                              rootName: name,
+                                              subject: c.subject.fvDecodingGitEscapes,
+                                              date: c.date))
                 }
             }
         }
         items.sort { $0.date > $1.date }
         activity = Array(items.prefix(6))
         rootRows = rows
-        repoCount = count
+        rootCount = roots.count
         failedCount = failed
         pendingCount = pending
         rootsEmpty = roots.isEmpty
         lastActivity = items.first?.date
-        lastRepoName = items.first?.repoName ?? ""
+        lastRootName = items.first?.rootName ?? ""
 
         if svc.pause.isGloballyPaused {
             overall = .paused
             stateLine = NSLocalizedString("已暂停自动提交", comment: "dashboard state")
         } else if failed > 0 {
             overall = .attention
-            stateLine = String(format: NSLocalizedString("%d 个仓库推送失败，点击菜单查看",
+            stateLine = String(format: NSLocalizedString("%d 个文件夹推送失败，点击菜单查看",
                                                          comment: "dashboard state"), failed)
         } else if svc.detection == nil {
             overall = .setup
@@ -138,8 +133,8 @@ final class DashboardModel: ObservableObject {
             stateLine = NSLocalizedString("全部正常", comment: "dashboard state")
         }
         // Count-first summary kept for menu parity and the dashboard subtitle.
-        stateLine = String(format: NSLocalizedString("%d 个仓库受守护 · %@", comment: "dashboard state"),
-                           count, stateLine)
+        stateLine = String(format: NSLocalizedString("%d 个文件夹受守护 · %@", comment: "dashboard state"),
+                           rootCount, stateLine)
     }
 }
 
@@ -206,17 +201,14 @@ struct DashboardView: View {
         HStack(spacing: 12) {
             FVStatTile(symbol: "folder.fill",
                        tint: .blue,
-                       value: "\(model.repoCount)",
-                       label: "受守护仓库",
-                       caption: model.rootRows.isEmpty
-                           ? "尚未添加目录"
-                           : String(format: NSLocalizedString("分布在 %d 个根目录", comment: "dashboard caption"),
-                                            model.rootRows.count))
+                       value: "\(model.rootCount)",
+                       label: "受保护文件夹",
+                       caption: model.rootRows.isEmpty ? "尚未添加目录" : "全部纳入版本管理")
             FVStatTile(symbol: "clock.fill",
                        tint: .purple,
                        value: model.lastActivity.map(FVTime.relative) ?? "—",
                        label: "最近提交",
-                       caption: model.lastRepoName.isEmpty ? "等待第一次记录" : model.lastRepoName)
+                       caption: model.lastRootName.isEmpty ? "等待第一次记录" : model.lastRootName)
             FVStatTile(symbol: model.failedCount > 0
                           ? "exclamationmark.triangle.fill"
                           : (model.pendingCount > 0 ? "arrow.up.circle.fill" : "checkmark.icloud.fill"),
@@ -273,7 +265,7 @@ struct DashboardView: View {
                     .truncationMode(.middle)
                     .help(item.subject)
                 HStack(spacing: 6) {
-                    Text(item.repoName)
+                    Text(item.rootName)
                         .font(.system(size: 10, weight: .medium))
                         .foregroundStyle(Color.accentColor)
                         .padding(.horizontal, 6)
@@ -300,13 +292,13 @@ struct DashboardView: View {
     private var rootsCard: some View {
         VStack(spacing: 0) {
             FVSectionHeader(title: "受保护的目录",
-                            trailing: String(format: NSLocalizedString("%d 个仓库", comment: "dashboard caption"),
-                                             model.repoCount))
+                            trailing: String(format: NSLocalizedString("%d 个文件夹", comment: "dashboard caption"),
+                                             model.rootCount))
             FVHairline(leading: 0)
             if model.rootsEmpty {
                 FVEmptyState(symbol: "folder.badge.plus",
                              title: "还没有受保护的目录",
-                             message: "添加一个根目录，其中的每个文件夹都会自动拥有版本历史。",
+                             message: "添加一个文件夹，里面的所有文件都会自动拥有版本历史。",
                              actionTitle: "打开设置",
                              action: { openWindow(id: "settings") })
             } else {
@@ -360,17 +352,17 @@ struct DashboardView: View {
     }
 
     private func rootRow(_ row: RootRow) -> some View {
-        HStack(spacing: 10) {
+        let meta = FVStatusMeta.forSync(row.status)
+        return HStack(spacing: 10) {
             FVIconBadge(symbol: "folder.fill", tint: .orange, size: 28)
             VStack(alignment: .leading, spacing: 1) {
                 Text(row.name)
                     .font(.system(size: 12, weight: .medium))
                     .lineLimit(1)
                     .truncationMode(.middle)
-                Text(String(format: NSLocalizedString("%d 个仓库", comment: "dashboard caption"), row.count))
+                Text(meta.label)
                     .font(.system(size: 10))
                     .foregroundStyle(.tertiary)
-                    .monospacedDigit()
             }
             Spacer(minLength: 4)
             Button {

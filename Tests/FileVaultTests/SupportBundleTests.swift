@@ -8,10 +8,22 @@ final class SupportBundleTests: XCTestCase {
         let report = SupportBundle.report(appVersion: "3.2.1",
                                           config: AppConfig(roots: []),
                                           gitDescription: "/usr/bin/git (2.50.0)",
-                                          roots: [(root, 3)])
+                                          roots: [root])
         XCTAssertTrue(report.contains("3.2.1"))
         XCTAssertTrue(report.contains("~/Documents/写作"), "home must be collapsed to ~")
+        // v4.0: a root is exactly one repository.
+        XCTAssertTrue(report.contains("- ~/Documents/写作（1 个仓库）"),
+                      "one repository per protected folder")
         XCTAssertFalse(report.contains(NSHomeDirectory()), "raw home path must not leak")
+    }
+
+    func testReportListsEveryRoot() {
+        let a = NSHomeDirectory() + "/Documents/alpha"
+        let b = NSHomeDirectory() + "/Documents/beta"
+        let report = SupportBundle.report(appVersion: "4.0.0", config: nil, gitDescription: nil,
+                                          roots: [a, b])
+        XCTAssertTrue(report.contains("- ~/Documents/alpha（1 个仓库）"))
+        XCTAssertTrue(report.contains("- ~/Documents/beta（1 个仓库）"))
     }
 
     func testReportStatesFreePricing() {

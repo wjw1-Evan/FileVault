@@ -1,6 +1,9 @@
 import Foundation
 
-/// Orchestrates debounced auto-commit per subfolder repo (FR-04/05/12/13).
+/// Orchestrates the debounced auto-commit of ONE managed root repo (FR-04/05/12/13).
+///
+/// v4.0: the debounce key is the root path itself; every change under the root
+/// (root-level files, nested folders, anything not ignored) is committed together.
 public final class CommitEngine: @unchecked Sendable {
     public let repoManager: RepoManager
     public let debouncer: Debouncer
@@ -30,13 +33,12 @@ public final class CommitEngine: @unchecked Sendable {
         self.pause = pause
     }
 
-    /// Called by WatcherEngine via the service: debounce-touch the repo (FR-04).
-    public func handleActivity(root: String, subfolder: String) {
+    /// Called by WatcherEngine via the service: debounce-touch the root repo (FR-04).
+    public func handleActivity(root: String) {
         if ProcessInfo.processInfo.environment["FV_DEBUG"] != nil {
-            print("[FV_DEBUG] t=\(Int(Date().timeIntervalSince1970) % 1000) activity root=\(root) sub=\(subfolder)")
+            print("[FV_DEBUG] t=\(Int(Date().timeIntervalSince1970) % 1000) activity root=\(root)")
         }
-        let key = (root as NSString).appendingPathComponent(subfolder)
-        debouncer.touch(key)
+        debouncer.touch(root)
     }
 
     /// Debounce fired: run the commit pipeline for the repo at key (FR-04).
@@ -69,7 +71,8 @@ public final class CommitEngine: @unchecked Sendable {
         if ProcessInfo.processInfo.environment["FV_DEBUG"] != nil {
             print("[FV_DEBUG] t=\(Int(Date().timeIntervalSince1970) % 1000) pipeline enter \(repoPath)")
         }
-        guard !pause.isPaused(root: (repoPath as NSString).deletingLastPathComponent) else { return }
+        // v4.0: the repo IS the root, so the pause scope is the repo path itself.
+        guard !pause.isPaused(root: repoPath) else { return }
         let entries = (try? await repoManager.status(path: repoPath)) ?? []
         if ProcessInfo.processInfo.environment["FV_DEBUG"] != nil {
             print("[FV_DEBUG] status entries=\(entries.count)")
@@ -96,12 +99,9 @@ public final class CommitEngine: @unchecked Sendable {
         }
     }
 
-    /// Full check: commit every dirty repo under a root (used on resume / manual flush).
+    /// Full check: commit the root repo if it is dirty (used on resume / manual flush).
     public func commitAllDirty(root: String) async {
-        let folders = repoManager.firstLevelFolders(root: root)
-        for f in folders {
-            await runCommitPipeline(repoPath: f.path)
-        }
+        await runCommitPipeline(repoPath: root)
     }
 
     /// Human-readable one-line description for logging/UI.

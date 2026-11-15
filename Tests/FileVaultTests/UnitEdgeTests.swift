@@ -157,7 +157,7 @@ final class PullTests: XCTestCase {
     }
 
     func testPullFailsGracefullyWithoutRemote() async throws {
-        _ = try await repos.ensureRepos(root: root)
+        _ = try await repos.ensureRepo(at: root + "/repo")
         do {
             _ = try await repos.pull(path: root + "/repo")
             XCTFail("pull without remote should throw")
@@ -167,7 +167,7 @@ final class PullTests: XCTestCase {
     }
 
     func testPullAlreadyUpToDate() async throws {
-        _ = try await repos.ensureRepos(root: root)
+        _ = try await repos.ensureRepo(at: root + "/repo")
         let remote = root + "/r.git"
         _ = try await repos.runner.run(["init", "--bare", remote])
         try await repos.setRemote(path: root + "/repo", url: remote)
@@ -278,7 +278,7 @@ final class CredentialStoreTests: XCTestCase {
         try? FileManager.default.createDirectory(atPath: root + "/repo", withIntermediateDirectories: true)
         TestSupport.write("s", to: root + "/repo/s.md")
         let repos = RepoManager(runner: TestSupport.newRunner())
-        _ = try await repos.ensureRepos(root: root)
+        _ = try await repos.ensureRepo(at: root + "/repo")
         let repo = root + "/repo"
         let m0 = await repos.authMode(path: repo)
         XCTAssertEqual(m0, .auto, "default auto")
@@ -301,7 +301,7 @@ final class RemoteSourceOfTruthTests: XCTestCase {
         try? FileManager.default.createDirectory(atPath: root + "/repo", withIntermediateDirectories: true)
         TestSupport.write("s", to: root + "/repo/s.md")
         let repos = RepoManager(runner: TestSupport.newRunner())
-        _ = try await repos.ensureRepos(root: root)
+        _ = try await repos.ensureRepo(at: root + "/repo")
         let repo = root + "/repo"
         // User configured a remote in their own tooling under a custom name.
         try await repos.runner.run(["remote", "add", "upstream", "https://example.com/up.git"], cwd: repo)
@@ -319,13 +319,14 @@ final class RemoteSourceOfTruthTests: XCTestCase {
     /// Remove-root -> re-add: remote/auth/autopush/history all intact.
     func testRemoveReaddPreservesEverything() async throws {
         let base = TestSupport.makeTempDir("rerea")
-        try? FileManager.default.createDirectory(atPath: base + "/vault/work", withIntermediateDirectories: true)
-        TestSupport.write("seed", to: base + "/vault/work/s.md")
+        try? FileManager.default.createDirectory(atPath: base + "/vault/nested", withIntermediateDirectories: true)
+        TestSupport.write("seed", to: base + "/vault/s.md")
         let service = FileVaultService(configDirectory: URL(fileURLWithPath: base + "/cfg"))
         try await service.start()
         try await service.addRoot(path: base + "/vault")
         let repos = service.repoManager!
-        let repo = base + "/vault/work"
+        // v4.0: the managed root is the repo.
+        let repo = base + "/vault"
         let remote = base + "/r.git"
         _ = try await repos.runner.run(["init", "--bare", remote])
         try await repos.setRemote(path: repo, url: remote)

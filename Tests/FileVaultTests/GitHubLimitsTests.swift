@@ -81,7 +81,7 @@ final class CommitEngineRemoteThresholdTests: XCTestCase {
         try? FileManager.default.createDirectory(atPath: root + "/vault/work", withIntermediateDirectories: true)
         TestSupport.write("hello", to: root + "/vault/work/note.md")
         repos = RepoManager(runner: TestSupport.newRunner())
-        try await repos.ensureRepos(root: root + "/vault")
+        try await repos.ensureRepo(at: root + "/vault")
         let debouncer = Debouncer(quietInterval: 5, maxWait: 30, onFired: { _ in })
         engine = CommitEngine(repoManager: repos, debouncer: debouncer, pause: PauseController())
     }
@@ -93,7 +93,8 @@ final class CommitEngineRemoteThresholdTests: XCTestCase {
         }
     }
 
-    private func repoPath() -> String { root + "/vault/work" }
+    // v4.0: the managed root (vault) is the one repo; work/ is just content.
+    private func repoPath() -> String { root + "/vault" }
 
     private func attachBareRemote() async throws -> String {
         let remote = root + "-remote.git"

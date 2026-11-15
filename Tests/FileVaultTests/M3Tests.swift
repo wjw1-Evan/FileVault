@@ -35,7 +35,7 @@ final class RepoHealthTests: XCTestCase {
     }
 
     func testHealthCountsCommitsAndSize() async throws {
-        _ = try await repos.ensureRepos(root: root)
+        _ = try await repos.ensureRepo(at: root + "/repo")
         TestSupport.write("v1", to: root + "/repo/s.md")
         _ = try await repos.commitAll(path: root + "/repo")
         let h = await repos.health(path: root + "/repo")
@@ -46,7 +46,7 @@ final class RepoHealthTests: XCTestCase {
     }
 
     func testMaintenanceGcInterval() async throws {
-        _ = try await repos.ensureRepos(root: root)
+        _ = try await repos.ensureRepo(at: root + "/repo")
         let repo = root + "/repo"
         let ran1 = await repos.runMaintenanceIfNeeded(path: repo, interval: 7 * 24 * 3600)
         XCTAssertTrue(ran1, "first run should gc")
@@ -76,7 +76,7 @@ final class ConnectivityTests: XCTestCase {
     }
 
     func testLocalRemoteReachable() async throws {
-        _ = try await repos.ensureRepos(root: root)
+        _ = try await repos.ensureRepo(at: root + "/repo")
         let remote = root + "/r.git"
         _ = try await repos.runner.runSync(["init", "--bare", remote], cwd: root, timeout: 10)
         try await repos.setRemote(path: root + "/repo", url: remote)
@@ -85,7 +85,7 @@ final class ConnectivityTests: XCTestCase {
     }
 
     func testMissingRemoteFails() async throws {
-        _ = try await repos.ensureRepos(root: root)
+        _ = try await repos.ensureRepo(at: root + "/repo")
         // Product path: configureRemote with autoPush on, targeting a nonexistent remote.
         try await sync.configureRemote(repoPath: root + "/repo", url: root + "/absent.git", autoPush: true)
         let r = await sync.testConnectivity(repoPath: root + "/repo")
@@ -106,7 +106,7 @@ final class GitignoreHelperTests: XCTestCase {
         try? FileManager.default.createDirectory(atPath: root + "/repo", withIntermediateDirectories: true)
         TestSupport.write("seed", to: root + "/repo/s.md")
         let repos = RepoManager(runner: TestSupport.newRunner())
-        _ = try await repos.ensureRepos(root: root)
+        _ = try await repos.ensureRepo(at: root + "/repo")
         let repo = root + "/repo"
         let original = repos.gitignore(path: repo)
         XCTAssertTrue(original.contains(".DS_Store"), "template should be injected on init")
@@ -126,7 +126,7 @@ final class FailureCallbackTests: XCTestCase {
         TestSupport.write("seed", to: root + "/repo/s.md")
         let repos = RepoManager(runner: TestSupport.newRunner())
         let sync = SyncManager(repoManager: repos, backoffSchedule: [0.1], maxAttempts: 1)
-        _ = try await repos.ensureRepos(root: root)
+        _ = try await repos.ensureRepo(at: root + "/repo")
         try await sync.configureRemote(repoPath: root + "/repo", url: root + "/absent.git", autoPush: true)
         let box = EventCallbackBox()
         var events: [String] = []
@@ -161,7 +161,7 @@ final class StatusEventTests: XCTestCase {
         TestSupport.write("seed", to: root + "/repo/s.md")
         let repos = RepoManager(runner: TestSupport.newRunner())
         let sync = SyncManager(repoManager: repos, backoffSchedule: [0.1], maxAttempts: 1)
-        _ = try await repos.ensureRepos(root: root)
+        _ = try await repos.ensureRepo(at: root + "/repo")
         let lock = NSLock()
         var events: [String] = []
         sync.onStatusChange.handler = { _, status in
@@ -197,14 +197,13 @@ final class AuthMonitorTests: XCTestCase {
     /// re-alerts when it breaks again.
     func testMonitorDedupAndRecovery() async throws {
         let base = TestSupport.makeTempDir("authmon")
-        try? FileManager.default.createDirectory(atPath: base + "/vault/work", withIntermediateDirectories: true)
-        TestSupport.write("seed", to: base + "/vault/work/s.md")
+        try? FileManager.default.createDirectory(atPath: base + "/vault", withIntermediateDirectories: true)
+        TestSupport.write("seed", to: base + "/vault/s.md")
         let repos = RepoManager(runner: TestSupport.newRunner())
         let sync = SyncManager(repoManager: repos)
-        // work must be a REAL repo (otherwise git's upward discovery would
-        // apply the remote to the parent vault repo instead).
-        _ = try await repos.ensureRepos(root: base + "/vault")
-        let repo = base + "/vault/work"
+        // v4.0: the managed root itself is the repo the monitor probes.
+        _ = try await repos.ensureRepo(at: base + "/vault")
+        let repo = base + "/vault"
         // Start with a BROKEN remote (nonexistent path -> fast failure).
         try await repos.setRemote(path: repo, url: base + "/absent.git")
         let monitor = AuthMonitor(repos: repos, sync: sync, interval: 3600)

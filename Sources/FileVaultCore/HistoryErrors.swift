@@ -10,6 +10,7 @@ public enum HistoryError: Error, LocalizedError, Equatable {
     case fileNotInCommit(file: String, hash: String)
     case commitNotFound(String)
     case resetFailed(stderr: String)
+    case exportFailed(file: String)
 
     public var errorDescription: String? {
         switch self {
@@ -25,6 +26,8 @@ public enum HistoryError: Error, LocalizedError, Equatable {
         case .resetFailed(let stderr):
             let reason = stderr.isEmpty ? NSLocalizedString("未知错误", comment: "history error") : stderr
             return String(format: NSLocalizedString("回滚失败：%@", comment: "history error"), reason)
+        case .exportFailed(let file):
+            return String(format: NSLocalizedString("无法打开 %@（版本内容缺失或不可读）", comment: "history error"), file)
         }
     }
 }

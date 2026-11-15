@@ -2,19 +2,15 @@ import AppKit
 import SwiftUI
 import FileVaultCore
 
-/// One repo row inside the menu's protected-directories submenu.
-struct RepoRow: Identifiable, Equatable {
+/// One protected folder row in the menu.
+///
+/// v4.0: the protected folder IS the repository, so a root carries its own
+/// sync status and there is no nested repo list anymore.
+struct RootMenuEntry: Identifiable, Equatable {
     let id: String       // path
     let name: String
     let path: String
     let status: SyncStatus
-}
-
-struct RootMenuEntry: Identifiable {
-    let id: String       // path
-    let name: String
-    let path: String
-    let repos: [RepoRow]
 }
 
 /// Root observable state: menu bar data, window actions, update flow and
@@ -29,7 +25,7 @@ final class AppState: ObservableObject {
     var service: FileVaultService?
     lazy var updateChecker = UpdateChecker(currentVersion: Self.bundleVersion, fetcher: HttpReleaseFetcher())
 
-    @Published var repoCount = 0
+    @Published var rootCount = 0
     @Published var roots: [RootMenuEntry] = []
     @Published var paused = false
     @Published var envReady = false
@@ -200,21 +196,18 @@ final class AppState: ObservableObject {
     func refresh() async {
         guard let svc = service else { return }
         var newRoots: [RootMenuEntry] = []
-        var count = 0
         let rootPaths = svc.rootsSnapshot()
         for root in rootPaths {
-            let folders = svc.repoManager.firstLevelFolders(root: root)
-            count += folders.count
-            var rows: [RepoRow] = []
-            for r in folders {
-                let st = await svc.sync.status(for: r.path)
-                statusCache[r.path] = st
-                rows.append(RepoRow(id: r.path, name: r.name, path: r.path, status: st))
-            }
-            newRoots.append(RootMenuEntry(id: root, name: (root as NSString).lastPathComponent, path: root, repos: rows))
+            // v4.0: one repo per protected folder — no subfolder enumeration.
+            let st = await svc.sync.status(for: root)
+            statusCache[root] = st
+            newRoots.append(RootMenuEntry(id: root,
+                                          name: (root as NSString).lastPathComponent,
+                                          path: root,
+                                          status: st))
         }
         roots = newRoots
-        repoCount = count
+        rootCount = rootPaths.count
         envReady = svc.detection != nil
         paused = svc.pause.isGloballyPaused
         let failed = statusCache.values.contains(.failed)
@@ -230,7 +223,7 @@ final class AppState: ObservableObject {
         }
         // Short enough for a single menu line (v3.1.5: the version lives in
         // 「关于 FileVault」 and the dashboard, not in the menu headline).
-        let units = String(format: NSLocalizedString("%d 个仓库", comment: "menu state"), repoCount)
+        let units = String(format: NSLocalizedString("%d 个文件夹", comment: "menu state"), rootCount)
         statusLine = units + " · " + state
     }
 
@@ -253,9 +246,7 @@ final class AppState: ObservableObject {
         parts.append(service.detection == nil ? "noenv" : "env")
         parts.append(String(service.rootsSnapshot().count))
         for root in service.rootsSnapshot() {
-            for r in service.repoManager.firstLevelFolders(root: root) {
-                parts.append(r.path + ":" + (statuses[r.path]?.rawValue ?? "none"))
-            }
+            parts.append(root + ":" + (statuses[root]?.rawValue ?? "none"))
         }
         return parts.joined(separator: "|")
     }

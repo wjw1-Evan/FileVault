@@ -2,6 +2,9 @@ import Foundation
 import FileVaultCore
 
 /// End-to-end core self-check (no UI): detect git, add root, auto-commit, push, rollback.
+///
+/// v4.0: the managed root IS the single repo — this exercises loose files at
+/// the root, nested folders, and the whole-folder rollback.
 enum SmokeTest {
     static func run() -> Bool {
         let sema = DispatchSemaphore(value: 0)
@@ -28,18 +31,24 @@ enum SmokeTest {
         do {
             try await service.start()
             check("git detected", service.detection != nil)
-            // 2. add root with two subfolders
+            // 2. add one root that contains a nested folder AND a loose file.
             let root = tmp + "/vault"
             try fm.createDirectory(atPath: root + "/lunwen", withIntermediateDirectories: true)
-            try fm.createDirectory(atPath: root + "/sheji", withIntermediateDirectories: true)
-            try await service.addRoot(path: root)
-            check("repos created", fm.fileExists(atPath: root + "/lunwen/.git") && fm.fileExists(atPath: root + "/sheji/.git"))
-            // 3. write -> auto commit (default debounce 5s; wait up to 12s)
+            try "root note".write(toFile: root + "/note.md", atomically: true, encoding: .utf8)
             try "v1".write(toFile: root + "/lunwen/a.md", atomically: true, encoding: .utf8)
+            try await service.addRoot(path: root)
+            check("root repo created", fm.fileExists(atPath: root + "/.git"))
+            check("no nested repo", !fm.fileExists(atPath: root + "/lunwen/.git"))
+            // Loose root files and nested files are both tracked.
+            let tracked = await service.repoManager.listFiles(path: root)
+            check("root-level file tracked", tracked.contains("note.md"))
+            check("nested file tracked", tracked.contains("lunwen/a.md"))
+            // 3. write -> auto commit (default debounce 5s; wait up to 15s)
+            try "v2".write(toFile: root + "/lunwen/a.md", atomically: true, encoding: .utf8)
             var commits: [CommitInfo] = []
             var waited = 0.0
             while waited < 15.0 {
-                commits = (try? await service.repoManager.log(path: root + "/lunwen", max: 10)) ?? []
+                commits = (try? await service.repoManager.log(path: root, max: 10)) ?? []
                 if commits.count >= 2 { break }
                 try? await Task.sleep(nanoseconds: 500_000_000)
                 waited += 0.5
@@ -50,28 +59,29 @@ enum SmokeTest {
             let git = service.detection!.gitPath
             let runner = GitRunner(gitExecutable: git)
             _ = try? await runner.run(["init", "--bare", remote])
-            try await service.sync.configureRemote(repoPath: root + "/lunwen", url: remote, autoPush: true)
+            try await service.sync.configureRemote(repoPath: root, url: remote, autoPush: true)
             var pushed = false
             for _ in 0..<20 {
-                if await service.sync.status(for: root + "/lunwen") == .synced { pushed = true; break }
+                if await service.sync.status(for: root) == .synced { pushed = true; break }
                 try? await Task.sleep(nanoseconds: 500_000_000)
             }
             let remoteLog = try? await GitRunner(gitExecutable: git).run(["--git-dir=" + remote, "log", "--oneline", "-n", "1"])
             check("auto-push to bare remote", pushed && (remoteLog?.succeeded ?? false))
-            // 5. rollback to the first commit and verify content
-            try "v2".write(toFile: root + "/lunwen/a.md", atomically: true, encoding: .utf8)
+            // 5. rollback the WHOLE root to the first commit and verify content
+            try "v3".write(toFile: root + "/lunwen/a.md", atomically: true, encoding: .utf8)
             var logs: [CommitInfo] = []
             var waited2 = 0.0
             while waited2 < 20.0 {
-                logs = (try? await service.repoManager.log(path: root + "/lunwen", max: 10)) ?? []
+                logs = (try? await service.repoManager.log(path: root, max: 10)) ?? []
                 if logs.count >= 3 { break }
                 try? await Task.sleep(nanoseconds: 500_000_000)
                 waited2 += 0.5
             }
             print("[SMOKE][debug] commits=\(logs.count) subjects=\(logs.map(\.subject))")
-            if logs.count >= 2 {
-                let old = logs[logs.count - 2]
-                try await service.history.resetRepo(repoPath: root + "/lunwen", to: old.hash)
+            // Roll the WHOLE folder back to its oldest commit (the initial
+            // version captured at addRoot) and verify the nested file is v1.
+            if let first = logs.last, logs.count >= 2 {
+                try await service.history.resetRepo(repoPath: root, to: first.hash)
                 let content = (try? String(contentsOfFile: root + "/lunwen/a.md", encoding: .utf8)) ?? ""
                 check("rollback works", content == "v1")
             } else {

@@ -82,34 +82,35 @@ public final class AuthMonitor: @unchecked Sendable {
         }
     }
 
-    /// One probe pass over all repos that have a remote.
+    /// One probe pass over all managed roots that have a remote.
+    ///
+    /// v4.0: each managed root is one repo, so there is nothing to enumerate
+    /// below it — the probe set is exactly the configured roots.
     public func checkAll(rootsProvider: @escaping @Sendable () -> [String]) async {
-        for root in rootsProvider() {
-            for r in repos.firstLevelFolders(root: root) {
-                let hasRemote = await repos.remoteURL(path: r.path) != nil
-                guard hasRemote else {
-                    lock.lock(); alerted.remove(r.path); lock.unlock()
-                    continue
+        for repo in rootsProvider() {
+            let hasRemote = await repos.remoteURL(path: repo) != nil
+            guard hasRemote else {
+                lock.lock(); alerted.remove(repo); lock.unlock()
+                continue
+            }
+            await AuthMonitor.ProbeLimiter.shared.enter()
+            let conn = await sync.testConnectivity(repoPath: repo)
+            await AuthMonitor.ProbeLimiter.shared.exit()
+            lock.lock()
+            let alreadyAlerted = alerted.contains(repo)
+            if !conn.ok {
+                if !alreadyAlerted {
+                    alerted.insert(repo)
                 }
-                await AuthMonitor.ProbeLimiter.shared.enter()
-                let conn = await sync.testConnectivity(repoPath: r.path)
-                await AuthMonitor.ProbeLimiter.shared.exit()
-                lock.lock()
-                let alreadyAlerted = alerted.contains(r.path)
-                if !conn.ok {
-                    if !alreadyAlerted {
-                        alerted.insert(r.path)
-                    }
-                } else {
-                    alerted.remove(r.path)
-                }
-                lock.unlock()
-                if !conn.ok && !alreadyAlerted {
-                    let message = AuthClassifier.isAuthRelated(conn.detail)
-                        ? AuthClassifier.guidance() + "（" + conn.detail + "）"
-                        : "远程仓库连接失败（" + conn.detail + "）"
-                    onAuthIssue(r.path, message)
-                }
+            } else {
+                alerted.remove(repo)
+            }
+            lock.unlock()
+            if !conn.ok && !alreadyAlerted {
+                let message = AuthClassifier.isAuthRelated(conn.detail)
+                    ? AuthClassifier.guidance() + "（" + conn.detail + "）"
+                    : "远程仓库连接失败（" + conn.detail + "）"
+                onAuthIssue(repo, message)
             }
         }
     }

@@ -22,11 +22,12 @@ struct RepoSection: Identifiable, Equatable {
 }
 
 struct RootCard: Identifiable, Equatable {
-    let id: String          // root path
+    let id: String          // root path (= the one repo's id)
     var name: String
     var path: String
     var paused: Bool
-    var repos: [RepoSection]
+    /// v4.0: one repo per protected folder.
+    var repo: RepoSection
 }
 
 struct ConnectionAlert: Identifiable {
@@ -88,16 +89,13 @@ final class SettingsModel: ObservableObject {
 
         rootCards = svc.rootsSnapshot().map { root in
             let cfgRoot = svc.configStore.load().roots.first { $0.path == root }
-            let repos = svc.repoManager.firstLevelFolders(root: root).map { r in
-                RepoSection(id: r.path, name: r.name)
-            }
-            return RootCard(id: root, name: (root as NSString).lastPathComponent,
-                            path: root, paused: cfgRoot?.paused ?? false, repos: repos)
+            let name = (root as NSString).lastPathComponent
+            return RootCard(id: root, name: name,
+                            path: root, paused: cfgRoot?.paused ?? false,
+                            repo: RepoSection(id: root, name: name))
         }
         for card in rootCards {
-            for section in card.repos {
-                fillRepoDetails(id: section.id)
-            }
+            fillRepoDetails(id: card.repo.id)
         }
     }
 
@@ -128,30 +126,25 @@ final class SettingsModel: ObservableObject {
                 guard let self, let idx = self.indexOf(id) else { return }
                 // Never wipe text the user is typing.
                 if !self.editedPaths.contains(id) {
-                    self.rootCards[idx.section].repos[idx.row].urlText = url ?? ""
+                    self.rootCards[idx].repo.urlText = url ?? ""
                 }
-                self.rootCards[idx.section].repos[idx.row].autoPush = auto
-                self.rootCards[idx.section].repos[idx.row].health = healthInfo.summary
+                self.rootCards[idx].repo.autoPush = auto
+                self.rootCards[idx].repo.health = healthInfo.summary
                 let glyph = Self.repoGlyph(st)
-                self.rootCards[idx.section].repos[idx.row].statusGlyph = glyph.symbol
-                self.rootCards[idx.section].repos[idx.row].statusColor = glyph.color
-                self.rootCards[idx.section].repos[idx.row].authMode = mode
-                self.rootCards[idx.section].repos[idx.row].remoteLimit = limitText
+                self.rootCards[idx].repo.statusGlyph = glyph.symbol
+                self.rootCards[idx].repo.statusColor = glyph.color
+                self.rootCards[idx].repo.authMode = mode
+                self.rootCards[idx].repo.remoteLimit = limitText
                 if let storedUser {
-                    self.rootCards[idx.section].repos[idx.row].authUser = storedUser
+                    self.rootCards[idx].repo.authUser = storedUser
                 }
             }
         }
     }
 
-    struct SectionIndex { let section: Int; let row: Int }
-    func indexOf(_ id: String) -> SectionIndex? {
-        for (s, card) in rootCards.enumerated() {
-            if let r = card.repos.firstIndex(where: { $0.id == id }) {
-                return SectionIndex(section: s, row: r)
-            }
-        }
-        return nil
+    /// Root-card index for a repo id (v4.0: the root path IS the repo id).
+    func indexOf(_ id: String) -> Int? {
+        rootCards.firstIndex(where: { $0.repo.id == id })
     }
 
     /// Testable status glyph mapping (FR menu parity).
@@ -187,11 +180,10 @@ final class SettingsModel: ObservableObject {
         panel.nameFieldStringValue = "FileVault-诊断-\(Self.dayStamp()).zip"
         panel.allowedContentTypes = [.zip]
         guard panel.runModal() == .OK, let dest = panel.url else { return }
-        let roots = svc.rootsSnapshot().map { ($0, svc.repoManager.firstLevelFolders(root: $0).count) }
         let report = SupportBundle.report(appVersion: app.version,
                                           config: svc.configStore.load(),
                                           gitDescription: svc.detection.map { "\($0.gitPath) (\($0.version))" },
-                                          roots: roots)
+                                          roots: svc.rootsSnapshot())
         do {
             _ = try SupportBundle.export(report: report,
                                          configDirectory: svc.configStore.directory,
@@ -302,46 +294,46 @@ final class SettingsModel: ObservableObject {
     // MARK: - Per-repo actions
 
     func urlBinding(_ id: String) -> Binding<String> {
-        Binding(get: { [weak self] in self?.indexOf(id).flatMap { self?.rootCards[$0.section].repos[$0.row].urlText } ?? "" },
+        Binding(get: { [weak self] in self?.indexOf(id).flatMap { self?.rootCards[$0].repo.urlText } ?? "" },
                 set: { [weak self] text in
                     guard let self, let idx = self.indexOf(id) else { return }
-                    self.rootCards[idx.section].repos[idx.row].urlText = text
+                    self.rootCards[idx].repo.urlText = text
                     self.editedPaths.insert(id)
                 })
     }
 
     func autoPushBinding(_ id: String) -> Binding<Bool> {
-        Binding(get: { [weak self] in self?.indexOf(id).flatMap { self?.rootCards[$0.section].repos[$0.row].autoPush } ?? false },
+        Binding(get: { [weak self] in self?.indexOf(id).flatMap { self?.rootCards[$0].repo.autoPush } ?? false },
                 set: { [weak self] v in
                     guard let self, let idx = self.indexOf(id) else { return }
-                    self.rootCards[idx.section].repos[idx.row].autoPush = v
+                    self.rootCards[idx].repo.autoPush = v
                 })
     }
 
     func authModeBinding(_ id: String) -> Binding<RepoManager.AuthMode> {
-        Binding(get: { [weak self] in self?.indexOf(id).flatMap { self?.rootCards[$0.section].repos[$0.row].authMode } ?? .auto },
+        Binding(get: { [weak self] in self?.indexOf(id).flatMap { self?.rootCards[$0].repo.authMode } ?? .auto },
                 set: { [weak self] v in
                     guard let self, let idx = self.indexOf(id) else { return }
-                    self.rootCards[idx.section].repos[idx.row].authMode = v
+                    self.rootCards[idx].repo.authMode = v
                 })
     }
 
     func message(_ id: String) -> (String, Color)? {
         guard let idx = indexOf(id) else { return nil }
-        let s = rootCards[idx.section].repos[idx.row]
+        let s = rootCards[idx].repo
         return s.message.isEmpty ? nil : (s.message, s.messageIsError ? Color(nsColor: .systemRed) : Color(nsColor: .secondaryLabelColor))
     }
 
     private func setMessage(_ id: String, _ text: String, error: Bool = false) {
         guard let idx = indexOf(id) else { return }
-        rootCards[idx.section].repos[idx.row].message = text
-        rootCards[idx.section].repos[idx.row].messageIsError = error
+        rootCards[idx].repo.message = text
+        rootCards[idx].repo.messageIsError = error
     }
 
     /// Shared save path: configure + test + inline feedback (FR-06).
     func saveRepo(_ id: String) {
         guard let svc = service, let idx = indexOf(id) else { return }
-        let section = rootCards[idx.section].repos[idx.row]
+        let section = rootCards[idx].repo
         let url = section.urlText.trimmingCharacters(in: .whitespacesAndNewlines)
         let auto = section.autoPush
         Task { [weak self] in
@@ -360,12 +352,12 @@ final class SettingsModel: ObservableObject {
                 let modeRaw = await svc.repoManager.authMode(path: id)
                 if modeRaw == .pat {
                     let token = await MainActor.run { [weak self] in
-                        self?.indexOf(id).flatMap { self?.rootCards[$0.section].repos[$0.row].authToken }
+                        self?.indexOf(id).flatMap { self?.rootCards[$0].repo.authToken }
                             .map { $0.trimmingCharacters(in: .whitespaces) } ?? ""
                     }
                     if !token.isEmpty {
                         let user = await MainActor.run { [weak self] in
-                            self?.indexOf(id).flatMap { self?.rootCards[$0.section].repos[$0.row].authUser }
+                            self?.indexOf(id).flatMap { self?.rootCards[$0].repo.authUser }
                                 .map { $0.trimmingCharacters(in: .whitespaces) }
                         }
                         try await CredentialStore.store(runner: svc.repoManager.runner, url: url,
@@ -455,7 +447,7 @@ final class SettingsModel: ObservableObject {
                 let url = try await GhRepoCreator().createPrivate(name: clean)
                 await MainActor.run {
                     if let idx = self.indexOf(target) {
-                        self.rootCards[idx.section].repos[idx.row].urlText = url
+                        self.rootCards[idx].repo.urlText = url
                     }
                     self.saveRepo(target)
                 }
@@ -569,7 +561,7 @@ struct SettingsView: View {
         } message: {
             Text("输入仓库名（将创建为当前 gh 账号下的私有仓库）：")
         }
-        .confirmationDialog("移除根目录？", isPresented: Binding(
+        .confirmationDialog("移除文件夹？", isPresented: Binding(
             get: { removeTarget != nil },
             set: { if !$0 { removeTarget = nil } }), titleVisibility: .visible) {
             Button("移除 \(removeTarget?.name ?? "")（仓库保留在磁盘）", role: .destructive) {
@@ -763,9 +755,9 @@ struct SettingsView: View {
                                 .truncationMode(.middle)
                         }
                         Spacer(minLength: 8)
-                        Text(String(format: NSLocalizedString("%d 个仓库", comment: "settings caption"), card.repos.count))
-                            .font(.system(size: 11))
-                            .foregroundStyle(.secondary)
+                        Image(systemName: card.repo.statusGlyph)
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(card.repo.statusColor)
                         Image(systemName: "chevron.down")
                             .font(.system(size: 10, weight: .semibold))
                             .foregroundStyle(.tertiary)
@@ -774,14 +766,14 @@ struct SettingsView: View {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .help(isCollapsed ? "展开根目录" : "折叠根目录")
+                .help(isCollapsed ? "展开文件夹" : "折叠文件夹")
                 Menu {
                     Button("在 Finder 中打开") { app.openPath(card.path) }
                     Button(card.paused ? "恢复自动提交" : "暂停自动提交") {
                         model.pauseRoot(card, to: !card.paused)
                     }
                     Divider()
-                    Button("移除根目录…", role: .destructive) { removeTarget = card }
+                    Button("移除文件夹…", role: .destructive) { removeTarget = card }
                 } label: {
                     Image(systemName: "ellipsis.circle")
                         .font(.system(size: 15))
@@ -790,27 +782,14 @@ struct SettingsView: View {
                 .menuStyle(.borderlessButton)
                 .menuIndicator(.hidden)
                 .frame(width: 24)
-                .help("根目录操作")
+                .help("文件夹操作")
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 13)
 
             if !isCollapsed {
                 FVHairline(leading: 0)
-                if card.repos.isEmpty {
-                    FVEmptyState(symbol: "tray",
-                                 title: "这个目录里还没有子文件夹",
-                                 message: "在根目录下新建文件夹后，会自动成为独立版本库。")
-                } else {
-                    VStack(spacing: 0) {
-                        ForEach(Array(card.repos.enumerated()), id: \.element.id) { index, repo in
-                            repoBlock(repo)
-                            if index < card.repos.count - 1 {
-                                FVHairline(leading: 16)
-                            }
-                        }
-                    }
-                }
+                repoBlock(card.repo)
             }
         }
         .fvCard()
@@ -823,8 +802,8 @@ struct SettingsView: View {
                 Image(systemName: repo.statusGlyph)
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(repo.statusColor)
-                Text(repo.name)
-                    .font(.system(size: 13, weight: .medium))
+                Text("自动版本管理")
+                    .font(.system(size: 12, weight: .medium))
                 Spacer(minLength: 8)
                 Text(repo.health)
                     .font(.system(size: 10))
@@ -893,7 +872,7 @@ struct SettingsView: View {
         VStack(spacing: 0) {
             FVEmptyState(symbol: "folder.badge.plus",
                          title: "还没有受保护的目录",
-                         message: "选一个文件夹，它下面的每个子文件夹都会自动拥有独立的版本历史。",
+                         message: "选一个文件夹，它里面的所有文件都会自动拥有版本历史。",
                          actionTitle: "选择目录…",
                          action: { model.showFileImporter = true })
         }
@@ -907,7 +886,7 @@ struct SettingsView: View {
             HStack(spacing: 8) {
                 Image(systemName: "plus.circle.fill")
                     .font(.system(size: 13))
-                Text("添加根目录…")
+                Text("添加文件夹…")
                     .font(.system(size: 12, weight: .medium))
                 Spacer()
             }

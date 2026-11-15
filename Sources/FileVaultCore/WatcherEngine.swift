@@ -119,7 +119,12 @@ public final class FSEventsChangeSource: ChangeSource {
     }
 }
 
-/// Maps raw FSEvents paths to the owning first-level subfolder (FR-03/04).
+/// Watches ONE managed root folder and reports activity anywhere inside it
+/// (FR-03/04).
+///
+/// v4.0: there is no per-subfolder attribution anymore — any file event below
+/// the root (including loose files directly in the root) means "this folder
+/// has changes"; the debouncer coalesces a burst into one commit.
 public final class WatcherEngine {
     public let rootPath: String
     private let source: ChangeSource
@@ -138,31 +143,23 @@ public final class WatcherEngine {
         self.source = source
     }
 
-    public func start(onActivity: @escaping @Sendable (String) -> Void,
-                      onRootStructureChanged: @escaping @Sendable () -> Void) {
+    public func start(onActivity: @escaping @Sendable () -> Void) {
         let root = realRoot
         source.start(paths: [root]) { eventPaths in
+            var relevant = false
             for p in eventPaths {
-                guard p.hasPrefix(root + "/") else {
-                    if p == root {
-                        onRootStructureChanged()
-                    }
-                    continue
-                }
+                // Events for the root itself (attributes) carry no content change.
+                guard p.hasPrefix(root + "/") else { continue }
                 let rel = String(p.dropFirst((root + "/").count))
                 let comps = rel.split(separator: "/", omittingEmptySubsequences: false)
-                // Ignore our own/other tools' .git internals (index refresh etc.)
-                // or the debounce would self-trigger forever.
-                if comps.count >= 2 && comps[1] == ".git" {
-                    continue
-                }
-                if comps.count >= 2 {
-                    onActivity(String(comps[0]))
-                } else {
-                    // First-level item created/removed/renamed: rescan structure.
-                    onRootStructureChanged()
-                }
+                // Ignore .git internals at ANY depth (our own commits, the
+                // user's own git tooling, nested repos) or the debounce would
+                // retrigger itself forever.
+                if comps.contains(where: { $0 == ".git" }) { continue }
+                relevant = true
+                break
             }
+            if relevant { onActivity() }
         }
     }
 

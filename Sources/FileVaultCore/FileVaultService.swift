@@ -68,7 +68,16 @@ public final class FileVaultService: @unchecked Sendable {
         let cfg = configStore.load()
         applyGeneral(cfg.general)
         for root in cfg.roots {
-            try await attachRoot(path: root.path, paused: root.paused)
+            // One moved/deleted folder must not brick startup: skip the bad
+            // root and keep the rest of the vault working. It stays in the
+            // config so the user can reconnect it from Settings.
+            do {
+                try await attachRoot(path: root.path, paused: root.paused)
+            } catch {
+                if ProcessInfo.processInfo.environment["FV_DEBUG"] != nil {
+                    print("[FV_DEBUG] attachRoot skipped \(root.path): \(error)")
+                }
+            }
         }
         // v2.2.3: periodic auth/connectivity probing with dedup notifications.
         authMonitor = AuthMonitor(repos: repos, sync: sync)
@@ -85,10 +94,7 @@ public final class FileVaultService: @unchecked Sendable {
         Task {
             try? await Task.sleep(nanoseconds: 60_000_000_000)
             for root in rootsForMaintenance {
-                for repo in repoManager.firstLevelFolders(root: root) {
-                    let p = repo.path
-                    await repoManager.runMaintenanceIfNeeded(path: p)
-                }
+                await repoManager.runMaintenanceIfNeeded(path: root)
             }
         }
     }
@@ -123,29 +129,34 @@ public final class FileVaultService: @unchecked Sendable {
         configStore.save(cfg)
     }
 
-    /// Attach an existing root: ensure repos and start its watcher.
+    /// Attach an existing root: prepare its repo and start its watcher.
+    ///
+    /// The root is only registered once preparation succeeded, so a missing or
+    /// unwritable folder can never appear as "attached but unwatched".
     private func attachRoot(path: String, paused: Bool) async throws {
         let p = resolved(path)
+        lock.lock()
+        let alreadyAttached = watchers[p] != nil
+        lock.unlock()
+        if alreadyAttached {
+            if paused { pause.setPaused(true, forRoot: p) }
+            return
+        }
+        guard FileManager.default.fileExists(atPath: p) else {
+            throw FileVaultServiceError.rootMissing
+        }
+        // v4.0: the managed root itself is the one repo.
+        _ = try await repoManager.ensureRepo(at: p)
         if paused {
             pause.setPaused(true, forRoot: p)
         }
-        lock.lock()
-        let alreadyAttached = watchers[p] != nil
-        if !alreadyAttached {
-            roots.append(p)
-        }
-        lock.unlock()
-        guard !alreadyAttached else { return }
-        _ = try await repoManager.ensureRepos(root: p)
         let w = WatcherEngine(rootPath: p, source: FSEventsChangeSource())
         lock.lock()
         watchers[p] = w
+        if !roots.contains(p) { roots.append(p) }
         lock.unlock()
-        w.start(onActivity: { [weak self] subfolder in
-            self?.commitEngine.handleActivity(root: p, subfolder: subfolder)
-        }, onRootStructureChanged: { [weak self] in
-            guard let self else { return }
-            Task { await self.rescanRoot(p) }
+        w.start(onActivity: { [weak self] in
+            self?.commitEngine.handleActivity(root: p)
         })
     }
 
@@ -201,12 +212,6 @@ public final class FileVaultService: @unchecked Sendable {
         for r in rootsSnapshot() {
             await commitEngine.commitAllDirty(root: r)
         }
-    }
-
-    public func rescanRoot(_ root: String) async {
-        guard watchers[root] != nil else { return }
-        _ = try? await repoManager.ensureRepos(root: root)
-        fireStateChange()
     }
 
     public func rootsSnapshot() -> [String] {

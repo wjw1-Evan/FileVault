@@ -38,7 +38,7 @@ final class SyncManagerTests: XCTestCase {
 
     func testAutoPushAfterCommit() async throws {
         let repo = root + "/repoA"
-        _ = try await repos.ensureRepos(root: root)
+        _ = try await repos.ensureRepo(at: root + "/repoA")
         let remote = makeBareRemote("r1")
         try await sync.configureRemote(repoPath: repo, url: remote, autoPush: true)
         TestSupport.write("data", to: repo + "/f.md")
@@ -52,7 +52,7 @@ final class SyncManagerTests: XCTestCase {
 
     func testNoRemoteStatus() async throws {
         let repo = root + "/repoA"
-        _ = try await repos.ensureRepos(root: root)
+        _ = try await repos.ensureRepo(at: root + "/repoA")
         let st = await sync.status(for: repo)
         XCTAssertEqual(st, .noRemote)
         await sync.enqueuePush(repoPath: repo)
@@ -62,7 +62,7 @@ final class SyncManagerTests: XCTestCase {
 
     func testPushFailureThenManualRetry() async throws {
         let repo = root + "/repoA"
-        _ = try await repos.ensureRepos(root: root)
+        _ = try await repos.ensureRepo(at: root + "/repoA")
         // Remote path does not exist yet -> push fails.
         let remote = root + "/not-yet.git"
         try await sync.configureRemote(repoPath: repo, url: remote, autoPush: true)
@@ -76,7 +76,7 @@ final class SyncManagerTests: XCTestCase {
 
     func testAutoPushDisabledStaysPending() async throws {
         let repo = root + "/repoA"
-        _ = try await repos.ensureRepos(root: root)
+        _ = try await repos.ensureRepo(at: root + "/repoA")
         let remote = makeBareRemote("r2")
         try await sync.configureRemote(repoPath: repo, url: remote, autoPush: false)
         // Local commits exist but never pushed -> pendingPush is correct semantics.

@@ -16,7 +16,7 @@ final class AuditRegressionTests: XCTestCase {
     func testLogSurvivesPipeInSubject() async throws {
         let (root, repo, repos, history) = try makeRepo()
         defer { try? FileManager.default.removeItem(atPath: root) }
-        try await repos.ensureRepos(root: root)
+        try await repos.ensureRepo(at: repo)
         TestSupport.write("v2", to: repo + "/f.md")
         let subject = "auto: 修复 a|b 问题 | second pipe"
         _ = try await repos.commitAll(path: repo, message: subject)
@@ -29,7 +29,7 @@ final class AuditRegressionTests: XCTestCase {
     func testFileHistorySurvivesPipeInSubject() async throws {
         let (root, repo, repos, history) = try makeRepo()
         defer { try? FileManager.default.removeItem(atPath: root) }
-        try await repos.ensureRepos(root: root)
+        try await repos.ensureRepo(at: repo)
         TestSupport.write("v1", to: repo + "/f.md")
         _ = try await repos.commitAll(path: repo, message: "v1 | 初始")
         let timeline = try await history.fileHistory(repoPath: repo, file: "f.md")

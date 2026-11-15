@@ -2,12 +2,121 @@ import XCTest
 import CoreServices
 @testable import FileVaultCore
 
+/// Deterministic ChangeSource: the test drives exactly the paths FSEvents would
+/// deliver, so the watcher's filtering rules are asserted without timing flake.
+final class FakeChangeSource: ChangeSource, @unchecked Sendable {
+    private let lock = NSLock()
+    private var handler: (@Sendable ([String]) -> Void)?
+    private(set) var startedPaths: [String] = []
+    private(set) var stopCount = 0
+
+    func start(paths: [String], onEvent: @escaping @Sendable ([String]) -> Void) {
+        lock.lock()
+        startedPaths = paths
+        handler = onEvent
+        lock.unlock()
+    }
+
+    func stop() {
+        lock.lock()
+        stopCount += 1
+        handler = nil
+        lock.unlock()
+    }
+
+    func emit(_ paths: [String]) {
+        lock.lock()
+        let h = handler
+        lock.unlock()
+        h?(paths)
+    }
+}
+
+/// Thread-safe one-shot flag for @Sendable activity callbacks.
+final class ActivityFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = false
+
+    func mark() { lock.lock(); value = true; lock.unlock() }
+    func reset() { lock.lock(); value = false; lock.unlock() }
+    var fired: Bool { lock.lock(); defer { lock.unlock() }; return value }
+}
+
 final class WatcherEngineTests: XCTestCase {
-    /// Real FSEvents -> activity callback fires for a first-level subfolder event.
-    func testFSEventsDeliversActivityForSubfolderEvent() async throws {
+    private func makeTempBase(_ name: String) throws -> URL {
         let base = URL(fileURLWithPath: NSTemporaryDirectory()).resolvingSymlinksInPath()
-            .appendingPathComponent("fv-test-fsevents-\(UUID().uuidString.prefix(6))")
+            .appendingPathComponent("fv-\(name)-\(UUID().uuidString.prefix(6))")
         try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+        return base
+    }
+
+    // MARK: - Deterministic filter semantics (v4.0)
+
+    /// A loose file directly in the managed root is versioned content, so it
+    /// MUST trigger activity (old watcher only counted first-level folders).
+    func testRootLevelFileEventFiresActivity() throws {
+        let base = try makeTempBase("wroot")
+        defer { try? FileManager.default.removeItem(at: base) }
+        let source = FakeChangeSource()
+        let engine = WatcherEngine(rootPath: base.path, source: source)
+        let flag = ActivityFlag()
+        engine.start(onActivity: { flag.mark() })
+        defer { engine.stop() }
+        XCTAssertEqual(source.startedPaths, [engine.realRoot], "watches the root itself")
+        source.emit([engine.realRoot + "/top.txt"])
+        XCTAssertTrue(flag.fired, "root-level file event must trigger activity")
+    }
+
+    func testNestedFileEventFiresActivity() throws {
+        let base = try makeTempBase("wnested")
+        defer { try? FileManager.default.removeItem(at: base) }
+        let source = FakeChangeSource()
+        let engine = WatcherEngine(rootPath: base.path, source: source)
+        let flag = ActivityFlag()
+        engine.start(onActivity: { flag.mark() })
+        defer { engine.stop() }
+        source.emit([engine.realRoot + "/nested/deeper/deep.md"])
+        XCTAssertTrue(flag.fired, "nested file event must trigger activity")
+    }
+
+    /// Our own commits write into .git; treating those as activity would loop
+    /// forever. ".git" at ANY depth must be filtered out.
+    func testGitDirectoryEventsAreIgnoredAtAnyDepth() throws {
+        let base = try makeTempBase("wdotgit")
+        defer { try? FileManager.default.removeItem(at: base) }
+        let source = FakeChangeSource()
+        let engine = WatcherEngine(rootPath: base.path, source: source)
+        let flag = ActivityFlag()
+        engine.start(onActivity: { flag.mark() })
+        defer { engine.stop() }
+
+        source.emit([engine.realRoot + "/.git/index",
+                     engine.realRoot + "/.git/refs/heads/main"])
+        source.emit([engine.realRoot + "/nested/.git/objects/ab/cdef"])
+        XCTAssertFalse(flag.fired, ".git internals must never map to activity")
+
+        // Sanity check: the very same callback DOES fire for real content, so
+        // the assertion above is meaningful (not a dead handler).
+        source.emit([engine.realRoot + "/real.md"])
+        XCTAssertTrue(flag.fired)
+    }
+
+    func testEventOnRootItselfDoesNotFire() throws {
+        let base = try makeTempBase("wself")
+        defer { try? FileManager.default.removeItem(at: base) }
+        let source = FakeChangeSource()
+        let engine = WatcherEngine(rootPath: base.path, source: source)
+        let flag = ActivityFlag()
+        engine.start(onActivity: { flag.mark() })
+        defer { engine.stop() }
+        source.emit([engine.realRoot])
+        XCTAssertFalse(flag.fired, "attribute events on the root itself carry no content change")
+    }
+
+    // MARK: - Real FSEvents end-to-end
+
+    func testFSEventsDeliversActivityForSubfolderEvent() async throws {
+        let base = try makeTempBase("fsevents")
         defer { try? FileManager.default.removeItem(at: base) }
         let sub = base.appendingPathComponent("sub1")
         try FileManager.default.createDirectory(at: sub, withIntermediateDirectories: true)
@@ -15,20 +124,41 @@ final class WatcherEngineTests: XCTestCase {
         let exp = expectation(description: "activity fired")
         let onceLock = NSLock()
         var fulfilled = false
-        engine.start(onActivity: { name in
+        engine.start(onActivity: {
             // FSEvents may deliver several batches; fulfill only once.
             onceLock.lock()
             let first = !fulfilled
             fulfilled = true
             onceLock.unlock()
             if first { exp.fulfill() }
-        }, onRootStructureChanged: {
         })
         defer { engine.stop() }
         // Give the stream a moment to establish.
         try await Task.sleep(nanoseconds: 500_000_000)
         try "hello".write(toFile: sub.appendingPathComponent("note.txt").path, atomically: true, encoding: .utf8)
         // Wait up to 10s for the event.
+        await fulfillment(of: [exp], timeout: 10)
+        engine.stop()
+    }
+
+    /// Required v4.0 coverage: a change to a file at the root level is activity.
+    func testFSEventsDeliversActivityForRootLevelFile() async throws {
+        let base = try makeTempBase("fsevents-root")
+        defer { try? FileManager.default.removeItem(at: base) }
+        let engine = WatcherEngine(rootPath: base.path, source: FSEventsChangeSource())
+        let exp = expectation(description: "root-level activity fired")
+        let onceLock = NSLock()
+        var fulfilled = false
+        engine.start(onActivity: {
+            onceLock.lock()
+            let first = !fulfilled
+            fulfilled = true
+            onceLock.unlock()
+            if first { exp.fulfill() }
+        })
+        defer { engine.stop() }
+        try await Task.sleep(nanoseconds: 500_000_000)
+        try "top".write(toFile: base.appendingPathComponent("top.txt").path, atomically: true, encoding: .utf8)
         await fulfillment(of: [exp], timeout: 10)
         engine.stop()
     }
@@ -44,7 +174,7 @@ final class WatcherLifecycleTests: XCTestCase {
         let engine = WatcherEngine(rootPath: base.path, source: source)
         let exp = expectation(description: "second lifecycle delivers")
         // One atomic write can deliver SEVERAL file events (the .sb-* temp file
-        // plus the rename); fulfill only once — like the sibling test above.
+        // plus the rename); fulfill only once — like the sibling tests above.
         let onceLock = NSLock()
         var fulfilled = false
         let fulfillOnce = {
@@ -54,14 +184,28 @@ final class WatcherLifecycleTests: XCTestCase {
             onceLock.unlock()
             if first { exp.fulfill() }
         }
-        engine.start(onActivity: { _ in fulfillOnce() }, onRootStructureChanged: {})
+        engine.start(onActivity: { fulfillOnce() })
         try await Task.sleep(nanoseconds: 400_000_000)
         engine.stop()
         try await Task.sleep(nanoseconds: 200_000_000)
-        engine.start(onActivity: { _ in fulfillOnce() }, onRootStructureChanged: {})
+        engine.start(onActivity: { fulfillOnce() })
         try await Task.sleep(nanoseconds: 400_000_000)
         try "again".write(toFile: base.appendingPathComponent("sub/z.txt").path, atomically: true, encoding: .utf8)
         await fulfillment(of: [exp], timeout: 10)
         engine.stop()
+    }
+
+    /// Stop must reach the underlying change source.
+    func testStopForwardsToSource() throws {
+        let base = URL(fileURLWithPath: NSTemporaryDirectory()).resolvingSymlinksInPath()
+            .appendingPathComponent("fv-lifecycle-stop-\(UUID().uuidString.prefix(6))")
+        try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: base) }
+        let source = FakeChangeSource()
+        let engine = WatcherEngine(rootPath: base.path, source: source)
+        engine.start(onActivity: {})
+        XCTAssertEqual(source.startedPaths, [engine.realRoot])
+        engine.stop()
+        XCTAssertEqual(source.stopCount, 1)
     }
 }

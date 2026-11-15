@@ -71,3 +71,47 @@ public extension HistoryService {
         }
     }
 }
+
+public extension HistoryService {
+    /// Write the file's content at `hash` to `destination` (binary-safe).
+    ///
+    /// v3.4.3: the history window can "open" a historical version of a file.
+    /// `GitRunner` captures stdout as text (fine for diffs, lossy for images or
+    /// PDFs), so the blob is streamed straight into a file handle here.
+    func exportFile(repoPath: String, hash: String, file: String, to destination: URL) async throws {
+        try RepoManager.validateRepoRelativePath(file)
+        guard hash.range(of: "^[0-9a-fA-F]{4,40}$", options: .regularExpression) != nil else {
+            throw HistoryError.commitNotFound(hash)
+        }
+        let fm = FileManager.default
+        try? fm.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try? fm.removeItem(at: destination)
+        guard fm.createFile(atPath: destination.path, contents: nil),
+              let handle = try? FileHandle(forWritingTo: destination) else {
+            throw HistoryError.exportFailed(file: file)
+        }
+        defer { try? handle.close() }
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: repoManager.runner.gitExecutable)
+        process.arguments = ["-C", repoPath, "show", "\(hash):\(file)"]
+        process.standardOutput = handle
+        let errPipe = Pipe()
+        process.standardError = errPipe
+        do {
+            try process.run()
+        } catch {
+            throw HistoryError.exportFailed(file: file)
+        }
+        process.waitUntilExit()
+        let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
+        guard process.terminationStatus == 0 else {
+            try? fm.removeItem(at: destination)
+            let detail = String(decoding: errData, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+            throw detail.isEmpty
+                ? HistoryError.fileNotInCommit(file: file, hash: String(hash.prefix(7)))
+                : HistoryError.exportFailed(file: file)
+        }
+    }
+}
+

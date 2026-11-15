@@ -315,3 +315,28 @@
 "全部展开" = "Expand all";
 "全部折叠" = "Collapse all";
 
+"正在打开 %@…" = "Opening %@…";
+"✓ 已打开 %@（%@ 版本）" = "✓ Opened %@ (version %@)";
+"⚠️ 打开失败: %@" = "⚠️ Could not open: %@";
+"用默认应用打开这个版本的文件" = "Open this version with the default app";
+"无法打开 %@（版本内容缺失或不可读）" = "Could not open %@ (content missing or unreadable)";
+
+/* v4.0: 根目录 = 一个仓库（取消子文件夹层级） */
+"%d 个文件夹" = "%d folders";
+"%@（%@）" = "%@ (%@)";
+"受保护的文件夹" = "Protected folders";
+"受保护文件夹" = "Protected folders";
+"一个文件夹 = 一个版本库" = "One folder = one repository";
+"在设置里添加一个文件夹，这里就会显示它的历史。" = "Add a folder in Settings and its history shows up here.";
+"尚未添加任何文件夹——先在设置中添加文件夹" = "No protected folders yet — add one in Settings";
+"%d 个文件夹受守护 · %@" = "%d folders protected · %@";
+"全部纳入版本管理" = "Everything under version control";
+"添加一个文件夹，里面的所有文件都会自动拥有版本历史。" = "Add a folder and every file inside gets an automatic history.";
+"选一个文件夹，它里面的所有文件都会自动拥有版本历史。" = "Pick a folder and every file inside gets an automatic history.";
+"自动版本管理" = "Automatic versioning";
+"添加文件夹…" = "Add folder…";
+"移除文件夹？" = "Remove folder?";
+"文件夹操作" = "Folder actions";
+"展开文件夹" = "Expand folder";
+"折叠文件夹" = "Collapse folder";
+"（1 个仓库）" = " (1 repository)";"%d 个文件夹推送失败，点击菜单查看" = "%d folders failed to push — open the menu for details";"移除文件夹…" = "Remove folder…";

@@ -1,6 +1,11 @@
 import Foundation
 
-/// Manages per-root repos: scan, init/adopt, status, commit, remote config, log, rollback.
+/// Manages the repo that IS a managed root folder: init/adopt, status, commit,
+/// remote config, log, rollback.
+///
+/// v4.0: the managed root is exactly one repository. Everything under it —
+/// loose files at the root, nested folders, hidden folders except .git and
+/// whatever .gitignore excludes — is versioned together.
 public final class RepoManager: @unchecked Sendable {
     public let runner: GitRunner
 
@@ -8,41 +13,23 @@ public final class RepoManager: @unchecked Sendable {
         self.runner = runner
     }
 
-    // MARK: - Scan
+    // MARK: - Prepare
 
-    /// List first-level subfolders (hidden dirs are skipped).
-    public func firstLevelFolders(root: String) -> [SubRepo] {
-        let fm = FileManager.default
-        guard let items = try? fm.contentsOfDirectory(atPath: root) else { return [] }
-        return items.sorted()
-            .filter { !$0.hasPrefix(".") }
-    .map { name in
-            SubRepo(
-                name: name,
-                path: (root as NSString).appendingPathComponent(name),
-                isRepo: fm.fileExists(atPath: (root as NSString).appendingPathComponent(name) + "/.git")
-            )
-        }
+    /// Whether the path already is a Git repository (a .git entry exists).
+    /// A .git *file* counts too (worktrees / linked checkouts).
+    public func isRepo(at path: String) -> Bool {
+        FileManager.default.fileExists(atPath: (path as NSString).appendingPathComponent(".git"))
     }
 
-    /// Prepare repos under a root: init new, adopt existing, skip hidden (FR-03).
-    public func ensureRepos(root: String) async throws -> RepoSetupResult {
-        var created: [String] = []
-        var adopted: [String] = []
-        for entry in firstLevelFolders(root: root) {
-            if entry.isRepo {
-                adopted.append(entry.name)
-            } else {
-                try await createRepo(at: entry.path)
-                created.append(entry.name)
-            }
+    /// Prepare the managed root itself as ONE repo: adopt an existing .git
+    /// untouched, otherwise git init + identity + initial commit (FR-03).
+    @discardableResult
+    public func ensureRepo(at path: String) async throws -> RepoSetupResult {
+        if isRepo(at: path) {
+            return RepoSetupResult(created: false, adopted: true)
         }
-        return RepoSetupResult(created: created, adopted: adopted, skippedHidden: hiddenCount(root: root))
-    }
-
-    /// Count hidden entries at first level (report only).
-    private func hiddenCount(root: String) -> Int {
-        (try? FileManager.default.contentsOfDirectory(atPath: root))?.filter { $0.hasPrefix(".") }.count ?? 0
+        try await createRepo(at: path)
+        return RepoSetupResult(created: true, adopted: false)
     }
 
     /// Create a new repo in an existing folder: init + gitignore + identity + initial commit.

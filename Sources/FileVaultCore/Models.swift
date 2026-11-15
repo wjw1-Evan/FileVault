@@ -43,30 +43,20 @@ public struct StatusEntry: Equatable, Sendable {
     }
 }
 
-/// Repo scan result.
-public struct SubRepo: Equatable, Sendable, Identifiable {
-    public var id: String { path }
-    public var name: String
-    public var path: String
-    public var isRepo: Bool
-
-    public init(name: String, path: String, isRepo: Bool) {
-        self.name = name
-        self.path = path
-        self.isRepo = isRepo
-    }
-}
-
-/// Result of preparing repos under a root folder.
+/// Result of preparing ONE managed root folder as a Git repository.
+///
+/// v4.0: a managed root is exactly one repository — the root itself. There is
+/// no per-subfolder repository concept anymore, so the result is a single
+/// outcome instead of lists of created/adopted subrepos.
 public struct RepoSetupResult: Equatable, Sendable {
-    public var created: [String]
-    public var adopted: [String]
-    public var skippedHidden: Int
+    /// True when the root had no repository and one was created (git init).
+    public var created: Bool
+    /// True when an existing repository in the root was adopted untouched.
+    public var adopted: Bool
 
-    public init(created: [String], adopted: [String], skippedHidden: Int) {
+    public init(created: Bool = false, adopted: Bool = false) {
         self.created = created
         self.adopted = adopted
-        self.skippedHidden = skippedHidden
     }
 }
 
