@@ -9,9 +9,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var statusCache: [String: SyncStatus] = [:]
     var healthCache: [String: String] = [:]
     var lastHealthFetch = Date.distantPast
-    weak var settingsWindow: SettingsWindowController?
+    // Window controllers MUST be held strongly: NSWindow does not retain its
+    // windowController, so a weak ref released the controller right after
+    // openSettings — the window stayed on screen as an orphan whose buttons
+    // all had nil targets ("登录时启动/添加根目录 点了没反应" bug, v2.6.1).
+    var settingsWindow: SettingsWindowController?
     var dashboardWindow: DashboardWindowController?
-    weak var historyWindow: HistoryWindowController?
+    var historyWindow: HistoryWindowController?
 
     static let pausedIcon = "⏸"
     static let okIcon = "●"

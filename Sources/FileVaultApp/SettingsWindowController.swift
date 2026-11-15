@@ -50,7 +50,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     required init?(coder: NSCoder) { fatalError() }
 
     func windowWillClose(_ n: Notification) {
-        // keep controller alive via delegate hold
+        // AppDelegate holds this controller strongly; reopen creates a fresh one.
     }
 
     // MARK: - Layout
@@ -683,11 +683,27 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         panel.message = "选择要保护的根目录（第一层子文件夹将被独立版本管理）"
         let modalResult = FVDesign.activateAndRunPanel(panel)
         if modalResult == .OK, let url = panel.url {
+            let chosen = url.path
             Task {
-                try? await svc.addRoot(path: url.path)
-                await MainActor.run { self.rebuild() }
+                do {
+                    try await svc.addRoot(path: chosen)
+                    await MainActor.run { self.rebuild() }
+                } catch {
+                    // Never swallow add-root failures silently (v2.6.1).
+                    await MainActor.run {
+                        Self.alert("添加根目录失败", error.localizedDescription)
+                        self.rebuild()
+                    }
+                }
             }
         }
+    }
+
+    static func alert(_ title: String, _ body: String) {
+        let a = NSAlert()
+        a.messageText = title
+        a.informativeText = body
+        FVDesign.activateAndRunModal(a)
     }
 
     @objc func removeRootAction(_ sender: NSButton) {
