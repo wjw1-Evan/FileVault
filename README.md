@@ -63,9 +63,9 @@ FileVault **永久免费**：无试用期、无激活码、无账号、无订阅
 
 ## 下载安装
 
-> 当前仓库为 **v4.0 开发版**：管理单元已改为「整个文件夹 = 一个仓库」，全量测试通过。下方下载仍为 v3.4.2 稳定版（旧的一级子文件夹模型），v4.0 构建与发布包尚未产出。
+**最新发布：[v4.0.0](https://github.com/wjw1-Evan/FileVault/releases/tag/v4.0.0)** — [FileVault-4.0.0.zip](https://github.com/wjw1-Evan/FileVault/releases/download/v4.0.0/FileVault-4.0.0.zip)（sha256 `c4e54075…fa02149`）
 
-**最新发布：[v3.4.2](https://github.com/wjw1-Evan/FileVault/releases/tag/v3.4.2)** — [FileVault-3.4.2.zip](https://github.com/wjw1-Evan/FileVault/releases/download/v3.4.2/FileVault-3.4.2.zip)（sha256 `35ccd954…3f9f1b`）
+> ⚠️ v4.0.0 是**破坏性升级**：管理单元改为「整个文件夹 = 一个仓库」，v3.x 按子文件夹建立的旧仓库不会自动迁移。需要旧版请下载 [v3.4.2](https://github.com/wjw1-Evan/FileVault/releases/tag/v3.4.2)。
 
 解压后将 `FileVault.app` 拖入「应用程序」，首次打开右键 → 打开（ad-hoc 签名提示未公证），菜单栏即可见图标。
 
