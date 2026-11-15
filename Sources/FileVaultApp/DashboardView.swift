@@ -127,7 +127,13 @@ final class DashboardModel: ObservableObject {
                                                          comment: "dashboard state"), failed)
         } else if svc.detection == nil {
             overall = .setup
-            stateLine = NSLocalizedString("Git 环境未就绪", comment: "dashboard state")
+            if let reason = app.gitSetupError, !reason.isEmpty {
+                // Show the concrete reason (e.g. "所有 git 下载地址都失败了") instead of a dead end.
+                let firstLine = reason.split(separator: "\n").first.map(String.init) ?? reason
+                stateLine = firstLine.count > 40 ? String(firstLine.prefix(40)) + "…" : firstLine
+            } else {
+                stateLine = NSLocalizedString("Git 环境未就绪", comment: "dashboard state")
+            }
         } else {
             overall = .ok
             stateLine = NSLocalizedString("全部正常", comment: "dashboard state")

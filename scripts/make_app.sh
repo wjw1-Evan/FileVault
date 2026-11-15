@@ -55,6 +55,18 @@ if [ -d "Sources/FileVaultApp/Resources" ]; then
   done
 fi
 
+# 内嵌 git（FR-01 首选策略）：有 build/vendor/git 就塞进 Resources/git，
+# 用户首次启动零下载、零联网、不需要 Xcode/Homebrew。
+# 生成方式：./scripts/vendor-git.sh --arch all（见 docs/07-Git自动安装与镜像源.md）
+VENDOR_ARCH="$( [ "$(uname -m)" = "arm64" ] && echo arm64 || echo x64 )"
+if [ -d "build/vendor/git/${VENDOR_ARCH}/bin" ]; then
+  mkdir -p "$APP/Contents/Resources/git"
+  cp -R "build/vendor/git/${VENDOR_ARCH}/." "$APP/Contents/Resources/git/"
+  echo "内嵌 git：build/vendor/git/${VENDOR_ARCH}（首次启动零下载）"
+else
+  echo "⚠️ 未内嵌 git（可执行 ./scripts/vendor-git.sh）；首次启动将按镜像列表下载"
+fi
+
 # 签名：正式分发必须用 Developer ID；ad-hoc 仅供本地自测。
 if [ -n "${CODESIGN_IDENTITY}" ]; then
   echo "签名：${CODESIGN_IDENTITY}"

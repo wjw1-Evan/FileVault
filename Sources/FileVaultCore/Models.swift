@@ -65,6 +65,8 @@ public struct GitDetection: Equatable, Sendable {
     public enum Source: Equatable, Sendable {
         case system
         case bundled
+        /// Provisioned at first launch from a verified download mirror (FR-01).
+        case downloaded
     }
 
     public var gitPath: String

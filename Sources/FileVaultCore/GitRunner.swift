@@ -24,10 +24,25 @@ public struct GitCommandError: Error, Sendable {
 public final class GitRunner: Sendable {
     public let gitExecutable: String
     public let defaultTimeout: TimeInterval
+    /// Environment a self-contained git payload needs (GIT_EXEC_PATH, CA bundle, …).
+    /// Applied to every invocation; per-call env wins over these defaults.
+    public let baseEnvironment: [String: String]
 
-    public init(gitExecutable: String, defaultTimeout: TimeInterval = 30) {
+    public init(gitExecutable: String, defaultTimeout: TimeInterval = 30, baseEnvironment: [String: String] = [:]) {
         self.gitExecutable = gitExecutable
         self.defaultTimeout = defaultTimeout
+        self.baseEnvironment = baseEnvironment
+    }
+
+    /// Runner for a located git, automatically carrying the environment a
+    /// self-contained payload (bundled / downloaded) needs. System git gets the
+    /// plain environment, so behaviour there is unchanged.
+    public static func forExecutable(_ gitPath: String, defaultTimeout: TimeInterval = 30) -> GitRunner {
+        if let root = GitBinaryProvisioner.gitRoot(forExecutable: gitPath) {
+            return GitRunner(gitExecutable: gitPath, defaultTimeout: defaultTimeout,
+                             baseEnvironment: GitBinaryProvisioner.environmentOverrides(gitRoot: root))
+        }
+        return GitRunner(gitExecutable: gitPath, defaultTimeout: defaultTimeout)
     }
 
     /// Run git with args. Async wrapper over the synchronous implementation.
@@ -56,6 +71,9 @@ public final class GitRunner: Sendable {
         process.arguments = ["-c", "core.quotepath=false"] + args
 
         var e = ProcessInfo.processInfo.environment
+        // Self-contained payloads (bundled/downloaded git) keep their libexec,
+        // templates and CA bundle outside the system paths.
+        for (k, v) in baseEnvironment { e[k] = v }
         // Make sure the git executable's directory is on PATH so that
         // credential helpers / hooks / ssh can be resolved.
         let gitDir = (gitExecutable as NSString).deletingLastPathComponent

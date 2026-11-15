@@ -31,6 +31,10 @@ enum SmokeTest {
         do {
             try await service.start()
             check("git detected", service.detection != nil)
+            // FR-01 diagnostics: which layer supplied git (bundled / downloaded / system).
+            if let det = service.detection {
+                print("[SMOKE] git: \(det.gitPath) (\(det.version), source=\(det.source))")
+            }
             // 2. add one root that contains a nested folder AND a loose file.
             let root = tmp + "/vault"
             try fm.createDirectory(atPath: root + "/lunwen", withIntermediateDirectories: true)
@@ -57,15 +61,17 @@ enum SmokeTest {
             // 4. auto-push to a local bare remote
             let remote = tmp + "/remote.git"
             let git = service.detection!.gitPath
-            let runner = GitRunner(gitExecutable: git)
-            _ = try? await runner.run(["init", "--bare", remote])
+            let runner = GitRunner.forExecutable(git)
+            // Explicit branch: Apple git defaults a bare repo to "main", the bundled
+            // payload to "master" — FileVault always creates repos on "main".
+            _ = try? await runner.run(["init", "--bare", "-b", "main", remote])
             try await service.sync.configureRemote(repoPath: root, url: remote, autoPush: true)
             var pushed = false
             for _ in 0..<20 {
                 if await service.sync.status(for: root) == .synced { pushed = true; break }
                 try? await Task.sleep(nanoseconds: 500_000_000)
             }
-            let remoteLog = try? await GitRunner(gitExecutable: git).run(["--git-dir=" + remote, "log", "--oneline", "-n", "1"])
+            let remoteLog = try? await GitRunner.forExecutable(git).run(["--git-dir=" + remote, "log", "--oneline", "-n", "1"])
             check("auto-push to bare remote", pushed && (remoteLog?.succeeded ?? false))
             // 5. rollback the WHOLE root to the first commit and verify content
             try "v3".write(toFile: root + "/lunwen/a.md", atomically: true, encoding: .utf8)

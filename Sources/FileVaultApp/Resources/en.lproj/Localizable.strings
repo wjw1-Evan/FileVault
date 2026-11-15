@@ -193,6 +193,38 @@
 "未检测到 SSH 密钥。请在终端运行 ssh-keygen 生成，并把公钥添加到你的 Git 托管平台。" = "No SSH key found. Run ssh-keygen in Terminal, then add the public key to your Git host.";
 "未检测到" = "Not detected";
 
+/* git 自动安装 / 镜像下载（FR-01, docs/07） */
+"没有适用于 %@ 架构的 git 安装包" = "No git package available for the %@ architecture";
+"没有可用的 git 下载地址" = "No git download address is available";
+"下载失败（HTTP %d）" = "Download failed (HTTP %d)";
+"下载大小不匹配（期望 %lld 字节，实际 %lld 字节）" = "Download size mismatch (expected %lld bytes, got %lld bytes)";
+"下载校验失败（sha256 不匹配，文件可能损坏或被篡改）" = "Download verification failed (sha256 mismatch — the file is corrupt or was tampered with)";
+"解压 git 安装包失败：%@" = "Failed to unpack the git archive: %@";
+"git 可执行文件校验失败：%@" = "git executable failed validation: %@";
+"移除非必需组件后 git 无法执行" = "git stopped working after removing optional components";
+"压缩包内没有找到 git" = "The archive contains no git binary";
+"下载超时（该地址太慢或被中断）" = "Download timed out (this address is too slow or was interrupted)";
+"所有 git 下载地址都失败了（已尝试 %d 个）" = "Every git download address failed (%d tried)";
+"地址无效" = "invalid address";
+"连接超时" = "connection timed out";
+"DNS 解析失败" = "DNS lookup failed";
+"无法连接" = "cannot connect";
+"没有网络连接" = "no network connection";
+"连接中断" = "connection lost";
+"TLS 握手失败" = "TLS handshake failed";
+"GitHub 官方" = "GitHub (official)";
+"ghfast.top 加速" = "ghfast.top (accelerator)";
+"gh-proxy.com 加速" = "gh-proxy.com (accelerator)";
+"ghproxy.cfd 加速" = "ghproxy.cfd (accelerator)";
+"FileVault 自建镜像" = "FileVault mirror";
+"git 自动下载安装失败（已逐个尝试备用下载地址）。\n%@\n可以在「设置 → 诊断」导出诊断包，或手动安装 Xcode Command Line Tools 后重启应用。" = "Automatic git download failed (every backup address was tried).\n%@\nExport a diagnostics bundle from Settings → Diagnostics, or install Xcode Command Line Tools manually and relaunch.";
+"准备下载 git…" = "Preparing to download git…";
+"正在下载 git（%@）…" = "Downloading git via %@…";
+"正在校验 git 安装包…" = "Verifying the git package…";
+"正在解压 git…" = "Unpacking git…";
+"正在验证 git…" = "Validating git…";
+"git 已就绪" = "git is ready";
+
 /* 诊断报告 */
 "FileVault 诊断报告" = "FileVault diagnostics report";
 "生成时间: " = "Generated: ";

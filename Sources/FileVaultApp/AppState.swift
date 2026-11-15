@@ -29,6 +29,9 @@ final class AppState: ObservableObject {
     @Published var roots: [RootMenuEntry] = []
     @Published var paused = false
     @Published var envReady = false
+    /// FR-01: why the automatic git setup failed (mirror ladder exhausted, offline …).
+    /// Kept so the dashboard/settings can show a concrete reason instead of a dead end.
+    @Published var gitSetupError: String?
     @Published var statusLine = NSLocalizedString("正在加载…", comment: "menu state")
     @Published var version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.0.0"
 
@@ -114,14 +117,41 @@ final class AppState: ObservableObject {
         svc.onFailure.handler = { [weak self] title, body in
             self?.notificationService.notifyFailure(title, body)
         }
+        // FR-01: git 自动准备（内嵌 / 多镜像下载）的进度写进菜单状态行，
+        // 用户能看到"正在下载 git（ghfast.top 加速）…"而不是干等。
+        svc.envGuard.onInstallProgress = { [weak self] stage, _, mirror in
+            let text: String
+            switch stage {
+            case .resolving:
+                text = NSLocalizedString("准备下载 git…", comment: "git install status")
+            case .downloading:
+                text = String(format: NSLocalizedString("正在下载 git（%@）…", comment: "git install status"),
+                              NSLocalizedString(mirror, comment: "git mirror name"))
+            case .verifying:
+                text = NSLocalizedString("正在校验 git 安装包…", comment: "git install status")
+            case .extracting:
+                text = NSLocalizedString("正在解压 git…", comment: "git install status")
+            case .validating:
+                text = NSLocalizedString("正在验证 git…", comment: "git install status")
+            case .ready:
+                text = NSLocalizedString("git 已就绪", comment: "git install status")
+            }
+            Task { @MainActor in self?.statusLine = text }
+        }
         Task { [weak self] in
             do {
                 try await svc.startWithAutoInstall(installer: svc.envGuard)
             } catch {
+                // Surface the real reason (which mirrors failed, timeouts) instead of a
+                // generic "install failed" — FR-01 must never dead-end the user.
+                let detail = error.localizedDescription
+                let body = (detail.isEmpty || !detail.contains("git"))
+                    ? NSLocalizedString("自动安装未完成：请安装 Xcode Command Line Tools 后重启应用。",
+                                        comment: "git setup notification")
+                    : detail
                 self?.notificationService.notifyFailure(
-                    NSLocalizedString("Git 环境未就绪", comment: "git setup notification"),
-                    NSLocalizedString("自动安装未完成：请安装 Xcode Command Line Tools 后重启应用。",
-                                      comment: "git setup notification"))
+                    NSLocalizedString("Git 环境未就绪", comment: "git setup notification"), body)
+                self?.gitSetupError = body
             }
             // The new build reached a working state → confirm the update.
             UpdateGuard.markHealthy(configDirectory: ConfigStore.defaultDirectory)

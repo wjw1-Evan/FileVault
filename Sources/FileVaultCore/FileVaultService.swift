@@ -38,7 +38,10 @@ public final class FileVaultService: @unchecked Sendable {
             throw e
         }
         detection = det
-        let runner = GitRunner(gitExecutable: det.gitPath)
+        // A bundled/downloaded git is self-contained: it needs GIT_EXEC_PATH and
+        // the templates dir exported, or its commands misbehave (forExecutable
+        // detects that layout and adds them).
+        let runner = GitRunner.forExecutable(det.gitPath)
         let repos = RepoManager(runner: runner)
         repoManager = repos
         debouncer = Debouncer(quietInterval: 5, maxWait: 60) { [weak self] key in
