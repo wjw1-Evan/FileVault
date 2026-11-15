@@ -171,7 +171,7 @@ final class AppState: ObservableObject {
         Task { [weak self] in await self?.checkForUpdate(silent: true) }
     }
 
-    /// Recurring update check: 20s after launch, then daily — and 10 minutes
+    /// Recurring update check: 20s after launch, then hourly — and 10 minutes
     /// after a FAILED check (flaky networks must not starve updates).
     ///
     /// v3.1.4: the chain is never broken. A tick that finds auto-checking
@@ -329,7 +329,7 @@ final class AppState: ObservableObject {
             return
         }
         guard let offer else {
-            // A persistent "已是最新版本" line after every silent daily check
+            // A persistent "已是最新版本" line after every silent hourly check
             // would just be menu clutter.
             updateNotice = silent ? nil : UpdateStatus.upToDate(version)
             return

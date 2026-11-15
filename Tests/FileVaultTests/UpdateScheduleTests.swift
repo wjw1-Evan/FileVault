@@ -9,9 +9,9 @@ final class UpdateCheckScheduleTests: XCTestCase {
         XCTAssertEqual(UpdateCheckSchedule.launchDelay, 20)
     }
 
-    func testSuccessCadenceIsDaily() {
+    func testSuccessCadenceIsHourly() {
         XCTAssertEqual(UpdateCheckSchedule.nextDelay(afterFailed: false, autoCheckEnabled: true),
-                       24 * 3600)
+                       3600)
     }
 
     func testFailureCadenceRetriesInTenMinutes() {

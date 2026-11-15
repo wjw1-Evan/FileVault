@@ -50,7 +50,7 @@
 "推送失败通知" = "Push-failure notifications";
 "认证失效或网络异常时提醒一次" = "Notify once when auth expires or the network fails";
 "自动检查更新" = "Check for updates automatically";
-"启动 20 秒后检查一次，此后每天一次" = "Checks 20 seconds after launch, then daily";
+"启动 20 秒后检查一次，此后每小时一次" = "Checks 20 seconds after launch, then hourly";
 "自动提交延迟" = "Auto-commit delay";
 "停止编辑多久后落一版" = "How long to wait after you stop editing";
 "配置文件" = "Config file";

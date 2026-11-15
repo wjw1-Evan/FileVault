@@ -624,7 +624,7 @@ struct SettingsView: View {
             }
             FVHairline(leading: 16)
             settingRow(title: "自动检查更新",
-                       detail: "启动 20 秒后检查一次，此后每天一次") {
+                       detail: "启动 20 秒后检查一次，此后每小时一次") {
                 Toggle("", isOn: Binding(
                     get: { model.autoCheckUpdates },
                     set: { model.setAutoCheckUpdates($0) }))
