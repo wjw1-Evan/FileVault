@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 import FileVaultCore
 
 /// One changed file row (Table requires Identifiable rows).
@@ -30,7 +31,23 @@ enum FilePreviewState: Equatable {
     case tooLarge(Int)    // byte size
     case deleted
     case failed(String)
-    case submodule
+    case submodule(SubmoduleEntry?)
+    case diff(FileDiff)
+    case blame([BlameLine])
+    case lfsPointer(Int)
+}
+
+/// What the preview pane shows for the selected file (v4.0.5).
+enum PreviewMode: String, CaseIterable, Equatable {
+    case content
+    case diff
+    case blame
+}
+
+/// Timeline search mode: commit messages/hashes, or file CONTENT history.
+enum HistorySearchMode: Equatable {
+    case subject
+    case content
 }
 
 /// Which list the detail pane shows (v4.0.4): the files this commit touched,
@@ -139,6 +156,19 @@ final class HistoryModel: ObservableObject {
     @Published var submodulePaths: Set<String> = []
     /// path -> A/M/D status character of the selected commit (tree badges).
     @Published var changedStatus: [String: String] = [:]
+    /// path -> +N −M line counts of the selected commit.
+    @Published var changeStats: [String: FileChangeStat] = [:]
+    /// Content / diff / blame selector in the preview pane.
+    @Published var previewMode: PreviewMode = .content
+    /// Named versions of the current repo.
+    @Published var allTags: [TagInfo] = []
+    @Published var tagsByHash: [String: [String]] = [:]
+    /// Folder awaiting a restore confirmation (tree rows).
+    @Published var pendingDirectoryRestore: String?
+    /// Timeline search mode + results of git log -S content search.
+    @Published var searchMode: HistorySearchMode = .subject
+    @Published var contentHits: [CommitInfo] = []
+    @Published var contentSearching = false
     @Published var statusText = NSLocalizedString("选择一个提交，查看并恢复它包含的文件", comment: "history status")
     /// Local filter over the loaded commit subjects / short hashes.
     @Published var searchText = ""
@@ -156,6 +186,9 @@ final class HistoryModel: ObservableObject {
     private var treeCommitHash: String?
     private var currentCommit: CommitInfo?
     private var pendingStateReload: Task<Void, Never>?
+    private var contentSearchTask: Task<Void, Never>?
+    /// File to select after a commit switch finishes loading (file timeline).
+    private var pendingFileSelection: String?
 
     /// Commits after the local search filter (newest first).
     var filteredCommits: [CommitInfo] {
@@ -164,6 +197,98 @@ final class HistoryModel: ObservableObject {
         return commits.filter {
             $0.subject.localizedCaseInsensitiveContains(query)
                 || $0.shortHash.localizedCaseInsensitiveContains(query)
+                || (tagsByHash[$0.hash] ?? []).contains { $0.localizedCaseInsensitiveContains(query) }
+        }
+    }
+
+    /// Rows the timeline shows: subject filter, or git log -S content hits.
+    var displayedCommits: [CommitInfo] {
+        guard searchMode == .content else { return filteredCommits }
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        return query.isEmpty ? commits : contentHits
+    }
+
+    /// Switch the timeline between commit search and file-content history.
+    func setSearchMode(_ mode: HistorySearchMode) {
+        guard mode != searchMode else { return }
+        searchMode = mode
+        contentSearchTask?.cancel()
+        contentSearchTask = nil
+        contentHits = []
+        contentSearching = false
+        if mode == .content { searchTextChanged() }
+    }
+
+    /// Debounced content search (git log -S): finds commits whose diff changed
+    /// the number of occurrences of the query inside file contents.
+    func searchTextChanged() {
+        contentSearchTask?.cancel()
+        contentSearchTask = nil
+        guard searchMode == .content else { return }
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { contentHits = []; contentSearching = false; return }
+        guard let svc = app?.service, let repo = selectedRepo else { return }
+        contentSearching = true
+        contentSearchTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 350_000_000)
+            guard !Task.isCancelled else { return }
+            let hits = (try? await svc.history.searchHistory(repoPath: repo, query: query)) ?? []
+            guard !Task.isCancelled, let self else { return }
+            guard self.searchMode == .content,
+                  self.searchText.trimmingCharacters(in: .whitespacesAndNewlines) == query else { return }
+            self.contentHits = hits.map { c in
+                CommitInfo(hash: c.hash, shortHash: c.shortHash,
+                           subject: c.subject.fvDecodingGitEscapes, date: c.date)
+            }
+            self.contentSearching = false
+        }
+    }
+
+    // MARK: - Named versions
+
+    func refreshTags() {
+        guard let svc = app?.service, let repo = selectedRepo else {
+            allTags = []
+            tagsByHash = [:]
+            return
+        }
+        Task { [weak self] in
+            let list = (try? await svc.history.tags(repoPath: repo)) ?? []
+            guard let self, self.selectedRepo == repo else { return }
+            self.allTags = list
+            self.tagsByHash = Dictionary(grouping: list, by: \.hash).mapValues { $0.map(\.name) }
+        }
+    }
+
+    func createTag(name: String) {
+        guard let svc = app?.service, let repo = selectedRepo, let commit = currentCommit else { return }
+        let clean = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !clean.isEmpty else { return }
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await svc.history.createTag(repoPath: repo, name: clean, hash: commit.hash)
+                self.statusText = String(format: NSLocalizedString("✓ 已命名版本 %@", comment: "history status"), clean)
+                self.refreshTags()
+            } catch {
+                self.statusText = String(format: NSLocalizedString("⚠️ 命名失败: %@", comment: "history status"),
+                                         error.localizedDescription)
+            }
+        }
+    }
+
+    func deleteTag(_ name: String) {
+        guard let svc = app?.service, let repo = selectedRepo else { return }
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await svc.history.deleteTag(repoPath: repo, name: name)
+                self.statusText = String(format: NSLocalizedString("✓ 已删除标签 %@", comment: "history status"), name)
+                self.refreshTags()
+            } catch {
+                self.statusText = String(format: NSLocalizedString("⚠️ 删除标签失败: %@", comment: "history status"),
+                                         error.localizedDescription)
+            }
         }
     }
 
@@ -250,6 +375,11 @@ final class HistoryModel: ObservableObject {
             selectedFile = nil
             preview = .none
             changedStatus = [:]
+            changeStats = [:]
+            allTags = []
+            tagsByHash = [:]
+            contentHits = []
+            contentSearching = false
             resetTreeState()
             statusText = NSLocalizedString("尚未添加任何文件夹——先在设置中添加文件夹", comment: "history status")
             return
@@ -296,10 +426,13 @@ final class HistoryModel: ObservableObject {
                 self.selectedCommitHash = nil
                 self.selectedFile = nil
                 self.preview = .none
+                self.allTags = []
+                self.tagsByHash = [:]
                 self.statusText = NSLocalizedString("该文件夹还没有提交历史", comment: "history status")
                 return
             }
             self.commits = list
+            self.refreshTags()
             // New commits do not change the content of the commit the user is
             // reading: keep the selection, its file list and the preview intact.
             if preserveSelection, let preservedHash,
@@ -336,22 +469,28 @@ final class HistoryModel: ObservableObject {
         }
         currentCommit = commit
         changedStatus = [:]
+        changeStats = [:]
         resetTreeState()
         filesGeneration += 1
         let generation = filesGeneration
         Task { [weak self] in
             guard let self else { return }
             let lines = (try? await svc.history.changedFiles(repoPath: repo, hash: commit.hash)) ?? []
+            let stats = (try? await svc.history.changeStats(repoPath: repo, hash: commit.hash)) ?? [:]
             guard generation == self.filesGeneration else { return }
+            self.changeStats = stats
             self.files = lines.map { line -> ChangedFile in
                 let parts = line.split(separator: "\t", maxSplits: 1)
                 let path = parts.count > 1 ? String(parts[1]) : line
                 return ChangedFile(id: path, status: parts.count > 1 ? String(parts[0]) : "?", path: path)
             }
             self.changedStatus = Dictionary(uniqueKeysWithValues: self.files.map { ($0.path, $0.statusCharacter) })
-            // Keep the file the user was reading when possible; otherwise
-            // auto-preview the first changed file so the pane is never empty.
-            if let previousFile, self.files.contains(where: { $0.path == previousFile }) {
+            // A caller may ask for a specific file (file timeline); otherwise
+            // keep the file the user was reading, else auto-preview the first.
+            if let pending = self.pendingFileSelection {
+                self.pendingFileSelection = nil
+                self.selectFile(pending)
+            } else if let previousFile, self.files.contains(where: { $0.path == previousFile }) {
                 self.selectFile(previousFile)
             } else if let first = self.files.first {
                 self.selectFile(first.path)
@@ -365,9 +504,13 @@ final class HistoryModel: ObservableObject {
         }
     }
 
-    func selectCommit(_ hash: String?) {
+    func selectCommit(_ hash: String?, file: String? = nil) {
         guard let hash else { return }
-        guard selectedCommitHash != hash else { return }
+        guard selectedCommitHash != hash else {
+            if let file { selectFile(file) }
+            return
+        }
+        pendingFileSelection = file
         selectedCommitHash = hash
         loadChangedFiles()
     }
@@ -494,57 +637,104 @@ final class HistoryModel: ObservableObject {
         guard selectedFile != path else { return }
         selectedFile = path
         previewGeneration += 1
-        let generation = previewGeneration
         // Reveal the file inside the tree view (also when switching modes).
         if let path, !path.isEmpty {
             expandedDirs.formUnion(HistoryTree.ancestorDirectories(of: path))
         }
-        guard let path, let svc = app?.service, let repo = selectedRepo, let commit = currentCommit else {
+        loadPreview()
+    }
+
+    /// Switch the preview between content, diff and blame.
+    func setPreviewMode(_ mode: PreviewMode) {
+        guard mode != previewMode else { return }
+        previewMode = mode
+        previewGeneration += 1
+        loadPreview()
+    }
+
+    /// Load the selected file according to the current preview mode.
+    func loadPreview() {
+        let generation = previewGeneration
+        guard let path = selectedFile, let svc = app?.service,
+              let repo = selectedRepo, let commit = currentCommit else {
             preview = .none
             return
         }
-        if isDeleted(path) {
-            preview = .deleted
-            return
-        }
-        if submodulePaths.contains(path) {
-            preview = .submodule
-            return
-        }
-        let kind = HistoryPreviewKind.classify(path: path)
         preview = .loading
-        Task { [weak self] in
-            guard let self else { return }
-            let size = (try? await svc.history.fileSize(repoPath: repo, hash: commit.hash, file: path)) ?? 0
-            guard generation == self.previewGeneration else { return }
-            switch kind {
-            case .binary:
-                self.preview = .binary(size)
-            case .image:
-                guard size <= HistoryPreviewKind.imagePreviewLimit else {
-                    self.preview = .tooLarge(size)
-                    return
-                }
+        if submodulePaths.contains(path) {
+            Task { [weak self] in
+                let entry = try? await svc.history.submoduleEntry(repoPath: repo, hash: commit.hash, path: path)
+                guard generation == self?.previewGeneration else { return }
+                self?.preview = .submodule(entry)
+            }
+            return
+        }
+        switch previewMode {
+        case .diff:
+            Task { [weak self] in
                 do {
-                    let data = try await svc.history.fileData(repoPath: repo, hash: commit.hash, file: path)
-                    guard generation == self.previewGeneration else { return }
-                    self.preview = NSImage(data: data) != nil ? .image(data) : .binary(size)
+                    let diff = try await svc.history.diff(repoPath: repo, hash: commit.hash, file: path)
+                    guard generation == self?.previewGeneration else { return }
+                    self?.preview = .diff(diff)
                 } catch {
-                    guard generation == self.previewGeneration else { return }
-                    self.preview = .failed(error.localizedDescription)
+                    guard generation == self?.previewGeneration else { return }
+                    self?.preview = .failed(error.localizedDescription)
                 }
-            case .text:
-                guard size <= HistoryPreviewKind.textPreviewLimit else {
-                    self.preview = .tooLarge(size)
-                    return
-                }
+            }
+        case .blame:
+            Task { [weak self] in
                 do {
-                    let text = try await svc.history.fileContent(repoPath: repo, hash: commit.hash, file: path)
-                    guard generation == self.previewGeneration else { return }
-                    self.preview = .text(text)
+                    let lines = try await svc.history.blame(repoPath: repo, hash: commit.hash, file: path)
+                    guard generation == self?.previewGeneration else { return }
+                    self?.preview = .blame(lines)
                 } catch {
-                    guard generation == self.previewGeneration else { return }
-                    self.preview = .failed(error.localizedDescription)
+                    guard generation == self?.previewGeneration else { return }
+                    self?.preview = .failed(error.localizedDescription)
+                }
+            }
+        case .content:
+            if isDeleted(path) {
+                preview = .deleted
+                return
+            }
+            let kind = HistoryPreviewKind.classify(path: path)
+            Task { [weak self] in
+                guard let self else { return }
+                let size = (try? await svc.history.fileSize(repoPath: repo, hash: commit.hash, file: path)) ?? 0
+                guard generation == self.previewGeneration else { return }
+                switch kind {
+                case .binary:
+                    self.preview = .binary(size)
+                case .image:
+                    guard size <= HistoryPreviewKind.imagePreviewLimit else {
+                        self.preview = .tooLarge(size)
+                        return
+                    }
+                    do {
+                        let data = try await svc.history.fileData(repoPath: repo, hash: commit.hash, file: path)
+                        guard generation == self.previewGeneration else { return }
+                        self.preview = NSImage(data: data) != nil ? .image(data) : .binary(size)
+                    } catch {
+                        guard generation == self.previewGeneration else { return }
+                        self.preview = .failed(error.localizedDescription)
+                    }
+                case .text:
+                    guard size <= HistoryPreviewKind.textPreviewLimit else {
+                        self.preview = .tooLarge(size)
+                        return
+                    }
+                    do {
+                        let text = try await svc.history.fileContent(repoPath: repo, hash: commit.hash, file: path)
+                        guard generation == self.previewGeneration else { return }
+                        if GitLFSPointer.isPointer(text) {
+                            self.preview = .lfsPointer(size)
+                        } else {
+                            self.preview = .text(text)
+                        }
+                    } catch {
+                        guard generation == self.previewGeneration else { return }
+                        self.preview = .failed(error.localizedDescription)
+                    }
                 }
             }
         }
@@ -593,19 +783,100 @@ final class HistoryModel: ObservableObject {
     }
 
     /// FR-10: restore one file to the selected commit; auto-commits the change.
+    ///
+    /// v4.1: when the selected commit is the one that DELETED the file there is
+    /// nothing to restore *to* — 「找回」 brings back the last version that still
+    /// had it, which is what a user actually means by recovering a deleted file.
     func restoreFile(_ file: String) {
         guard let svc = app?.service, let repo = selectedRepo, let commit = currentCommit else { return }
+        let deletedHere = isDeleted(file)
         Task { [weak self] in
             guard let self else { return }
-            statusText = String(format: NSLocalizedString("正在恢复 %@…", comment: "history status"), file)
+            statusText = String(format: NSLocalizedString(deletedHere ? "正在找回 %@…" : "正在恢复 %@…",
+                                                          comment: "history status"), file)
             do {
-                _ = try await svc.history.restoreFile(repoPath: repo, file: file, to: commit.hash)
-                statusText = String(format: NSLocalizedString("✓ 已恢复 %@ 到 %@", comment: "history status"),
-                                    file, commit.shortHash)
+                // v4.1: one recovery path for both windows, and an honest
+                // result when the file already is that version.
+                let result: RestoreResult
+                if deletedHere {
+                    result = try await svc.recovery.restoreDeleted(repoPath: repo, file: file,
+                                                                   deletedIn: commit.hash)
+                } else {
+                    result = try await svc.recovery.restore(repoPath: repo, file: file, to: commit.hash)
+                }
+                switch result {
+                case .unchanged:
+                    statusText = String(format: NSLocalizedString("✓ %@ 已经是这个版本，无需恢复",
+                                                                  comment: "history status"), file)
+                case .restored(_, let recreated):
+                    if deletedHere {
+                        statusText = String(format: NSLocalizedString("✓ 已找回 %@",
+                                                                      comment: "history status"), file)
+                    } else {
+                        statusText = recreated
+                            ? String(format: NSLocalizedString("✓ 已找回 %@（版本 %@）",
+                                                              comment: "history status"), file, commit.shortHash)
+                            : String(format: NSLocalizedString("✓ 已把 %@ 还原到 %@",
+                                                              comment: "history status"), file, commit.shortHash)
+                    }
+                }
                 reloadCommits()
             } catch {
                 statusText = String(format: NSLocalizedString("⚠️ 恢复失败: %@", comment: "history status"),
                                     error.localizedDescription)
+            }
+        }
+    }
+
+    // MARK: - Folder restore / export (v4.0.5)
+
+    func requestDirectoryRestore(_ directory: String) {
+        pendingDirectoryRestore = directory
+    }
+
+    /// Restore a whole folder (not just one file) to the selected version.
+    func confirmDirectoryRestore() {
+        guard let dir = pendingDirectoryRestore, let svc = app?.service,
+              let repo = selectedRepo, let commit = currentCommit else {
+            pendingDirectoryRestore = nil
+            return
+        }
+        pendingDirectoryRestore = nil
+        Task { [weak self] in
+            guard let self else { return }
+            self.statusText = String(format: NSLocalizedString("正在恢复文件夹 %@…", comment: "history status"), dir)
+            do {
+                _ = try await svc.history.restoreDirectory(repoPath: repo, directory: dir, to: commit.hash)
+                self.statusText = String(format: NSLocalizedString("✓ 已恢复文件夹 %@ 到 %@", comment: "history status"),
+                                         dir, commit.shortHash)
+                self.reloadCommits()
+            } catch {
+                self.statusText = String(format: NSLocalizedString("⚠️ 恢复文件夹失败: %@", comment: "history status"),
+                                         error.localizedDescription)
+            }
+        }
+    }
+
+    /// Export the selected version as a zip of the complete snapshot.
+    func exportSnapshot() {
+        guard let svc = app?.service, let repo = selectedRepo, let commit = currentCommit else { return }
+        let panel = NSSavePanel()
+        panel.title = NSLocalizedString("导出此版本", comment: "export panel title")
+        panel.nameFieldStringValue = (repo as NSString).lastPathComponent + "-" + commit.shortHash + ".zip"
+        panel.allowedContentTypes = [.zip]
+        guard panel.runModal() == .OK, let dest = panel.url else { return }
+        let hash = commit.hash
+        Task { [weak self] in
+            guard let self else { return }
+            self.statusText = NSLocalizedString("正在导出此版本…", comment: "history status")
+            do {
+                try await svc.history.exportSnapshot(repoPath: repo, hash: hash, to: dest)
+                self.statusText = String(format: NSLocalizedString("✓ 已导出到 %@", comment: "history status"),
+                                         dest.path)
+                NSWorkspace.shared.activateFileViewerSelecting([dest])
+            } catch {
+                self.statusText = String(format: NSLocalizedString("⚠️ 导出失败: %@", comment: "history status"),
+                                         error.localizedDescription)
             }
         }
     }
@@ -641,6 +912,11 @@ struct HistoryView: View {
     @Environment(\.openWindow) private var openWindow
     @StateObject private var model = HistoryModel()
     @State private var confirmRollback = false
+    @State private var showFileTimeline = false
+    @State private var showCompare = false
+    @State private var showRecovery = false
+    @State private var showTagPrompt = false
+    @State private var tagName = ""
 
     private var selectedCommit: CommitInfo? {
         guard let hash = model.selectedCommitHash else { return nil }
@@ -652,7 +928,12 @@ struct HistoryView: View {
     }
 
     private var sections: [HistoryTimeline.DaySection] {
-        HistoryTimeline.sections(for: model.filteredCommits)
+        HistoryTimeline.sections(for: model.displayedCommits)
+    }
+
+    private var directoryRestoreBinding: Binding<Bool> {
+        Binding(get: { model.pendingDirectoryRestore != nil },
+                set: { if !$0 { model.pendingDirectoryRestore = nil } })
     }
 
     var body: some View {
@@ -690,6 +971,49 @@ struct HistoryView: View {
         } message: {
             Text("文件夹中受版本管理的内容会回到这个版本，其后的提交从当前分支移除。被忽略的文件、大文件和嵌套仓库保持原样；已绑定的远程仓库不会跟着回退（之后「拉取远程更新」可能把版本带回来）。未提交的改动会先自动保存，回滚前的状态备份到隐藏 ref（refs/filevault/backup，可用 git 找回），不会永久丢失。")
         }
+        .confirmationDialog("恢复文件夹？", isPresented: directoryRestoreBinding, titleVisibility: .visible) {
+            Button("恢复文件夹", role: .destructive) { model.confirmDirectoryRestore() }
+            Button("取消", role: .cancel) { model.pendingDirectoryRestore = nil }
+        } message: {
+            Text("选中的文件夹会回到这个版本：该版本之后新增的文件会被删除，被删的文件会恢复；其他文件夹不受影响。未提交的改动会先自动保存。")
+        }
+        .alert("命名此版本", isPresented: $showTagPrompt) {
+            TextField("版本名（如：答辩前）", text: $tagName)
+            Button("保存") { model.createTag(name: tagName) }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("给这个版本起一个名字，之后可以在时间线里按名字搜索，也能在 git 里看到同名标签。")
+        }
+        .sheet(isPresented: $showFileTimeline) {
+            if let svc = app.service, let repo = model.selectedRepo, let file = model.selectedFile {
+                FileHistorySheet(service: svc.history, repoPath: repo, file: file,
+                                 currentHash: model.selectedCommitHash ?? "",
+                                 onSelect: { hash in
+                                     model.selectCommit(hash, file: file)
+                                     showFileTimeline = false
+                                 },
+                                 onRestored: { model.reloadCommits() })
+            }
+        }
+        .sheet(isPresented: $showCompare) {
+            if let svc = app.service, let repo = model.selectedRepo {
+                CompareSheet(service: svc.history, repoPath: repo, commits: model.commits,
+                             initialFrom: model.commits.dropFirst().first?.hash,
+                             initialTo: model.selectedCommitHash)
+            }
+        }
+        .sheet(isPresented: $showRecovery) {
+            if let svc = app.service, let repo = model.selectedRepo {
+                RecoverySheet(service: svc.history, repoPath: repo,
+                              onRestored: {
+                                  model.reloadCommits()
+                                  showRecovery = false
+                              })
+            }
+        }
+        .onChange(of: model.searchText) { _, _ in
+            model.searchTextChanged()
+        }
     }
 
     // MARK: - Toolbar
@@ -707,6 +1031,21 @@ struct HistoryView: View {
             }
             Spacer(minLength: 12)
             if !model.roots.isEmpty {
+                Menu {
+                    Button("对比两个版本…") { showCompare = true }
+                        .disabled(model.commits.count < 2)
+                    Button("找回被回滚的版本…") { showRecovery = true }
+                    Divider()
+                    Button("导出当前版本…") { model.exportSnapshot() }
+                        .disabled(model.selectedCommitHash == nil)
+                } label: {
+                    Image(systemName: "ellipsis.circle")
+                        .font(.system(size: 13))
+                }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .help("更多历史操作")
                 VStack(alignment: .trailing, spacing: 2) {
                     Text(String(format: NSLocalizedString("%d 个提交", comment: "history caption"), model.commits.count))
                         .font(.system(size: 11, weight: .medium))
@@ -788,7 +1127,7 @@ struct HistoryView: View {
                 Text("时间线")
                     .font(FVTheme.sectionFont)
                 Spacer()
-                Text("\(model.commits.count)")
+                Text("\(model.displayedCommits.count)")
                     .font(FVTheme.metaFont)
                     .foregroundStyle(.tertiary)
                     .monospacedDigit()
@@ -799,7 +1138,21 @@ struct HistoryView: View {
 
             searchField
                 .padding(.horizontal, 12)
-                .padding(.bottom, 10)
+                .padding(.bottom, 6)
+
+            Picker("", selection: Binding(
+                get: { model.searchMode },
+                set: { model.setSearchMode($0) }
+            )) {
+                Text("提交").tag(HistorySearchMode.subject)
+                Text("文件内容").tag(HistorySearchMode.content)
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .controlSize(.mini)
+            .padding(.horizontal, 12)
+            .padding(.bottom, 8)
+            .help("按提交信息搜索，或跨历史搜索文件内容（git log -S）")
 
             FVHairline(leading: 0)
 
@@ -809,10 +1162,21 @@ struct HistoryView: View {
                              message: "这个文件夹被保护后，每次改动都会自动留下一条记录。")
                     .padding(.top, 24)
                 Spacer(minLength: 0)
+            } else if model.searchMode == .content && model.contentSearching && sections.isEmpty {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text("正在搜索文件内容…")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.top, 20)
+                Spacer(minLength: 0)
             } else if sections.isEmpty {
                 FVEmptyState(symbol: "magnifyingglass",
-                             title: "没有匹配的提交",
-                             message: "换个关键词试试，或者清空搜索框。")
+                             title: model.searchMode == .content ? "没有内容匹配的历史版本" : "没有匹配的提交",
+                             message: model.searchMode == .content
+                                 ? "内容搜索只匹配文件内容的变化；换个关键词试试。"
+                                 : "换个关键词试试，或者清空搜索框。")
                     .padding(.top, 24)
                 Spacer(minLength: 0)
             } else {
@@ -846,7 +1210,8 @@ struct HistoryView: View {
             Image(systemName: "magnifyingglass")
                 .font(.system(size: 10, weight: .semibold))
                 .foregroundStyle(.tertiary)
-            TextField("搜索提交内容或哈希", text: $model.searchText)
+            TextField(model.searchMode == .content ? "搜索文件内容（跨历史）" : "搜索提交内容或哈希",
+                      text: $model.searchText)
                 .textFieldStyle(.plain)
                 .font(.system(size: 11))
         }
@@ -909,6 +1274,43 @@ struct HistoryView: View {
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
                 Spacer(minLength: 0)
+                Button {
+                    tagName = ""
+                    showTagPrompt = true
+                } label: {
+                    HStack(spacing: 3) {
+                        Image(systemName: "tag")
+                            .font(.system(size: 9))
+                        Text("命名版本")
+                            .font(.system(size: 10))
+                    }
+                }
+                .buttonStyle(.borderless)
+                .controlSize(.small)
+                .help("给这个版本起一个名字")
+            }
+            if let tags = model.tagsByHash[commit.hash], !tags.isEmpty {
+                HStack(spacing: 5) {
+                    ForEach(tags, id: \.self) { tag in
+                        HStack(spacing: 3) {
+                            Image(systemName: "tag.fill")
+                                .font(.system(size: 8))
+                            Text(tag)
+                                .font(.system(size: 9.5, weight: .medium))
+                        }
+                        .foregroundStyle(Color.accentColor)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Capsule().fill(Color.accentColor.opacity(0.12)))
+                        .contextMenu {
+                            Button(String(format: NSLocalizedString("删除标签「%@」", comment: "history tag"),
+                                         tag), role: .destructive) {
+                                model.deleteTag(tag)
+                            }
+                        }
+                        .help("已命名版本")
+                    }
+                }
             }
         }
         .padding(.horizontal, 18)
@@ -973,6 +1375,7 @@ struct HistoryView: View {
                 VStack(spacing: 2) {
                     ForEach(model.files) { file in
                         ChangedFileRow(file: file,
+                                       stat: model.changeStats[file.path],
                                        selected: file.path == model.selectedFile,
                                        onSelect: { model.selectFile(file.path) },
                                        onOpen: { model.openFile(file.path) },
@@ -1022,12 +1425,14 @@ struct HistoryView: View {
                     ForEach(treeRows, id: \.node.id) { row in
                         TreeRow(row: row,
                                 status: model.changedStatus[row.node.path],
+                                stat: model.changeStats[row.node.path],
                                 selected: !row.node.isDirectory && row.node.path == model.selectedFile,
                                 isExpanded: model.expandedDirs.contains(row.node.path),
                                 onToggle: { model.toggleDirectory(row.node.path) },
                                 onSelect: { model.selectFile(row.node.path) },
                                 onOpen: { model.openFile(row.node.path) },
-                                onRestore: { model.restoreFile(row.node.path) })
+                                onRestore: { model.restoreFile(row.node.path) },
+                                onRestoreDirectory: { model.requestDirectoryRestore(row.node.path) })
                     }
                     if model.treeTruncated {
                         Text(String(format: NSLocalizedString("文件较多，仅显示前 %d 个", comment: "history tree"),
@@ -1067,14 +1472,32 @@ struct HistoryView: View {
                 Text("预览")
                     .font(.system(size: 10, weight: .semibold))
                     .foregroundStyle(.tertiary)
-                if let path = model.selectedFile {
-                    Text(path)
-                        .font(.system(size: 10, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
+                Picker("", selection: Binding(
+                    get: { model.previewMode },
+                    set: { model.setPreviewMode($0) }
+                )) {
+                    Text("内容").tag(PreviewMode.content)
+                    Text("差异").tag(PreviewMode.diff)
+                    Text("溯源").tag(PreviewMode.blame)
                 }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .controlSize(.mini)
+                .frame(width: 152)
+                .help("切换文件内容、逐行差异与逐行来源")
                 Spacer(minLength: 8)
+                if model.selectedFile != nil {
+                    Button {
+                        showFileTimeline = true
+                    } label: {
+                        Image(systemName: "clock.arrow.circlepath")
+                            .font(.system(size: 10))
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.borderless)
+                    .controlSize(.small)
+                    .help("查看此文件的历史版本")
+                }
                 if let path = model.selectedFile, !model.isDeleted(path),
                    !model.submodulePaths.contains(path) {
                     Button {
@@ -1093,7 +1516,17 @@ struct HistoryView: View {
             }
             .padding(.horizontal, 18)
             .padding(.top, 10)
-            .padding(.bottom, 6)
+            .padding(.bottom, 2)
+
+            if let path = model.selectedFile {
+                Text(path)
+                    .font(.system(size: 9.5, design: .monospaced))
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .padding(.horizontal, 18)
+                    .padding(.bottom, 5)
+            }
 
             previewBody
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -1175,10 +1608,39 @@ struct HistoryView: View {
                 previewNote(symbol: "exclamationmark.triangle",
                             title: "预览失败",
                             detail: message)
-            case .submodule:
+            case .submodule(let entry):
                 previewNote(symbol: "shippingbox",
                             title: "这是子模块",
-                            detail: "这里只记录子模块的提交号，不能直接预览或恢复。")
+                            detail: entry.map {
+                                String(format: NSLocalizedString("记录的子模块提交：%@。这里不展开子仓库内部文件。",
+                                                                 comment: "history preview"), $0.shortHash)
+                            } ?? "这里只记录子模块的提交号，不能直接预览或恢复。")
+            case .lfsPointer(let size):
+                previewNote(symbol: "externaldrive.badge.icloud",
+                            title: "这个文件由 Git LFS 管理",
+                            detail: String(format: NSLocalizedString("%@ · 应用内只看到指针；可在终端用 git lfs pull 取回实际内容。",
+                                                                     comment: "history preview"),
+                                           Self.sizeText(size)))
+            case .diff(let diff):
+                if diff.isBinary {
+                    previewNote(symbol: "doc.richtext",
+                                title: "二进制文件已更改",
+                                detail: "无法显示逐行差异，请用默认应用打开查看。")
+                } else if diff.isEmpty {
+                    previewNote(symbol: "equal.circle",
+                                title: "这个版本没有改动此文件",
+                                detail: "它在该版本与上一版之间没有差异。")
+                } else {
+                    diffView(diff)
+                }
+            case .blame(let lines):
+                if lines.isEmpty {
+                    previewNote(symbol: "person.text.rectangle",
+                                title: "没有可显示的逐行来源",
+                                detail: "这个文件在该版本中为空。")
+                } else {
+                    blameView(lines)
+                }
             }
         }
     }
@@ -1208,6 +1670,90 @@ struct HistoryView: View {
         .frame(maxWidth: .infinity)
         .padding(.vertical, 22)
         .padding(.horizontal, 18)
+    }
+
+    // MARK: - Diff / blame rendering (v4.0.5)
+
+    private func diffView(_ diff: FileDiff) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 8) {
+                Text(String(format: NSLocalizedString("+%d −%d", comment: "diff summary"),
+                            diff.added, diff.removed))
+                    .font(.system(size: 9.5, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                if diff.truncated {
+                    Text("差异过大，仅显示前部分")
+                        .font(.system(size: 9.5))
+                        .foregroundStyle(.orange)
+                }
+                Spacer(minLength: 0)
+                Text("统一 diff")
+                    .font(.system(size: 9))
+                    .foregroundStyle(.tertiary)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 5)
+
+            ScrollView([.horizontal, .vertical]) {
+                DiffText(text: diff.text)
+                    .padding(.vertical, 4)
+            }
+        }
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(Color.primary.opacity(0.035))
+        )
+        .padding(.horizontal, 18)
+        .padding(.bottom, 12)
+    }
+
+    private func blameView(_ lines: [BlameLine]) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 8) {
+                Text(String(format: NSLocalizedString("逐行来源 · %d 行", comment: "blame"), lines.count))
+                    .font(.system(size: 9.5))
+                    .foregroundStyle(.secondary)
+                Spacer(minLength: 0)
+                Text("哈希 · 日期 · 内容")
+                    .font(.system(size: 9))
+                    .foregroundStyle(.tertiary)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 5)
+
+            ScrollView([.horizontal, .vertical]) {
+                LazyVStack(alignment: .leading, spacing: 0) {
+                    ForEach(lines) { line in
+                        HStack(alignment: .top, spacing: 10) {
+                            Text(line.shortHash)
+                                .font(.system(size: 9, design: .monospaced))
+                                .foregroundStyle(Color.accentColor)
+                                .frame(width: 54, alignment: .leading)
+                            Text(line.date.map { $0.formatted(date: .numeric, time: .omitted) } ?? "—")
+                                .font(.system(size: 9, design: .monospaced))
+                                .foregroundStyle(.tertiary)
+                                .frame(width: 84, alignment: .leading)
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.8)
+                            Text(line.text.isEmpty ? " " : line.text)
+                                .font(.system(size: 10.5, design: .monospaced))
+                                .textSelection(.enabled)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 1)
+                        .help(line.author)
+                    }
+                }
+                .padding(.vertical, 4)
+            }
+        }
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(Color.primary.opacity(0.035))
+        )
+        .padding(.horizontal, 18)
+        .padding(.bottom, 12)
     }
 
     private func footer(commit: CommitInfo?) -> some View {
@@ -1328,6 +1874,7 @@ private struct CommitRow: View {
 /// One changed file: status badge, name + directory, and hover actions.
 private struct ChangedFileRow: View {
     let file: ChangedFile
+    let stat: FileChangeStat?
     let selected: Bool
     let onSelect: () -> Void
     let onOpen: () -> Void
@@ -1369,30 +1916,57 @@ private struct ChangedFileRow: View {
                 }
             }
             Spacer(minLength: 6)
-            if (hovering || selected) && !file.isDeleted {
-                Button(action: onOpen) {
-                    Image(systemName: "arrow.up.forward.app")
-                        .font(.system(size: 10))
-                        .foregroundStyle(.secondary)
-                }
-                .buttonStyle(.borderless)
-                .help("用默认应用打开这个版本")
-                Button(action: onRestore) {
-                    HStack(spacing: 3) {
-                        Image(systemName: "arrow.uturn.backward")
-                            .font(.system(size: 9, weight: .semibold))
-                        Text("恢复")
-                            .font(.system(size: 10, weight: .medium))
+            if let stat {
+                Text(stat.summary)
+                    .font(.system(size: 9, design: .monospaced))
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+            }
+            if hovering || selected {
+                if file.isDeleted {
+                    // The commit itself deleted the file: 「找回」 uses the last
+                    // version that still had it (v4.1 recovery semantics).
+                    Button(action: onRestore) {
+                        HStack(spacing: 3) {
+                            Image(systemName: "arrow.uturn.backward")
+                                .font(.system(size: 9, weight: .semibold))
+                            Text("找回")
+                                .font(.system(size: 10, weight: .medium))
+                        }
+                        .foregroundStyle(tint)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 2)
+                        .background(
+                            Capsule().fill(tint.opacity(0.13))
+                        )
                     }
-                    .foregroundStyle(Color.accentColor)
-                    .padding(.horizontal, 7)
-                    .padding(.vertical, 2)
-                    .background(
-                        Capsule().fill(Color.accentColor.opacity(0.12))
-                    )
+                    .buttonStyle(.plain)
+                    .help("从删除前的版本找回这个文件")
+                } else {
+                    Button(action: onOpen) {
+                        Image(systemName: "arrow.up.forward.app")
+                            .font(.system(size: 10))
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.borderless)
+                    .help("用默认应用打开这个版本")
+                    Button(action: onRestore) {
+                        HStack(spacing: 3) {
+                            Image(systemName: "arrow.uturn.backward")
+                                .font(.system(size: 9, weight: .semibold))
+                            Text("恢复")
+                                .font(.system(size: 10, weight: .medium))
+                        }
+                        .foregroundStyle(Color.accentColor)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 2)
+                        .background(
+                            Capsule().fill(Color.accentColor.opacity(0.12))
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .help("把这个文件恢复到选中版本")
                 }
-                .buttonStyle(.plain)
-                .help("把这个文件恢复到选中版本")
             }
         }
         .padding(.horizontal, 10)
@@ -1415,12 +1989,14 @@ private struct ChangedFileRow: View {
 private struct TreeRow: View {
     let row: HistoryTreeRow
     let status: String?
+    let stat: FileChangeStat?
     let selected: Bool
     let isExpanded: Bool
     let onToggle: () -> Void
     let onSelect: () -> Void
     let onOpen: () -> Void
     let onRestore: () -> Void
+    let onRestoreDirectory: () -> Void
     @State private var hovering = false
 
     private var node: HistoryTreeNode { row.node }
@@ -1479,6 +2055,20 @@ private struct TreeRow: View {
                     .truncationMode(.middle)
             }
             Spacer(minLength: 4)
+            if node.isDirectory, hovering {
+                Button(action: onRestoreDirectory) {
+                    Image(systemName: "arrow.uturn.backward")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(Color.accentColor)
+                }
+                .buttonStyle(.borderless)
+                .help("恢复此文件夹到该版本")
+            }
+            if !node.isDirectory, let stat {
+                Text(stat.summary)
+                    .font(.system(size: 9, design: .monospaced))
+                    .foregroundStyle(.tertiary)
+            }
             if !node.isDirectory, hovering || selected, node.kind != .submodule {
                 Button(action: onOpen) {
                     Image(systemName: "arrow.up.forward.app")
@@ -1516,5 +2106,57 @@ private struct TreeRow: View {
             if node.isDirectory { onToggle() } else { onSelect() }
         }
         .onHover { hovering = $0 }
+    }
+}
+
+// MARK: - Unified diff rows (v4.0.5)
+
+/// Renders a unified diff with per-line color. Kept as its own view so the
+/// line array is computed once instead of on every row.
+struct DiffText: View {
+    let text: String
+
+    private var lines: [String] {
+        text.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+    }
+
+    var body: some View {
+        LazyVStack(alignment: .leading, spacing: 0) {
+            ForEach(lines.indices, id: \.self) { index in
+                DiffRow(line: lines[index])
+            }
+        }
+    }
+}
+
+struct DiffRow: View {
+    let line: String
+
+    private var isHeader: Bool {
+        line.hasPrefix("+++") || line.hasPrefix("---") || line.hasPrefix("diff ")
+            || line.hasPrefix("index ") || line.hasPrefix("new file") || line.hasPrefix("deleted file")
+    }
+
+    private var background: Color {
+        if isHeader { return Color.primary.opacity(0.04) }
+        if line.hasPrefix("@@") { return Color.blue.opacity(0.10) }
+        if line.hasPrefix("+") { return Color.green.opacity(0.14) }
+        if line.hasPrefix("-") { return Color.red.opacity(0.13) }
+        return .clear
+    }
+
+    private var foreground: Color {
+        if line.hasPrefix("+") || line.hasPrefix("-") { return .primary }
+        return .secondary
+    }
+
+    var body: some View {
+        Text(line.isEmpty ? " " : line)
+            .font(.system(size: 10.5, design: .monospaced))
+            .foregroundStyle(foreground)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 10)
+            .background(background)
+            .textSelection(.enabled)
     }
 }

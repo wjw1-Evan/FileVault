@@ -60,6 +60,13 @@ struct FileVaultApp: App {
         }
         .defaultSize(width: 1000, height: 640)
 
+        // v4.1: file-first recovery. 恢复 = 找回删除的文件 / 还原改过的文件.
+        Window("FileVault 恢复", id: "recovery") {
+            RecoveryView()
+                .environmentObject(app)
+        }
+        .defaultSize(width: 1060, height: 680)
+
         #if DEBUG
         // Dev-only: lets --render-menu capture the panel as a PNG.
         Window("FileVault 菜单", id: "menu-preview") {
@@ -85,7 +92,7 @@ struct FileVaultApp: App {
               --launch-status     Inspect the login-item registration state
               --launch-register   Register the app as a login item
               --launch-unregister Unregister the login item
-              --open-ui a,b,c     Open windows (settings,dashboard,history) in the running app
+              --open-ui a,b,c     Open windows (settings,dashboard,history,recovery) in the running app
               --render-* <path>   Render a window to PNG and exit (debug: menu too)
               --help              Show this help
             """)
@@ -113,6 +120,7 @@ struct FileVaultApp: App {
         // window scenes use (v3.4.0).
         var map = ["--render-settings": ("settings", NSLocalizedString("FileVault 设置", comment: "window title")),
                    "--render-history": ("history", NSLocalizedString("FileVault 历史", comment: "window title")),
+                   "--render-recovery": ("recovery", NSLocalizedString("FileVault 恢复", comment: "window title")),
                    "--render-dashboard": ("dashboard", "FileVault")]
         #if DEBUG
         map["--render-menu"] = ("menu-preview", "FileVault 菜单")

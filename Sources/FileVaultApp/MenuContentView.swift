@@ -161,6 +161,8 @@ struct MenuContentView: View {
                           title: "打开主面板",
                           key: "d", modifiers: [.command, .shift],
                           hint: "⇧⌘D") { app.open("dashboard") }
+            MenuActionRow(symbol: "arrow.uturn.backward.circle",
+                          title: "恢复文件…") { app.open("recovery") }
             MenuActionRow(symbol: "clock.arrow.circlepath",
                           title: "历史版本…") { app.open("history") }
             MenuActionRow(symbol: "gearshape",

@@ -234,10 +234,15 @@ struct DashboardView: View {
             HStack(alignment: .firstTextBaseline) {
                 FVSectionHeader(title: "最近活动",
                                 subtitle: "自动提交会按时间聚合，不需要你手动保存")
-                Button("全部历史") { openWindow(id: "history") }
-                    .buttonStyle(.link)
-                    .font(FVTheme.metaFont)
-                    .padding(.trailing, 16)
+                HStack(spacing: 10) {
+                    Button("恢复文件") { openWindow(id: "recovery") }
+                        .buttonStyle(.link)
+                        .font(FVTheme.metaFont)
+                    Button("全部历史") { openWindow(id: "history") }
+                        .buttonStyle(.link)
+                        .font(FVTheme.metaFont)
+                }
+                .padding(.trailing, 16)
             }
             FVHairline(leading: 0)
             if model.activity.isEmpty {

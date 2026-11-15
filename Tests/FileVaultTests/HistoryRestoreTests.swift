@@ -226,7 +226,7 @@ final class HistoryRestoreTests: XCTestCase {
         XCTAssertEqual(try read("f.md"), "v1")
 
         let top = try await topCommit()
-        XCTAssertTrue(top.subject.contains("rollback"), "restore must be recorded: \(top.subject)")
+        XCTAssertTrue(top.subject.contains("restore"), "restore must be recorded: \(top.subject)")
         XCTAssertTrue(top.subject.contains("f.md"))
         XCTAssertTrue(top.subject.contains(String(versions.v1.hash.prefix(7))))
     }
@@ -317,7 +317,7 @@ final class HistoryRestoreTests: XCTestCase {
         let log = try await commits(limit: 10)
         XCTAssertTrue(log.contains { $0.subject.contains("backup") },
                       "pending edits must be saved: \(log.map(\.subject))")
-        XCTAssertTrue(log.contains { $0.subject.contains("rollback") })
+        XCTAssertTrue(log.contains { $0.subject.contains("restore") })
         XCTAssertEqual(try read("notes.md"), "unsaved work")
         let trackedResult = try await git(["ls-files", "notes.md"])
         XCTAssertEqual(trackedResult.stdout.trimmingCharacters(in: .whitespacesAndNewlines), "notes.md")

@@ -10,6 +10,7 @@ public final class FileVaultService: @unchecked Sendable {
     public private(set) var commitEngine: CommitEngine!
     public private(set) var sync: SyncManager!
     public private(set) var history: HistoryService!
+    public private(set) var recovery: RecoveryService!
     public private(set) var watchers: [String: WatcherEngine] = [:]
     private var roots: [String] = []
     public var onStateChange: (@Sendable () -> Void)?
@@ -50,6 +51,7 @@ public final class FileVaultService: @unchecked Sendable {
         commitEngine = CommitEngine(repoManager: repos, debouncer: debouncer!, pause: pause)
         sync = SyncManager(repoManager: repos)
         history = HistoryService(repoManager: repos)
+        recovery = RecoveryService(repoManager: repos, history: history)
         commitEngine.onCommitFailure = { [weak self] repoPath, reason in
             self?.onFailure(NSLocalizedString("自动提交失败", comment: "notification title"),
                             "\((repoPath as NSString).lastPathComponent)：\(reason)")

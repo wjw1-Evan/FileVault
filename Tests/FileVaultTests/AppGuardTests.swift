@@ -275,12 +275,51 @@ final class HistoryModelTests: XCTestCase {
         try await Task.sleep(nanoseconds: 1_500_000_000)
         let log = try await service.repoManager.log(path: repoPath)
         XCTAssertEqual(log.count, 3, "restore must form a new commit")
-        XCTAssertTrue(log.first!.subject.contains("rollback: 恢复 s.md"),
-                      "rollback commit message: \(log.first!.subject)")
+        XCTAssertTrue(log.first!.subject.contains("restore: 还原 s.md"),
+                      "restore commit message: \(log.first!.subject)")
         XCTAssertTrue(model.statusText.contains("已恢复") || model.statusText.contains("包含"),
                       "feedback after restore: \(model.statusText)")
         try? FileManager.default.removeItem(atPath: base)
     }
+
+    /// v4.1: when the selected commit is the deletion itself, 「恢复」 must bring
+    /// the file back from the last version that still had it instead of failing.
+    @MainActor
+    func testRestoreFromDeletionCommitBringsTheFileBack() async throws {
+        let (model, service, base) = try await makeModel()
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let repo = base + "/vault"
+        for _ in 0..<40 where model.commits.isEmpty {
+            try await Task.sleep(nanoseconds: 100_000_000)
+        }
+        XCTAssertFalse(model.commits.isEmpty)
+
+        try FileManager.default.removeItem(atPath: repo + "/s.md")
+        _ = try await service.repoManager.commitAll(path: repo, message: "delete s.md")
+        model.reloadCommits()
+        for _ in 0..<40 where model.commits.first?.subject != "delete s.md" {
+            try await Task.sleep(nanoseconds: 100_000_000)
+        }
+        let deletion = try XCTUnwrap(model.commits.first)
+        XCTAssertEqual(deletion.subject, "delete s.md")
+
+        model.selectCommit(deletion.hash)
+        for _ in 0..<40 where !model.files.contains(where: { $0.path == "s.md" }) {
+            try await Task.sleep(nanoseconds: 100_000_000)
+        }
+        XCTAssertTrue(model.files.contains { $0.path == "s.md" && $0.isDeleted },
+                      "the deletion commit lists s.md as deleted")
+
+        model.restoreFile("s.md")
+        for _ in 0..<60 where !FileManager.default.fileExists(atPath: repo + "/s.md") {
+            try await Task.sleep(nanoseconds: 100_000_000)
+        }
+        XCTAssertEqual(try String(contentsOfFile: repo + "/s.md", encoding: .utf8), "s")
+        let log = try await service.repoManager.log(path: repo)
+        XCTAssertTrue(log.first?.subject.contains("restore: 找回 s.md") == true,
+                      "recovery commit: \(log.first?.subject ?? "nil")")
+    }
+
 }
 
 /// v3.0.0 SwiftUI migration: settings behavior lives in SettingsModel.

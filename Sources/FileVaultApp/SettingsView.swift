@@ -491,6 +491,30 @@ final class SettingsModel: ObservableObject {
         }
     }
 
+    /// v4.0.5: read-only repository integrity check (git fsck --full).
+    func checkIntegrity(_ id: String) {
+        guard let svc = service else { return }
+        setMessage(id, NSLocalizedString("正在检查仓库完整性…", comment: "settings status"))
+        Task { [weak self] in
+            do {
+                let report = try await svc.history.fsck(repoPath: id)
+                await MainActor.run {
+                    self?.setMessage(id, report.summary, error: !report.ok)
+                    if !report.ok {
+                        let detail = report.issues.prefix(6).joined(separator: "\n")
+                        Task { await self?.alert(NSLocalizedString("仓库检查发现问题", comment: "settings alert"),
+                                                 detail) }
+                    }
+                }
+            } catch {
+                await MainActor.run {
+                    self?.setMessage(id, String(format: NSLocalizedString("⚠️ 检查失败：%@", comment: "settings status"),
+                                                error.localizedDescription), error: true)
+                }
+            }
+        }
+    }
+
     func openGitignoreEditor(_ id: String) {
         guard let repos = service?.repoManager else { return }
         let name = (id as NSString).lastPathComponent
@@ -909,6 +933,8 @@ struct SettingsView: View {
                     Button("拉取远程更新") { model.pull(repo.id) }
                     Button("编辑忽略规则…") { model.openGitignoreEditor(repo.id) }
                     Button("在 GitHub 建仓并绑定…") { model.createRepoTarget = repo.id }
+                    Divider()
+                    Button("检查仓库完整性…") { model.checkIntegrity(repo.id) }
                 }
                 .controlSize(.small)
                 .menuStyle(.borderlessButton)

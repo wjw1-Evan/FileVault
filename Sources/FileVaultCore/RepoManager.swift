@@ -370,9 +370,22 @@ public final class RepoManager: @unchecked Sendable {
     /// - Preserves uncommitted edits by committing them first (v3.3.1).
     /// - Throws when the file does not exist in that commit — the old
     ///   implementation ignored git's exit code and silently "succeeded".
+    /// - Commit messages say what the user asked for: 「找回」 for a file that
+    ///   was gone, 「还原」 for one that was overwritten (v4.1).
     @discardableResult
     public func restoreFile(path: String, file: String, to hash: String) async throws -> String {
         try Self.validateRepoRelativePath(file)
+        guard hash.range(of: "^[0-9a-fA-F]{4,40}$", options: .regularExpression) != nil else {
+            throw HistoryError.commitNotFound(hash)
+        }
+        // The path must exist in that version, otherwise git checkout fails with
+        // a generic "pathspec did not match" message.
+        let exists = try await runner.run(["cat-file", "-e", "\(hash):\(file)"], cwd: path)
+        guard exists.succeeded else {
+            throw HistoryError.fileNotInCommit(file: file, hash: String(hash.prefix(7)))
+        }
+        let full = (path as NSString).appendingPathComponent(file)
+        let wasMissing = !FileManager.default.fileExists(atPath: full)
         // Never lose data: snapshot pending changes before rewriting the file.
         let dirty = (try? await status(path: path)) ?? []
         if !dirty.isEmpty {
@@ -380,9 +393,13 @@ public final class RepoManager: @unchecked Sendable {
         }
         let r = try await runner.run(["checkout", hash, "--", file], cwd: path)
         guard r.succeeded else {
-            throw HistoryError.fileNotInCommit(file: file, hash: String(hash.prefix(7)))
+            throw HistoryError.restoreFailed(stderr: r.stderr)
         }
-        return try await commitAll(path: path, message: "rollback: 恢复 \(file) 到 \(String(hash.prefix(7)))")
+        let short = String(hash.prefix(7))
+        let message = wasMissing
+            ? "restore: 找回 \(file)（版本 \(short)）"
+            : "restore: 还原 \(file) 到 \(short)"
+        return try await commitAll(path: path, message: message)
     }
 
     /// Hard-reset the repo to a given commit (history moves back; UI confirms).
