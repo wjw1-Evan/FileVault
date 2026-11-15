@@ -29,7 +29,6 @@ public final class RepoManager: @unchecked Sendable {
     public func ensureRepos(root: String) async throws -> RepoSetupResult {
         var created: [String] = []
         var adopted: [String] = []
-        var hidden = 0
         for entry in firstLevelFolders(root: root) {
             if entry.isRepo {
                 adopted.append(entry.name)
@@ -37,7 +36,7 @@ public final class RepoManager: @unchecked Sendable {
                 try await createRepo(at: entry.path)
                 created.append(entry.name)
             }
-    }
+        }
         return RepoSetupResult(created: created, adopted: adopted, skippedHidden: hiddenCount(root: root))
     }
 
@@ -283,16 +282,18 @@ public final class RepoManager: @unchecked Sendable {
     // MARK: - History / rollback (FR-09/10)
 
     /// Commit log (newest first).
+    /// Fields are NUL-separated (%x00): a commit SUBJECT may contain "|" (user
+    /// commits from terminal), which corrupted the old pipe-based parsing.
+    /// Git itself never allows NUL inside a subject, so this separator is safe.
     public func log(path: String, max: Int = 50) async throws -> [CommitInfo] {
-        let r = try await runner.run(["log", "--pretty=format:%H|%h|%s|%aI", "-n", String(max)], cwd: path)
+        let r = try await runner.run(["log", "--pretty=format:%H%x00%h%x00%s%x00%aI", "-n", String(max)], cwd: path)
         guard r.succeeded else { return [] }
         return r.stdout.split(separator: "\n").compactMap { line in
-            let parts = line.split(separator: "|", maxSplits: 3, omittingEmptySubsequences: false)
-            guard parts.count == 4 else { return nil }
-            let dateStr = String(parts[3])
+            let parts = line.components(separatedBy: "\u{0}")
+            guard parts.count == 4, !parts[0].isEmpty, !parts[3].isEmpty else { return nil }
             let f = ISO8601DateFormatter()
-            let d = f.date(from: dateStr) ?? Date(timeIntervalSince1970: 0)
-            return CommitInfo(hash: String(parts[0]), shortHash: String(parts[1]), subject: String(parts[2]), date: d)
+            let d = f.date(from: parts[3]) ?? Date(timeIntervalSince1970: 0)
+            return CommitInfo(hash: parts[0], shortHash: parts[1], subject: parts[2], date: d)
         }
     }
 

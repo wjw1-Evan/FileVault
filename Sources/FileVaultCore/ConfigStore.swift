@@ -96,9 +96,10 @@ public final class ConfigStore: @unchecked Sendable {
             cache = cfg
             return cfg
         }
-        let empty = AppConfig()
-        cache = empty
-        return empty
+        // Missing/corrupt file: return the default WITHOUT caching it — a
+        // poisoned cache would make the NEXT save() wipe the user's real roots
+        // (the silent-root-loss class of bug, v1.3.0). Retry the disk next time.
+        return AppConfig()
     }
 
     public func save(_ config: AppConfig) {

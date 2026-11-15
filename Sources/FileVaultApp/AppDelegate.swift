@@ -390,8 +390,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             await MainActor.run { progress.setStage("安装新版本…", fraction: nil) }
             try SelfUpdater.replace(bundleURL: Bundle.main.bundleURL, newZipURL: zip, relaunch: false)
             await MainActor.run { progress.setStage("重启应用…", fraction: nil) }
+            // Relaunch via a detached helper AFTER we exit: `open` issued while
+            // the old instance is still alive would only activate it instead of
+            // launching the replaced bundle (v2.6.6 — updates used to leave the
+            // app closed until the next login).
+            let bundlePath = Bundle.main.bundleURL.path
+            let relaunch = Process()
+            relaunch.executableURL = URL(fileURLWithPath: "/bin/sh")
+            relaunch.arguments = ["-c", "sleep 1 && /usr/bin/open " + SelfUpdater.shellQuoted(bundlePath)]
+            try? relaunch.run()
             try? await Task.sleep(nanoseconds: 600_000_000)
-            // Exit so the relaunch actually starts the NEW binary.
             await MainActor.run { NSApp.terminate(nil) }
             exit(0)
         } catch {

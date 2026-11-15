@@ -111,6 +111,9 @@ public actor SyncManager {
         defer { states[repoPath]?.task = nil }
         var attempt = 0
         while true {
+            // A cancelled loop (pushNow superseded it) must not race the
+            // manual push with a concurrent `git push` of its own.
+            if Task.isCancelled { return }
             let url = await repoManager.remoteURL(path: repoPath)
             guard url != nil else {
                 setState(repoPath, .noRemote)

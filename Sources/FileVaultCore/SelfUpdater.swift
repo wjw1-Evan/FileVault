@@ -62,6 +62,11 @@ public enum SelfUpdater {
         // Schedule .old cleanup on next successful start via marker? Keep .old for manual rollback.
     }
 
+    /// Quote a path for shell embedding (relaunch helper runs via /bin/sh).
+    public static func shellQuoted(_ path: String) -> String {
+        "'" + path.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    }
+
     static func ghURL() -> URL {
         for p in ["/opt/homebrew/bin/gh", "/usr/local/bin/gh"] {
             if FileManager.default.isExecutableFile(atPath: p) {

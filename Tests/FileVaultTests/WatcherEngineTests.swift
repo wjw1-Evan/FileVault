@@ -43,11 +43,22 @@ final class WatcherLifecycleTests: XCTestCase {
         let source = FSEventsChangeSource()
         let engine = WatcherEngine(rootPath: base.path, source: source)
         let exp = expectation(description: "second lifecycle delivers")
-        engine.start(onActivity: { _ in exp.fulfill() }, onRootStructureChanged: {})
+        // One atomic write can deliver SEVERAL file events (the .sb-* temp file
+        // plus the rename); fulfill only once — like the sibling test above.
+        let onceLock = NSLock()
+        var fulfilled = false
+        let fulfillOnce = {
+            onceLock.lock()
+            let first = !fulfilled
+            fulfilled = true
+            onceLock.unlock()
+            if first { exp.fulfill() }
+        }
+        engine.start(onActivity: { _ in fulfillOnce() }, onRootStructureChanged: {})
         try await Task.sleep(nanoseconds: 400_000_000)
         engine.stop()
         try await Task.sleep(nanoseconds: 200_000_000)
-        engine.start(onActivity: { _ in exp.fulfill() }, onRootStructureChanged: {})
+        engine.start(onActivity: { _ in fulfillOnce() }, onRootStructureChanged: {})
         try await Task.sleep(nanoseconds: 400_000_000)
         try "again".write(toFile: base.appendingPathComponent("sub/z.txt").path, atomically: true, encoding: .utf8)
         await fulfillment(of: [exp], timeout: 10)

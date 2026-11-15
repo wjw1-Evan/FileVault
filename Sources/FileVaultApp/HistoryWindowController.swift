@@ -257,12 +257,12 @@ final class HistoryWindowController: NSWindowController, NSWindowDelegate, NSTab
         loadForCurrentSelection()
     }
 
-    /// Load commits + tracked files; the async completion restores the user's
-    /// selection (a stale rebuild must not reset the popup).
+    /// Load commits for the current selection; the async completion re-checks
+    /// the repo (a stale popup switch must not load the wrong list).
     func loadForCurrentSelection() {
         guard let svc = service, let repo = currentRepo() else { return }
         Task {
-            let files = await svc.repoManager.listFiles(path: repo)
+            await svc.repoManager.listFiles(path: repo)
             await MainActor.run {
                 guard self.currentRepo() == repo else { return }
                 self.reloadCommits()

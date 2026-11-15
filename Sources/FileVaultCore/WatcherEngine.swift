@@ -73,27 +73,49 @@ public final class FSEventsChangeSource: ChangeSource {
             FSEventStreamEventId(kFSEventStreamEventIdSinceNow),
             0.3,
             flags
-        ) else { return }
+        ) else {
+            // Creation failed: release the `started` claim so a later start can retry.
+            lifecycleLock.lock()
+            started = false
+            lifecycleLock.unlock()
+            Unmanaged<EventBox>.fromOpaque(info).release()
+            return
+        }
         FSEventStreamSetDispatchQueue(stream, streamQueue)
         let startedOK = FSEventStreamStart(stream)
         if ProcessInfo.processInfo.environment["FV_DEBUG"] != nil {
             print("[FV_DEBUG] stream started=\(startedOK) paths=\(paths)")
         }
+        guard startedOK else {
+            // Start failed: tear down cleanly and allow a retry (a stream that
+            // failed to start must not be started again, only released).
+            streamQueue.sync {
+                FSEventStreamInvalidate(stream)
+                FSEventStreamRelease(stream)
+            }
+            lifecycleLock.lock()
+            started = false
+            lifecycleLock.unlock()
+            return
+        }
         self.stream = stream
     }
 
     public func stop() {
-        // Capture + clear under the lock; C calls outside (they wait on the
-        // stream queue and would deadlock against in-flight callbacks).
+        // Capture + clear under the lock; the C teardown runs ON the stream
+        // queue so it serializes against in-flight callbacks (releasing a
+        // stream while its callback executes is a potential crash).
         lifecycleLock.lock()
         let stream = self.stream
         self.stream = nil
         started = false
         lifecycleLock.unlock()
         guard let stream else { return }
-        FSEventStreamStop(stream)
-        FSEventStreamInvalidate(stream)
-        FSEventStreamRelease(stream)
+        streamQueue.sync {
+            FSEventStreamStop(stream)
+            FSEventStreamInvalidate(stream)
+            FSEventStreamRelease(stream)
+        }
     }
 }
 
