@@ -62,7 +62,7 @@ FileVault **永久免费**：无试用期、无激活码、无账号、无订阅
 
 ## 下载安装
 
-**最新发布：[v3.3.0](https://github.com/wjw1-Evan/FileVault/releases/tag/v3.3.0)** — [FileVault-3.3.0.zip](https://github.com/wjw1-Evan/FileVault/releases/download/v3.3.0/FileVault-3.3.0.zip)（sha256 `095195f8…18e42edf`）
+**最新发布：[v3.3.1](https://github.com/wjw1-Evan/FileVault/releases/tag/v3.3.1)** — [FileVault-3.3.1.zip](https://github.com/wjw1-Evan/FileVault/releases/download/v3.3.1/FileVault-3.3.1.zip)（sha256 `e11270f7…c8043b01`）
 
 解压后将 `FileVault.app` 拖入「应用程序」，首次打开右键 → 打开（ad-hoc 签名提示未公证），菜单栏即可见图标。
 
@@ -70,7 +70,7 @@ FileVault **永久免费**：无试用期、无激活码、无账号、无订阅
 
 ```bash
 swift build          # 构建
-swift test           # 运行全部测试（156 项）
+swift test           # 运行全部测试（187 项）
 .build/debug/FileVaultApp            # 启动菜单栏应用
 .build/debug/FileVaultApp --smoke    # 无 UI 冒烟自检
 swift run FileVaultApp --help        # 命令行参数
