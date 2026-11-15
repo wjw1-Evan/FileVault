@@ -293,6 +293,126 @@ final class SettingsModelTests: XCTestCase {
         XCTAssertEqual(url, bare.path, "saved url must reach git config")
     }
 
+
+/// Opening settings before the service finishes starting (login launch,
+    /// --open-ui) must not leave an empty page: the model self-heals.
+    @MainActor
+    func testBindRecoversWhenServiceAppearsLater() async throws {
+        let base = TestSupport.makeTempDir("setlater")
+        try? FileManager.default.createDirectory(atPath: base + "/vault", withIntermediateDirectories: true)
+        TestSupport.write("s", to: base + "/vault/s.md")
+        let app = AppState()          // service intentionally nil at bind time
+        let model = SettingsModel()
+        model.bind(app)
+        XCTAssertTrue(model.rootCards.isEmpty, "nothing to show before the service exists")
+
+        let service = FileVaultService(configDirectory: URL(fileURLWithPath: base + "/cfg"))
+        try await service.start()
+        try await service.addRoot(path: base + "/vault")
+        app.service = service
+
+        var cards = 0
+        for _ in 0..<40 {
+            cards = model.rootCards.count
+            if cards == 1 { break }
+            try? await Task.sleep(nanoseconds: 200_000_000)
+        }
+        XCTAssertEqual(cards, 1, "settings must recover once the service is up")
+        XCTAssertEqual(model.rootCards.first?.repo.name, "vault")
+        try? FileManager.default.removeItem(atPath: base)
+    }
+
+    /// Regression: the auth-mode picker used to be purely cosmetic — the chosen
+    /// mode was never written to git config. Saving must persist it.
+    @MainActor
+    func testSaveRepoPersistsSelectedAuthMode() async throws {
+        let (model, service, base) = try await makeModel()
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let repoPath = base + "/vault"
+        let bare = URL(fileURLWithPath: base).appendingPathComponent("remote.git")
+        _ = try? await service.repoManager.runner.run(["init", "--bare", bare.path])
+        model.urlBinding(repoPath).wrappedValue = bare.path
+        model.authModeBinding(repoPath).wrappedValue = .ssh
+        let before = await service.repoManager.authMode(path: repoPath)
+        XCTAssertEqual(before, .auto, "nothing saved yet")
+        model.saveRepo(repoPath)
+        var message = ""
+        for _ in 0..<20 {
+            message = model.message(repoPath)?.0 ?? ""
+            if !message.contains("正在保存") && !message.isEmpty { break }
+            try? await Task.sleep(nanoseconds: 300_000_000)
+        }
+        let after = await service.repoManager.authMode(path: repoPath)
+        XCTAssertEqual(after, .ssh, "picker selection must reach git config, message: \(message)")
+    }
+
+    /// "用户名 + 访问令牌": the token field must be writable, the token must end up
+    /// in the credential store (never in git config) and the mode must persist.
+    @MainActor
+    func testPATCredentialsAreStoredAndModePersists() async throws {
+        let (model, service, base) = try await makeModel()
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let repoPath = base + "/vault"
+        let url = "https://fv-settings-pat.example/" + UUID().uuidString.prefix(8) + ".git"
+        defer { Task { try? await CredentialStore.erase(runner: service.repoManager.runner, url: url) } }
+
+        model.authModeBinding(repoPath).wrappedValue = .pat
+        XCTAssertEqual(model.authModeBinding(repoPath).wrappedValue, .pat)
+        model.authUserBinding(repoPath).wrappedValue = "ci-user"
+        model.authTokenBinding(repoPath).wrappedValue = "pat-secret-123"
+        XCTAssertEqual(model.authTokenBinding(repoPath).wrappedValue, "pat-secret-123",
+                       "the token field must be editable from the UI binding")
+
+        model.urlBinding(repoPath).wrappedValue = url
+        model.saveRepo(repoPath)
+        var message = ""
+        for _ in 0..<60 {
+            message = model.message(repoPath)?.0 ?? ""
+            if message.contains("连通") || message.contains("失败") { break }
+            try? await Task.sleep(nanoseconds: 300_000_000)
+        }
+
+        let mode = await service.repoManager.authMode(path: repoPath)
+        XCTAssertEqual(mode, .pat)
+        let stored = await CredentialStore.fill(runner: service.repoManager.runner, url: url)
+        XCTAssertEqual(stored?.username, "ci-user", "username must be stored, message: \(message)")
+        XCTAssertEqual(stored?.password, "pat-secret-123", "token must be stored, message: \(message)")
+
+        let card = try XCTUnwrap(model.rootCards.first?.repo)
+        XCTAssertTrue(card.authToken.isEmpty, "the field must be cleared once the token is stored")
+        XCTAssertTrue(card.authTokenSaved, "the UI should show that a token is stored")
+        // The fake host cannot connect, so the inline message reports the failure —
+        // what matters is that saving itself succeeded (mode + credentials above).
+        XCTAssertTrue(message.contains("已保存"), message)
+
+        // The token must never be written into git config.
+        let cfg = try? await service.repoManager.runner.run(["config", "--local", "--list"], cwd: repoPath)
+        XCTAssertFalse((cfg?.stdout ?? "").contains("pat-secret-123"), "token leaked into git config")
+    }
+
+    /// Selecting PAT without a token must say so instead of silently "saving".
+    @MainActor
+    func testPATWithoutTokenWarnsInsteadOfSilentlySucceeding() async throws {
+        let (model, service, base) = try await makeModel()
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let repoPath = base + "/vault"
+        let bare = URL(fileURLWithPath: base).appendingPathComponent("remote.git")
+        _ = try? await service.repoManager.runner.run(["init", "--bare", bare.path])
+        model.urlBinding(repoPath).wrappedValue = bare.path
+        model.authModeBinding(repoPath).wrappedValue = .pat
+        model.authTokenBinding(repoPath).wrappedValue = ""
+        model.saveRepo(repoPath)
+        var message = ""
+        for _ in 0..<30 {
+            message = model.message(repoPath)?.0 ?? ""
+            if message.contains("访问令牌") || message.contains("失败") || message.contains("已保存并连通") { break }
+            try? await Task.sleep(nanoseconds: 300_000_000)
+        }
+        XCTAssertTrue(message.contains("还需要填写访问令牌"), "expected an explicit hint, got: \(message)")
+        let mode = await service.repoManager.authMode(path: repoPath)
+        XCTAssertEqual(mode, .pat, "mode is still persisted even when the token is missing")
+    }
+
     @MainActor
     func testEmptyURLSaveClearsRemote() async throws {
         let (model, service, base) = try await makeModel()

@@ -225,6 +225,17 @@
 "正在验证 git…" = "Validating git…";
 "git 已就绪" = "git is ready";
 
+/* 远程仓库认证（用户名 + 访问令牌，FR-06） */
+"用户名（可留空）" = "User name (optional)";
+"访问令牌" = "Access token";
+"已保存到本机凭证库" = "Saved to the local credential store";
+"点「保存」写入本机凭证库（优先钥匙串，不会写进 git 配置）；GitHub 细粒度令牌请给 Contents: Read and write。" = "Click Save to store it in the local credential store (Keychain first; never written into git config). For GitHub fine-grained tokens grant Contents: Read and write.";
+"使用 ~/.ssh 里的密钥；需要先把公钥添加到托管平台。" = "Uses a key from ~/.ssh — add its public half to your Git host first.";
+"已保存地址，但「用户名 + 访问令牌」还需要填写访问令牌（令牌只写进本机凭证库，不写进 git 配置）" = "Remote saved, but the user name + access token mode still needs a token (it is stored in the local credential store, never in git config).";
+"（本机没有钥匙串助手，令牌保存在仅本人可读的本机文件）" = " (no keychain helper on this Mac — the token lives in a user-only readable local file)";
+"本机凭证库不可用（请确认 git 安装完整）" = "The local credential store is unavailable (check that git is installed completely)";
+"凭证写入本机凭证库失败: " = "Writing to the local credential store failed: ";
+
 /* 诊断报告 */
 "FileVault 诊断报告" = "FileVault diagnostics report";
 "生成时间: " = "Generated: ";
@@ -365,7 +376,6 @@
 "全部纳入版本管理" = "Everything under version control";
 "添加一个文件夹，里面的所有文件都会自动拥有版本历史。" = "Add a folder and every file inside gets an automatic history.";
 "选一个文件夹，它里面的所有文件都会自动拥有版本历史。" = "Pick a folder and every file inside gets an automatic history.";
-"自动版本管理" = "Automatic versioning";
 "添加文件夹…" = "Add folder…";
 "移除文件夹？" = "Remove folder?";
 "文件夹操作" = "Folder actions";

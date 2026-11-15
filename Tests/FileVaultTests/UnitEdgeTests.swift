@@ -306,6 +306,44 @@ final class CredentialStoreTests: XCTestCase {
         try? await CredentialStore.erase(runner: runner, url: url)
     }
 
+    /// v4.0.2: PAT mode needs a helper; prepare() must configure one idempotently
+    /// and the configured helper must accept a store/fill roundtrip.
+    func testPrepareConfiguresHelperIdempotentlyAndRoundtrips() async throws {
+        let root = TestSupport.makeTempDir("credprepare")
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let repo = root + "/repo"
+        try? FileManager.default.createDirectory(atPath: repo, withIntermediateDirectories: true)
+        let runner = TestSupport.newRunner()
+        _ = try? await runner.run(["init", "-q", repo])
+        let storeFile = URL(fileURLWithPath: root + "/cred/credentials")
+
+        let b1 = await CredentialStore.prepare(runner: runner, repoPath: repo, storeFile: storeFile)
+        XCTAssertNotEqual(b1, .unavailable, "a credential helper must always be configurable")
+        let b2 = await CredentialStore.prepare(runner: runner, repoPath: repo, storeFile: storeFile)
+        XCTAssertEqual(b1, b2, "prepare must be idempotent and keep the chosen backend")
+
+        let all = try? await runner.run(["config", "--local", "--get-all", "credential.helper"], cwd: repo)
+        let raw = all?.stdout ?? ""
+        XCTAssertFalse(raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                       "prepare must leave a helper configured")
+        // PAT mode takes over the chain: the first (reset) value is empty so an
+        // inherited helper cannot shadow the token configured for this repo.
+        XCTAssertTrue(raw.hasPrefix("\n"), "expected the reset marker before the helper, got: \(raw.debugDescription)")
+
+        let url = "https://fv-prepare-" + UUID().uuidString.prefix(8) + ".example/r.git"
+        defer { Task { try? await CredentialStore.erase(runner: runner, url: url) } }
+        try await CredentialStore.store(runner: runner, url: url, username: "u", password: "t")
+        let got = await CredentialStore.fill(runner: runner, url: url)
+        XCTAssertEqual(got?.username, "u")
+        XCTAssertEqual(got?.password, "t")
+    }
+
+    func testStorePathParsing() {
+        XCTAssertEqual(CredentialStore.storePath(fromHelperValue: "store --file=/tmp/x"), "/tmp/x")
+        XCTAssertEqual(CredentialStore.storePath(fromHelperValue: "store --file=\"/tmp/a b\""), "/tmp/a b")
+        XCTAssertNil(CredentialStore.storePath(fromHelperValue: "osxkeychain"))
+    }
+
     func testAuthModeConfigRoundtrip() async throws {
         let root = TestSupport.makeTempDir("authmode")
         try? FileManager.default.createDirectory(atPath: root + "/repo", withIntermediateDirectories: true)

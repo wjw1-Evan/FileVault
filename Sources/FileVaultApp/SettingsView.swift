@@ -15,6 +15,8 @@ struct RepoSection: Identifiable, Equatable {
     var authMode: RepoManager.AuthMode = .auto
     var authUser: String = ""
     var authToken: String = ""
+    /// A token for this remote already lives in the local credential store.
+    var authTokenSaved: Bool = false
     /// Remote-derived single-file ceiling, e.g. "100 MB（GitHub 硬限制）".
     var remoteLimit: String = "…"
     var message: String = ""
@@ -71,6 +73,17 @@ final class SettingsModel: ObservableObject {
         guard self.app == nil else { return }
         self.app = app
         reload()
+        // A window opened during startup (login launch, or --open-ui) can appear
+        // before FileVaultService exists. Without this the page stays stuck on
+        // "还没有受保护的目录" with default preferences forever.
+        guard service == nil else { return }
+        Task { @MainActor [weak self] in
+            for _ in 0..<50 where self?.service == nil {
+                try? await Task.sleep(nanoseconds: 200_000_000)
+            }
+            guard let self, self.service != nil else { return }
+            self.reload()
+        }
     }
 
     private var service: FileVaultService? { app?.service }
@@ -118,9 +131,9 @@ final class SettingsModel: ObservableObject {
             } else {
                 limitText = NSLocalizedString("不限制（未配置远端）", comment: "repo limit")
             }
-            var storedUser: String?
-            if let url {
-                storedUser = await CredentialStore.fill(runner: svc.repoManager.runner, url: url)?.username
+            var stored: (username: String, password: String)?
+            if let url, !url.isEmpty {
+                stored = await CredentialStore.fill(runner: svc.repoManager.runner, url: url)
             }
             await MainActor.run { [weak self] in
                 guard let self, let idx = self.indexOf(id) else { return }
@@ -135,8 +148,11 @@ final class SettingsModel: ObservableObject {
                 self.rootCards[idx].repo.statusColor = glyph.color
                 self.rootCards[idx].repo.authMode = mode
                 self.rootCards[idx].repo.remoteLimit = limitText
-                if let storedUser {
-                    self.rootCards[idx].repo.authUser = storedUser
+                if let stored {
+                    self.rootCards[idx].repo.authUser = stored.username
+                    self.rootCards[idx].repo.authTokenSaved = !stored.password.isEmpty
+                } else {
+                    self.rootCards[idx].repo.authTokenSaved = false
                 }
             }
         }
@@ -310,6 +326,24 @@ final class SettingsModel: ObservableObject {
                 })
     }
 
+    /// "用户名 + 访问令牌" mode: user name field (optional on GitHub).
+    func authUserBinding(_ id: String) -> Binding<String> {
+        Binding(get: { [weak self] in self?.indexOf(id).flatMap { self?.rootCards[$0].repo.authUser } ?? "" },
+                set: { [weak self] text in
+                    guard let self, let idx = self.indexOf(id) else { return }
+                    self.rootCards[idx].repo.authUser = text
+                })
+    }
+
+    /// "用户名 + 访问令牌" mode: the token itself. Never written to git config.
+    func authTokenBinding(_ id: String) -> Binding<String> {
+        Binding(get: { [weak self] in self?.indexOf(id).flatMap { self?.rootCards[$0].repo.authToken } ?? "" },
+                set: { [weak self] text in
+                    guard let self, let idx = self.indexOf(id) else { return }
+                    self.rootCards[idx].repo.authToken = text
+                })
+    }
+
     func authModeBinding(_ id: String) -> Binding<RepoManager.AuthMode> {
         Binding(get: { [weak self] in self?.indexOf(id).flatMap { self?.rootCards[$0].repo.authMode } ?? .auto },
                 set: { [weak self] v in
@@ -330,12 +364,15 @@ final class SettingsModel: ObservableObject {
         rootCards[idx].repo.messageIsError = error
     }
 
-    /// Shared save path: configure + test + inline feedback (FR-06).
+    /// Shared save path: persist auth mode, configure + test + inline feedback (FR-06).
     func saveRepo(_ id: String) {
         guard let svc = service, let idx = indexOf(id) else { return }
         let section = rootCards[idx].repo
         let url = section.urlText.trimmingCharacters(in: .whitespacesAndNewlines)
         let auto = section.autoPush
+        let mode = section.authMode
+        let user = section.authUser.trimmingCharacters(in: .whitespacesAndNewlines)
+        let token = section.authToken.trimmingCharacters(in: .whitespacesAndNewlines)
         Task { [weak self] in
             guard let self else { return }
             await MainActor.run { self.setMessage(id, NSLocalizedString("正在保存…", comment: "settings status")) }
@@ -348,24 +385,51 @@ final class SettingsModel: ObservableObject {
                     }
                     return
                 }
-                try await svc.sync.configureRemote(repoPath: id, url: url, autoPush: auto)
-                let modeRaw = await svc.repoManager.authMode(path: id)
-                if modeRaw == .pat {
-                    let token = await MainActor.run { [weak self] in
-                        self?.indexOf(id).flatMap { self?.rootCards[$0].repo.authToken }
-                            .map { $0.trimmingCharacters(in: .whitespaces) } ?? ""
-                    }
-                    if !token.isEmpty {
-                        let user = await MainActor.run { [weak self] in
-                            self?.indexOf(id).flatMap { self?.rootCards[$0].repo.authUser }
-                                .map { $0.trimmingCharacters(in: .whitespaces) }
-                        }
+                // Persist the picker selection and put the token in place BEFORE the
+                // remote is wired: configureRemote may start an auto-push right away,
+                // and that push needs the credential. (Before the fix the selected
+                // mode was never written, so PAT silently stayed on auto.)
+                await svc.repoManager.setAuthMode(path: id, mode: mode)
+
+                var credentialNote = ""
+                var needsToken = false
+                switch mode {
+                case .pat:
+                    let backend = await CredentialStore.prepare(runner: svc.repoManager.runner, repoPath: id)
+                    if token.isEmpty {
+                        let existing = await CredentialStore.fill(runner: svc.repoManager.runner, url: url)
+                        needsToken = existing?.password.isEmpty != false
+                    } else {
+                        let account = user.isEmpty ? "personal-access-token" : user
                         try await CredentialStore.store(runner: svc.repoManager.runner, url: url,
-                                                        username: (user?.isEmpty == false ? user! : "personal-access-token"),
-                                                        password: token)
+                                                        username: account, password: token)
+                        await MainActor.run { [weak self] in
+                            guard let self, let idx = self.indexOf(id) else { return }
+                            // Do not keep the secret in memory once it is safe on disk.
+                            self.rootCards[idx].repo.authToken = ""
+                            self.rootCards[idx].repo.authUser = account
+                            self.rootCards[idx].repo.authTokenSaved = true
+                        }
+                        if backend.isPrivateFile {
+                            credentialNote = NSLocalizedString("（本机没有钥匙串助手，令牌保存在仅本人可读的本机文件）", comment: "settings status")
+                        }
                     }
-                } else if url.contains("github.com") && url.hasPrefix("https://") {
-                    _ = try? await GitRunner.ghAuthSetupGit()
+                case .ssh:
+                    break
+                case .auto:
+                    if url.contains("github.com") && url.hasPrefix("https://") {
+                        _ = try? await GitRunner.ghAuthSetupGit()
+                    }
+                }
+
+                // The remote address is always saved, even when the token is missing.
+                try await svc.sync.configureRemote(repoPath: id, url: url, autoPush: auto)
+                if needsToken {
+                    await MainActor.run {
+                        self.setMessage(id, NSLocalizedString("已保存地址，但「用户名 + 访问令牌」还需要填写访问令牌（令牌只写进本机凭证库，不写进 git 配置）",
+                                                             comment: "settings status"), error: true)
+                    }
+                    return
                 }
                 await MainActor.run { self.setMessage(id, NSLocalizedString("已保存，正在测试连接…", comment: "settings status")) }
                 await MainActor.run { self.fillRepoDetails(id: id) }   // remote limit may have changed
@@ -373,11 +437,12 @@ final class SettingsModel: ObservableObject {
                 self.editedPaths.remove(id)
                 let status: String
                 if conn.ok {
-                    status = NSLocalizedString(auto ? "✓ 已保存并连通，提交后将自动推送" : "✓ 已保存并连通（自动推送未开启）",
-                                               comment: "settings status")
+                    let base = NSLocalizedString(auto ? "✓ 已保存并连通，提交后将自动推送" : "✓ 已保存并连通（自动推送未开启）",
+                                                 comment: "settings status")
+                    status = base + credentialNote
                 } else {
                     status = String(format: NSLocalizedString("⚠️ 已保存但连接失败：%@", comment: "settings status"),
-                                    conn.detail)
+                                    conn.detail) + credentialNote
                 }
                 await MainActor.run { self.setMessage(id, status, error: !conn.ok) }
             } catch {
@@ -802,8 +867,6 @@ struct SettingsView: View {
                 Image(systemName: repo.statusGlyph)
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(repo.statusColor)
-                Text("自动版本管理")
-                    .font(.system(size: 12, weight: .medium))
                 Spacer(minLength: 8)
                 Text(repo.health)
                     .font(.system(size: 10))
@@ -851,6 +914,13 @@ struct SettingsView: View {
                 .menuStyle(.borderlessButton)
                 .fixedSize()
             }
+
+            // Auth mode details (FR-06): PAT needs two inputs; SSH gets a hint.
+            RepoAuthFields(mode: repo.authMode,
+                           user: model.authUserBinding(repo.id),
+                           token: model.authTokenBinding(repo.id),
+                           tokenSaved: repo.authTokenSaved,
+                           save: { model.saveRepo(repo.id) })
 
             if let msg = model.message(repo.id) {
                 HStack(spacing: 5) {
@@ -959,5 +1029,52 @@ struct GitignoreSheet: View {
         .padding(20)
         .frame(width: 540, height: 420)
         .background(FVTheme.canvas)
+    }
+}
+
+/// Auth-mode detail row for one remote (FR-06).
+///
+/// Split out of repoBlock so it can be snapshotted offscreen in tests: PAT mode
+/// must show real inputs — before v4.0.2 the picker had no fields to type into.
+struct RepoAuthFields: View {
+    let mode: RepoManager.AuthMode
+    @Binding var user: String
+    @Binding var token: String
+    let tokenSaved: Bool
+    let save: () -> Void
+
+    var body: some View {
+        switch mode {
+        case .pat:
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 8) {
+                    TextField("用户名（可留空）", text: $user)
+                        .textFieldStyle(.roundedBorder)
+                        .controlSize(.small)
+                        .font(.system(size: 11))
+                        .frame(maxWidth: 200)
+                    SecureField("访问令牌", text: $token)
+                        .textFieldStyle(.roundedBorder)
+                        .controlSize(.small)
+                        .font(.system(size: 11))
+                        .frame(maxWidth: 280)
+                        .onSubmit { save() }
+                    if tokenSaved {
+                        Text("已保存到本机凭证库")
+                            .font(.system(size: 10))
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                Text("点「保存」写入本机凭证库（优先钥匙串，不会写进 git 配置）；GitHub 细粒度令牌请给 Contents: Read and write。")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.tertiary)
+            }
+        case .ssh:
+            Text("使用 ~/.ssh 里的密钥；需要先把公钥添加到托管平台。")
+                .font(.system(size: 10))
+                .foregroundStyle(.tertiary)
+        case .auto:
+            EmptyView()
+        }
     }
 }
