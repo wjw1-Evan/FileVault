@@ -53,4 +53,27 @@ final class HistoryServiceTests: XCTestCase {
         let content = try String(contentsOfFile: root + "/repo/f.md", encoding: .utf8)
         XCTAssertEqual(content, "v1")
     }
+
+    /// Regression (v2.6.2): git quotes non-ASCII paths as octal escapes by
+    /// default; the runner must force `core.quotepath=false` so Chinese
+    /// filenames come back as raw UTF-8 in history listings — and stay usable
+    /// as arguments for show/restore.
+    func testChineseFilenamesSurviveHistoryPipeline() async throws {
+        try await repos.ensureRepos(root: root)
+        let repoPath = root + "/repo"
+        try FileManager.default.createDirectory(atPath: repoPath + "/笔记", withIntermediateDirectories: true)
+        TestSupport.write("会议内容 v1", to: repoPath + "/笔记/会议记录.md")
+        _ = try await repos.commitAll(path: repoPath)
+        TestSupport.write("会议内容 v2", to: repoPath + "/笔记/会议记录.md")
+        _ = try await repos.commitAll(path: repoPath)
+
+        let commits = try await history.commits(repoPath: repoPath)
+        let changed = try await history.changedFiles(repoPath: repoPath, hash: commits[0].hash)
+        // Raw UTF-8, no octal escapes / surrounding quotes.
+        XCTAssertEqual(changed.first, "M\t笔记/会议记录.md")
+        // The decoded path must be directly usable for content reads.
+        let path = String(changed.first!.split(separator: "\t")[1])
+        let content = try await history.fileContent(repoPath: repoPath, hash: commits[0].hash, file: path)
+        XCTAssertEqual(content, "会议内容 v2")
+    }
 }

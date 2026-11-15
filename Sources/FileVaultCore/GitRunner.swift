@@ -49,7 +49,11 @@ public final class GitRunner: Sendable {
     public func runSync(_ args: [String], cwd: String? = nil, timeout: TimeInterval, stdin: String? = nil, env: [String: String]? = nil) throws -> GitResult {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: gitExecutable)
-        process.arguments = args
+        // Raw UTF-8 paths everywhere: git quotes non-ASCII paths as octal
+        // escapes by default ("笔记/\346..." style), which shows up as garbled
+        // filenames in the history window and breaks downstream path handling
+        // (v2.6.2). `-c` before the subcommand applies to every invocation.
+        process.arguments = ["-c", "core.quotepath=false"] + args
 
         var e = ProcessInfo.processInfo.environment
         // Make sure the git executable's directory is on PATH so that
