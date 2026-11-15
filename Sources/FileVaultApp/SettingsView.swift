@@ -480,11 +480,45 @@ final class SettingsModel: ObservableObject {
 
 // MARK: - View (custom cards)
 
+/// Fold state for the root cards in Settings (v3.4.2).
+///
+/// Pure value type so the fold logic is unit-testable; the view keeps one in
+/// `@State` and mirrors it to UserDefaults so a folded card stays folded.
+struct RootCollapseState: Equatable {
+    private(set) var collapsed: Set<String> = []
+
+    static let defaultsKey = "fv.collapsedRoots"
+
+    init(collapsed: Set<String> = []) {
+        self.collapsed = collapsed
+    }
+
+    func isCollapsed(_ id: String) -> Bool { collapsed.contains(id) }
+
+    mutating func toggle(_ id: String) {
+        if collapsed.contains(id) { collapsed.remove(id) } else { collapsed.insert(id) }
+    }
+
+    mutating func collapseAll(_ ids: [String]) { collapsed.formUnion(ids) }
+    mutating func expandAll() { collapsed.removeAll() }
+    var isEmpty: Bool { collapsed.isEmpty }
+
+    static func load(from defaults: UserDefaults = .standard) -> RootCollapseState {
+        RootCollapseState(collapsed: Set(defaults.stringArray(forKey: defaultsKey) ?? []))
+    }
+
+    func save(to defaults: UserDefaults = .standard) {
+        defaults.set(Array(collapsed), forKey: Self.defaultsKey)
+    }
+}
+
 struct SettingsView: View {
     @EnvironmentObject var app: AppState
     @Environment(\.openWindow) private var openWindow
     @StateObject private var model = SettingsModel()
     @State private var removeTarget: RootCard?
+    /// Folded root cards (v3.4.2); persisted so the layout survives reopening.
+    @State private var collapse = RootCollapseState.load()
 
     var body: some View {
         ScrollView {
@@ -702,27 +736,45 @@ struct SettingsView: View {
     // MARK: Root cards
 
     private func rootCard(_ card: RootCard) -> some View {
-        VStack(spacing: 0) {
+        let isCollapsed = collapse.isCollapsed(card.id)
+        return VStack(spacing: 0) {
             HStack(spacing: 12) {
-                FVIconBadge(symbol: "folder.fill", tint: card.paused ? .gray : .orange, size: 34)
-                VStack(alignment: .leading, spacing: 2) {
-                    HStack(spacing: 7) {
-                        Text(card.name)
-                            .font(.system(size: 15, weight: .semibold))
-                        if card.paused {
-                            FVStatusPill(text: "已暂停", tint: .orange, symbol: "pause.fill")
-                        }
+                // Header doubles as the fold toggle (v3.4.2).
+                Button {
+                    withAnimation(.easeInOut(duration: 0.16)) {
+                        collapse.toggle(card.id)
+                        collapse.save()
                     }
-                    Text(card.path)
-                        .font(.system(size: 10))
-                        .foregroundStyle(.tertiary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
+                } label: {
+                    HStack(spacing: 12) {
+                        FVIconBadge(symbol: "folder.fill", tint: card.paused ? .gray : .orange, size: 34)
+                        VStack(alignment: .leading, spacing: 2) {
+                            HStack(spacing: 7) {
+                                Text(card.name)
+                                    .font(.system(size: 15, weight: .semibold))
+                                if card.paused {
+                                    FVStatusPill(text: "已暂停", tint: .orange, symbol: "pause.fill")
+                                }
+                            }
+                            Text(card.path)
+                                .font(.system(size: 10))
+                                .foregroundStyle(.tertiary)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                        }
+                        Spacer(minLength: 8)
+                        Text(String(format: NSLocalizedString("%d 个仓库", comment: "settings caption"), card.repos.count))
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(.tertiary)
+                            .rotationEffect(.degrees(isCollapsed ? -90 : 0))
+                    }
+                    .contentShape(Rectangle())
                 }
-                Spacer(minLength: 8)
-                Text(String(format: NSLocalizedString("%d 个仓库", comment: "settings caption"), card.repos.count))
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
+                .buttonStyle(.plain)
+                .help(isCollapsed ? "展开根目录" : "折叠根目录")
                 Menu {
                     Button("在 Finder 中打开") { app.openPath(card.path) }
                     Button(card.paused ? "恢复自动提交" : "暂停自动提交") {
@@ -743,17 +795,19 @@ struct SettingsView: View {
             .padding(.horizontal, 16)
             .padding(.vertical, 13)
 
-            FVHairline(leading: 0)
-            if card.repos.isEmpty {
-                FVEmptyState(symbol: "tray",
-                             title: "这个目录里还没有子文件夹",
-                             message: "在根目录下新建文件夹后，会自动成为独立版本库。")
-            } else {
-                VStack(spacing: 0) {
-                    ForEach(Array(card.repos.enumerated()), id: \.element.id) { index, repo in
-                        repoBlock(repo)
-                        if index < card.repos.count - 1 {
-                            FVHairline(leading: 16)
+            if !isCollapsed {
+                FVHairline(leading: 0)
+                if card.repos.isEmpty {
+                    FVEmptyState(symbol: "tray",
+                                 title: "这个目录里还没有子文件夹",
+                                 message: "在根目录下新建文件夹后，会自动成为独立版本库。")
+                } else {
+                    VStack(spacing: 0) {
+                        ForEach(Array(card.repos.enumerated()), id: \.element.id) { index, repo in
+                            repoBlock(repo)
+                            if index < card.repos.count - 1 {
+                                FVHairline(leading: 16)
+                            }
                         }
                     }
                 }

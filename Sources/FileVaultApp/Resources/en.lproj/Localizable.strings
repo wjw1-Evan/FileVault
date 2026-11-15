@@ -310,3 +310,8 @@
 
 "还有 %d 个目录…" = "%d more folders…";
 
+"展开根目录" = "Expand folder";
+"折叠根目录" = "Collapse folder";
+"全部展开" = "Expand all";
+"全部折叠" = "Collapse all";
+
