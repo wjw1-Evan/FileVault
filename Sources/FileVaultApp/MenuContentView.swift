@@ -8,7 +8,7 @@ struct MenuContentView: View {
 
     var body: some View {
         Text(app.statusLine)
-            .font(.system(size: 11, weight: .semibold))
+            .font(.caption)
             .foregroundStyle(.secondary)
         Divider()
         Section("受保护的目录") {

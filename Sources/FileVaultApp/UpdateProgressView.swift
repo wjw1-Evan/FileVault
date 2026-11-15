@@ -7,7 +7,7 @@ struct UpdateProgressView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("正在更新 FileVault")
-                .font(.system(size: 14, weight: .semibold))
+                .font(.headline)
             if let stage = app.updateStage {
                 Text(stage.text)
                 if let fraction = stage.fraction {
@@ -19,7 +19,7 @@ struct UpdateProgressView: View {
                 }
                 if !stage.detail.isEmpty {
                     Text(stage.detail)
-                        .font(.system(size: 10.5))
+                        .font(.caption)
                         .foregroundStyle(.secondary)
                 }
             }

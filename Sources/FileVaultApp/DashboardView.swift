@@ -98,7 +98,7 @@ struct DashboardView: View {
     private var header: some View {
         VStack(alignment: .leading, spacing: 4) {
             Text("FileVault — 文件时光机")
-                .font(.title2.weight(.semibold))
+                .font(.title2)
             Text(model.stateLine)
                 .foregroundStyle(.secondary)
         }

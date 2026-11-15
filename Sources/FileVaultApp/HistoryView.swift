@@ -226,7 +226,7 @@ struct HistoryView: View {
             commitTable
                 .padding(.horizontal, 12)
             Text("此提交包含的文件（点「恢复」回到该时点）")
-                .font(.system(size: 13, weight: .semibold))
+                .font(.headline)
                 .padding(.horizontal, 12)
             filesTable
                 .padding(.horizontal, 12)
@@ -268,7 +268,6 @@ struct HistoryView: View {
             TableColumn("文件") { f in Text(f.path).lineLimit(1) }
             TableColumn("操作") { f in
                 Button("恢复") { model.restoreFile(f.path) }
-                    .controlSize(.small)
             }.width(90)
         }
         .frame(height: 140)

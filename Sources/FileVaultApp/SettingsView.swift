@@ -454,7 +454,7 @@ struct SettingsView: View {
                     TextField("", text: Binding(
                         get: { model.thresholdText },
                         set: { model.thresholdText = $0; model.commitGeneral() }))
-                        .frame(width: 60)
+
                     Text("MB（超过此大小的文件自动排除出版本管理）")
                         .foregroundStyle(.secondary)
                         .font(.caption)
@@ -468,6 +468,7 @@ struct SettingsView: View {
 
     // MARK: Root card
 
+    @ViewBuilder
     private func rootSection(_ card: Binding<RootCard>) -> some View {
         Section("\(card.wrappedValue.name)（\(card.wrappedValue.repos.count) 个仓库）") {
             LabeledContent("路径") {
@@ -484,9 +485,6 @@ struct SettingsView: View {
                     Button("移除根目录", role: .destructive) { removeTarget = card.wrappedValue }
                 }
             }
-            ForEach(card.wrappedValue.repos) { section in
-                repoRows(section)
-            }
         }
         .confirmationDialog("移除根目录？", isPresented: Binding(
             get: { removeTarget?.id == card.wrappedValue.id },
@@ -497,19 +495,22 @@ struct SettingsView: View {
             }
             Button("取消", role: .cancel) { removeTarget = nil }
         }
+        ForEach(card.wrappedValue.repos) { section in
+            repoSection(section, rootName: card.wrappedValue.name,
+                        multiRoot: model.rootCards.count > 1)
+        }
     }
 
-    @ViewBuilder
-    private func repoRows(_ section: RepoSection) -> some View {
-        GroupBox {
-            HStack(spacing: 6) {
-                Image(systemName: section.statusGlyph)
-                    .foregroundStyle(section.statusColor)
-                Text(section.name).font(.body.weight(.medium))
-                Text(section.health)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Spacer()
+    /// One native Section per repo — no nested custom containers.
+    private func repoSection(_ section: RepoSection, rootName: String, multiRoot: Bool) -> some View {
+        Section(header: Text(multiRoot ? "\(rootName) · \(section.name)" : section.name)) {
+            LabeledContent("状态") {
+                HStack(spacing: 6) {
+                    Image(systemName: section.statusGlyph)
+                        .foregroundStyle(section.statusColor)
+                    Text(section.health)
+                        .foregroundStyle(.secondary)
+                }
             }
             LabeledContent("远程仓库地址") {
                 TextField("留空 = 仅本地", text: model.urlBinding(section.id))
@@ -521,14 +522,16 @@ struct SettingsView: View {
                 Text("用户名 + 访问令牌").tag(RepoManager.AuthMode.pat)
                 Text("SSH 密钥").tag(RepoManager.AuthMode.ssh)
             }
-            HStack(spacing: 8) {
-                Button("保存") { model.saveRepo(section.id) }
-                Button("立即推送") { model.pushNow(section.id) }
-                Button("测试连接") { model.testConnection(section.id) }
-                Button("忽略规则") { model.openGitignoreEditor(section.id) }
-                Button("拉取") { model.pull(section.id) }
-                Button("建仓") { model.createRepoTarget = section.id }
-                    .help("在 GitHub 创建私有仓库并绑定")
+            LabeledContent("操作") {
+                HStack {
+                    Button("保存") { model.saveRepo(section.id) }
+                    Button("立即推送") { model.pushNow(section.id) }
+                    Button("测试连接") { model.testConnection(section.id) }
+                    Button("忽略规则") { model.openGitignoreEditor(section.id) }
+                    Button("拉取") { model.pull(section.id) }
+                    Button("建仓") { model.createRepoTarget = section.id }
+                        .help("在 GitHub 创建私有仓库并绑定")
+                }
             }
             if let msg = model.message(section.id) {
                 Text(msg.0)
