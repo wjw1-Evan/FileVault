@@ -80,7 +80,7 @@ struct FVIconBadge: View {
 
 /// Capsule status label: tinted text on a tinted wash.
 struct FVStatusPill: View {
-    let text: String
+    let text: LocalizedStringKey
     var tint: Color = .green
     var symbol: String? = nil
 
@@ -103,8 +103,8 @@ struct FVStatusPill: View {
 
 /// Section heading with an optional one-line explanation.
 struct FVSectionHeader: View {
-    let title: String
-    var subtitle: String? = nil
+    let title: LocalizedStringKey
+    var subtitle: LocalizedStringKey? = nil
     var trailing: String? = nil
 
     var body: some View {
@@ -135,7 +135,7 @@ struct FVStatTile: View {
     let symbol: String
     let tint: Color
     let value: String
-    let label: String
+    let label: LocalizedStringKey
     var caption: String? = nil
 
     var body: some View {
@@ -168,9 +168,9 @@ struct FVStatTile: View {
 /// Quiet empty state: glyph, one line of intent, optional hint and action.
 struct FVEmptyState: View {
     let symbol: String
-    let title: String
-    var message: String? = nil
-    var actionTitle: String? = nil
+    let title: LocalizedStringKey
+    var message: LocalizedStringKey? = nil
+    var actionTitle: LocalizedStringKey? = nil
     var action: (() -> Void)? = nil
 
     var body: some View {

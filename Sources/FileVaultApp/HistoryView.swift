@@ -20,7 +20,7 @@ final class HistoryModel: ObservableObject {
     @Published var commits: [CommitInfo] = []
     @Published var selectedCommitHash: String?
     @Published var files: [ChangedFile] = []
-    @Published var statusText = "选择一个提交，查看并恢复它包含的文件"
+    @Published var statusText = NSLocalizedString("选择一个提交，查看并恢复它包含的文件", comment: "history status")
 
     private var app: AppState?
     private var listenerToken: UUID?
@@ -68,7 +68,7 @@ final class HistoryModel: ObservableObject {
             files = []
             commits = []
             selectedCommitHash = nil
-            statusText = "尚未添加任何根目录——先在设置中添加根目录"
+            statusText = NSLocalizedString("尚未添加任何根目录——先在设置中添加根目录", comment: "history status")
             return
         }
         folders = svc.repoManager.firstLevelFolders(root: root)
@@ -78,7 +78,7 @@ final class HistoryModel: ObservableObject {
             commits = []
             files = []
             selectedCommitHash = nil
-            statusText = "该根目录暂无子文件夹"
+            statusText = NSLocalizedString("该根目录暂无子文件夹", comment: "history status")
         } else {
             reloadCommits()
         }
@@ -104,7 +104,7 @@ final class HistoryModel: ObservableObject {
         loadGeneration += 1
         let generation = loadGeneration
         let preservedHash = preserveSelection ? selectedCommitHash : nil
-        statusText = "正在加载提交历史…"
+        statusText = NSLocalizedString("正在加载提交历史…", comment: "history status")
         Task { [weak self] in
             guard let self else { return }
             let raw = (try? await svc.history.commits(repoPath: repo, limit: 100)) ?? []
@@ -119,7 +119,7 @@ final class HistoryModel: ObservableObject {
                 self.commits = []
                 self.files = []
                 self.selectedCommitHash = nil
-                self.statusText = "该文件夹还没有提交历史"
+                self.statusText = NSLocalizedString("该文件夹还没有提交历史", comment: "history status")
                 return
             }
             self.commits = list
@@ -137,7 +137,7 @@ final class HistoryModel: ObservableObject {
         guard let svc = app?.service, let repo = selectedRepo,
               let hash = selectedCommitHash,
               let commit = commits.first(where: { $0.hash == hash }) else {
-            statusText = "选择一个提交以查看其包含的文件"
+            statusText = NSLocalizedString("选择一个提交以查看其包含的文件", comment: "history status")
             return
         }
         currentCommit = commit
@@ -153,8 +153,9 @@ final class HistoryModel: ObservableObject {
                 return ChangedFile(id: path, status: parts.count > 1 ? String(parts[0]) : "?", path: path)
             }
             self.statusText = self.files.isEmpty
-                ? "「" + commit.subject + "」没有文件变更"
-                : "「" + commit.subject + "」包含 " + String(self.files.count) + " 个文件"
+                ? String(format: NSLocalizedString("「%@」没有文件变更", comment: "history status"), commit.subject)
+                : String(format: NSLocalizedString("「%@」包含 %d 个文件", comment: "history status"),
+                         commit.subject, self.files.count)
         }
     }
 
@@ -170,13 +171,15 @@ final class HistoryModel: ObservableObject {
         guard let svc = app?.service, let repo = selectedRepo, let commit = currentCommit else { return }
         Task { [weak self] in
             guard let self else { return }
-            statusText = "正在恢复 \(file)…"
+            statusText = String(format: NSLocalizedString("正在恢复 %@…", comment: "history status"), file)
             do {
                 _ = try await svc.history.restoreFile(repoPath: repo, file: file, to: commit.hash)
-                statusText = "✓ 已恢复 \(file) 到 \(commit.shortHash)"
+                statusText = String(format: NSLocalizedString("✓ 已恢复 %@ 到 %@", comment: "history status"),
+                                    file, commit.shortHash)
                 reloadCommits()
             } catch {
-                statusText = "⚠️ 恢复失败: \(error.localizedDescription)"
+                statusText = String(format: NSLocalizedString("⚠️ 恢复失败: %@", comment: "history status"),
+                                    error.localizedDescription)
             }
         }
     }
@@ -186,13 +189,15 @@ final class HistoryModel: ObservableObject {
         guard let svc = app?.service, let repo = selectedRepo, let commit = currentCommit else { return }
         Task { [weak self] in
             guard let self else { return }
-            statusText = "正在回滚…"
+            statusText = NSLocalizedString("正在回滚…", comment: "history status")
             do {
                 try await svc.history.resetRepo(repoPath: repo, to: commit.hash)
-                statusText = "✓ 已回滚到 \(commit.shortHash)"
+                statusText = String(format: NSLocalizedString("✓ 已回滚到 %@", comment: "history status"),
+                                    commit.shortHash)
                 reloadCommits()
             } catch {
-                statusText = "⚠️ 回滚失败: \(error.localizedDescription)"
+                statusText = String(format: NSLocalizedString("⚠️ 回滚失败: %@", comment: "history status"),
+                                    error.localizedDescription)
             }
         }
     }
@@ -385,7 +390,7 @@ struct HistoryView: View {
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
                 if !model.files.isEmpty {
-                    Text("· \(model.files.count) 个文件")
+                    Text(String(format: NSLocalizedString("· %d 个文件", comment: "history caption"), model.files.count))
                         .font(.system(size: 11))
                         .foregroundStyle(.tertiary)
                 }

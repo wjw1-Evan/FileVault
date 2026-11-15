@@ -18,7 +18,7 @@ struct RootRow: Identifiable, Equatable {
 enum DashboardOverall {
     case ok, paused, attention, setup
 
-    var label: String {
+    var label: LocalizedStringKey {
         switch self {
         case .ok: return "全部正常"
         case .paused: return "已暂停"
@@ -125,19 +125,21 @@ final class DashboardModel: ObservableObject {
 
         if svc.pause.isGloballyPaused {
             overall = .paused
-            stateLine = "已暂停自动提交"
+            stateLine = NSLocalizedString("已暂停自动提交", comment: "dashboard state")
         } else if failed > 0 {
             overall = .attention
-            stateLine = "\(failed) 个仓库推送失败，点击菜单查看"
+            stateLine = String(format: NSLocalizedString("%d 个仓库推送失败，点击菜单查看",
+                                                         comment: "dashboard state"), failed)
         } else if svc.detection == nil {
             overall = .setup
-            stateLine = "Git 环境未就绪"
+            stateLine = NSLocalizedString("Git 环境未就绪", comment: "dashboard state")
         } else {
             overall = .ok
-            stateLine = "全部正常"
+            stateLine = NSLocalizedString("全部正常", comment: "dashboard state")
         }
         // Count-first summary kept for menu parity and the dashboard subtitle.
-        stateLine = "\(count) 个仓库受守护 · \(stateLine)"
+        stateLine = String(format: NSLocalizedString("%d 个仓库受守护 · %@", comment: "dashboard state"),
+                           count, stateLine)
     }
 }
 
@@ -204,7 +206,8 @@ struct DashboardView: View {
                        label: "受守护仓库",
                        caption: model.rootRows.isEmpty
                            ? "尚未添加目录"
-                           : "分布在 \(model.rootRows.count) 个根目录")
+                           : String(format: NSLocalizedString("分布在 %d 个根目录", comment: "dashboard caption"),
+                                            model.rootRows.count))
             FVStatTile(symbol: "clock.fill",
                        tint: .purple,
                        value: model.lastActivity.map(FVTime.relative) ?? "—",
@@ -293,7 +296,8 @@ struct DashboardView: View {
     private var rootsCard: some View {
         VStack(spacing: 0) {
             FVSectionHeader(title: "受保护的目录",
-                            trailing: "\(model.repoCount) 个仓库")
+                            trailing: String(format: NSLocalizedString("%d 个仓库", comment: "dashboard caption"),
+                                             model.repoCount))
             FVHairline(leading: 0)
             if model.rootsEmpty {
                 FVEmptyState(symbol: "folder.badge.plus",
@@ -342,7 +346,7 @@ struct DashboardView: View {
                     .font(.system(size: 12, weight: .medium))
                     .lineLimit(1)
                     .truncationMode(.middle)
-                Text("\(row.count) 个仓库")
+                Text(String(format: NSLocalizedString("%d 个仓库", comment: "dashboard caption"), row.count))
                     .font(.system(size: 10))
                     .foregroundStyle(.tertiary)
                     .monospacedDigit()

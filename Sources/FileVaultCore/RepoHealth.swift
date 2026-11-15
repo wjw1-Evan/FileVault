@@ -13,14 +13,16 @@ public struct RepoHealth: Equatable, Sendable {
     }
 
     public var summary: String {
-        var t = "\(commitCount) 次提交 · \(sizeText)"
+        var t = commitCount == 1
+            ? String(format: NSLocalizedString("1 次提交 · %@", comment: "repo health"), sizeText)
+            : String(format: NSLocalizedString("%d 次提交 · %@", comment: "repo health"), commitCount, sizeText)
         if let d = lastCommitDate {
             let f = DateFormatter()
             f.dateFormat = "MM-dd HH:mm"
-            t += " · 最近 \(f.string(from: d))"
+            t += String(format: NSLocalizedString(" · 最近 %@", comment: "repo health"), f.string(from: d))
         }
         if sizeBytes > RepoManager.repoSizeWarningThreshold {
-            t += " · ⚠️ 超过 2GB"
+            t += NSLocalizedString(" · ⚠️ 超过 2GB", comment: "repo health")
         }
         return t
     }

@@ -3,6 +3,7 @@ import PackageDescription
 
 let package = Package(
     name: "FileVault",
+    defaultLocalization: "zh-Hans",
     platforms: [.macOS(.v14)],
     products: [
         .library(name: "FileVaultCore", targets: ["FileVaultCore"]),
@@ -16,6 +17,7 @@ let package = Package(
         .executableTarget(
             name: "FileVaultApp",
             dependencies: ["FileVaultCore"],
+            resources: [.process("Resources")],
             swiftSettings: [.swiftLanguageMode(.v5)]
         ),
         .testTarget(

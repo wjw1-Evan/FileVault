@@ -14,13 +14,17 @@ public enum HistoryError: Error, LocalizedError, Equatable {
     public var errorDescription: String? {
         switch self {
         case .invalidPath(let file):
-            return "路径不合法：\(file)（不能是绝对路径或包含 ..）"
+            return String(format: NSLocalizedString("路径不合法：%@（不能是绝对路径或包含 ..）",
+                                                   comment: "history error"), file)
         case .fileNotInCommit(let file, let hash):
-            return "该版本（\(hash)）里没有文件 \(file)，无法恢复"
+            return String(format: NSLocalizedString("该版本（%@）里没有文件 %@，无法恢复",
+                                                   comment: "history error"), hash, file)
         case .commitNotFound(let hash):
-            return "找不到提交 \(hash)，可能已被清理"
+            return String(format: NSLocalizedString("找不到提交 %@，可能已被清理",
+                                                   comment: "history error"), hash)
         case .resetFailed(let stderr):
-            return "回滚失败：\(stderr.isEmpty ? "未知错误" : stderr)"
+            let reason = stderr.isEmpty ? NSLocalizedString("未知错误", comment: "history error") : stderr
+            return String(format: NSLocalizedString("回滚失败：%@", comment: "history error"), reason)
         }
     }
 }

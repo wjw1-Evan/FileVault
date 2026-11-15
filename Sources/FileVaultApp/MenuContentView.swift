@@ -5,7 +5,7 @@ import FileVaultCore
 enum MenuLabels {
     /// Root label, e.g. "工作（3）".
     static func root(_ name: String, repoCount: Int) -> String {
-        "\(name)（\(repoCount)）"
+        String(format: NSLocalizedString("%@（%d）", comment: "menu root label"), name, repoCount)
     }
 
     /// Repo row label: the name only — status is conveyed by the dot.

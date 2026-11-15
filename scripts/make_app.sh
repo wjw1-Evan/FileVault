@@ -39,12 +39,21 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <key>CFBundleExecutable</key><string>${BINARY}</string>
     <key>CFBundleIconFile</key><string>AppIcon</string>
     <key>LSMinimumSystemVersion</key><string>14.0</string>
+    <key>CFBundleDevelopmentRegion</key><string>zh_CN</string>
+    <key>CFBundleLocalizations</key>
+    <array><string>zh-Hans</string><string>en</string></array>
     <key>LSUIElement</key><true/>
     <key>NSHumanReadableCopyright</key><string>© 2026 ${PRODUCT_NAME}</string>
 </dict>
 </plist>
 PLIST
 cp build/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
+# Localisations (v3.4.0): zh-Hans literals are the keys, en.lproj holds English.
+if [ -d "Sources/FileVaultApp/Resources" ]; then
+  for lproj in Sources/FileVaultApp/Resources/*.lproj; do
+    [ -d "$lproj" ] && cp -R "$lproj" "$APP/Contents/Resources/"
+  done
+fi
 
 # 签名：正式分发必须用 Developer ID；ad-hoc 仅供本地自测。
 if [ -n "${CODESIGN_IDENTITY}" ]; then

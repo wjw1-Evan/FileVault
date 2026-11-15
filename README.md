@@ -25,6 +25,7 @@ FileVault 常驻 macOS 菜单栏，对一个受管根目录下的**第一层子�
 13. **每周自动 gc** — 仓库每周自动 `git gc --auto`，控制 .git 膨胀。
 14. **SSH 密钥引导** — 配置 SSH 远程时检测 ~/.ssh 密钥，缺失时给出指引。
 15. **失败系统通知** — 自动提交/推送失败时发送系统通知（本地提交永远先行，失败不影响本地版本管理）。
+16. **中英双语界面** — 设置 → 语言 可切换「跟随系统 / 简体中文 / English」，默认匹配 macOS 语言；切换后自动重启应用生效（v3.4.0，含 200+ 条人工翻译与完整性测试）。
 
 ## 典型场景
 
@@ -70,7 +71,7 @@ FileVault **永久免费**：无试用期、无激活码、无账号、无订阅
 
 ```bash
 swift build          # 构建
-swift test           # 运行全部测试（187 项）
+swift test           # 运行全部测试（193 项）
 .build/debug/FileVaultApp            # 启动菜单栏应用
 .build/debug/FileVaultApp --smoke    # 无 UI 冒烟自检
 swift run FileVaultApp --help        # 命令行参数

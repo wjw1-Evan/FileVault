@@ -27,16 +27,21 @@ public struct GeneralSettings: Codable, Equatable, Sendable {
     public var notificationsEnabled: Bool
     public var autoCheckUpdates: Bool
     public var debounceSeconds: Int          // auto-commit quiet window
+    /// Interface language: "system" (default), "zh-Hans" or "en" (v3.4.0).
+    public var language: String
     /// The USER's intent for login-launch; re-registered after updates break it.
     public var launchAtLoginRequested: Bool
 
     public init(notificationsEnabled: Bool = true,
                 autoCheckUpdates: Bool = true,
                 debounceSeconds: Int = 5,
+                language: String = "system",
                 launchAtLoginRequested: Bool = false) {
         self.notificationsEnabled = notificationsEnabled
         self.autoCheckUpdates = autoCheckUpdates
         self.debounceSeconds = max(1, debounceSeconds)
+        let valid = ["system", "zh-Hans", "en"]
+        self.language = valid.contains(language) ? language : "system"
         self.launchAtLoginRequested = launchAtLoginRequested
     }
 
@@ -47,6 +52,8 @@ public struct GeneralSettings: Codable, Equatable, Sendable {
         notificationsEnabled = try c.decodeIfPresent(Bool.self, forKey: .notificationsEnabled) ?? true
         autoCheckUpdates = try c.decodeIfPresent(Bool.self, forKey: .autoCheckUpdates) ?? true
         debounceSeconds = max(1, (try c.decodeIfPresent(Int.self, forKey: .debounceSeconds)) ?? 5)
+        let rawLanguage = (try c.decodeIfPresent(String.self, forKey: .language)) ?? "system"
+        language = ["system", "zh-Hans", "en"].contains(rawLanguage) ? rawLanguage : "system"
         // v3.1.3: the local large-file threshold was removed (the remote's own
         // limit is authoritative); old configs that still carry the key keep
         // decoding because unknown keys are simply ignored.

@@ -48,10 +48,12 @@ public final class FileVaultService: @unchecked Sendable {
         sync = SyncManager(repoManager: repos)
         history = HistoryService(repoManager: repos)
         commitEngine.onCommitFailure = { [weak self] repoPath, reason in
-            self?.onFailure("自动提交失败", "\((repoPath as NSString).lastPathComponent)：\(reason)")
+            self?.onFailure(NSLocalizedString("自动提交失败", comment: "notification title"),
+                            "\((repoPath as NSString).lastPathComponent)：\(reason)")
         }
         sync.onPushFailure.handler = { [weak self] repoPath, reason in
-            self?.onFailure("推送失败", "\((repoPath as NSString).lastPathComponent)：\(reason)")
+            self?.onFailure(NSLocalizedString("推送失败", comment: "notification title"),
+                            "\((repoPath as NSString).lastPathComponent)：\(reason)")
         }
         // Event-driven UI refresh: any sync transition or commit event notifies observers.
         sync.onStatusChange.handler = { [weak self] _, _ in
@@ -71,7 +73,8 @@ public final class FileVaultService: @unchecked Sendable {
         // v2.2.3: periodic auth/connectivity probing with dedup notifications.
         authMonitor = AuthMonitor(repos: repos, sync: sync)
         authMonitor?.onAuthIssue.handler = { [weak self] repoPath, message in
-            self?.onFailure("远程仓库身份验证失败", "\((repoPath as NSString).lastPathComponent)：\(message)")
+            self?.onFailure(NSLocalizedString("远程仓库身份验证失败", comment: "notification title"),
+                            "\((repoPath as NSString).lastPathComponent)：\(message)")
         }
         let rootsForAuth = rootsSnapshot()
         Task { [weak self] in

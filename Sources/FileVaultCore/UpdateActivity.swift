@@ -40,19 +40,19 @@ public struct UpdateActivity: Equatable, Sendable {
     public var menuText: String {
         switch phase {
         case .checking:
-            return "正在检查更新…"
+            return NSLocalizedString("正在检查更新…", comment: "update phase")
         case .downloading:
-            var text = "正在下载更新"
+            var text = NSLocalizedString("正在下载更新", comment: "update phase")
             if let percent { text += " \(percent)%" }
             text += "…"
             if !detail.isEmpty { text += " · " + detail }
             return text
         case .verifying:
-            return "正在校验更新…"
+            return NSLocalizedString("正在校验更新…", comment: "update phase")
         case .installing:
-            return "正在安装更新…"
+            return NSLocalizedString("正在安装更新…", comment: "update phase")
         case .restarting:
-            return "更新完成，正在重启…"
+            return NSLocalizedString("更新完成，正在重启…", comment: "update phase")
         }
     }
 }
@@ -60,14 +60,18 @@ public struct UpdateActivity: Equatable, Sendable {
 /// Finished update outcomes (shown in the menu instead of an alert panel).
 public enum UpdateStatus {
     public static func upToDate(_ version: String) -> String {
-        "已是最新版本（v\(version)）"
+        String(format: NSLocalizedString("已是最新版本（v%@）", comment: "update status"), version)
     }
 
     public static func failed(_ reason: String?) -> String {
-        guard let reason, !reason.isEmpty else { return "更新失败，将自动重试" }
-        return "更新失败：\(reason)"
+        guard let reason, !reason.isEmpty else {
+            return NSLocalizedString("更新失败，将自动重试", comment: "update status")
+        }
+        return String(format: NSLocalizedString("更新失败：%@", comment: "update status"), reason)
     }
 
     /// Unbundled builds (`.build/debug/FileVaultApp`) cannot be replaced.
-    public static let developmentBuild = "开发模式运行，不自动安装更新"
+    public static var developmentBuild: String {
+        NSLocalizedString("开发模式运行，不自动安装更新", comment: "update status")
+    }
 }

@@ -9,6 +9,9 @@ struct FileVaultApp: App {
     @StateObject private var app = AppState.shared
 
     init() {
+        // v3.4.0: honour the app-language choice before any UI is built.
+        let stored = ConfigStore().load().general.language
+        AppLanguage.apply(AppLanguage.storedValue(stored))
         handleEarlyExitFlags()
         _ = NSApplication.shared
         NSApplication.shared.setActivationPolicy(.accessory)
@@ -104,8 +107,10 @@ struct FileVaultApp: App {
         }
         // Render diagnostics: map --render-settings/--render-history/
         // --render-dashboard to an open+capture request.
-        var map = ["--render-settings": ("settings", "FileVault 设置"),
-                   "--render-history": ("history", "FileVault 历史"),
+        // Titles are localised, so resolve them through the same table the
+        // window scenes use (v3.4.0).
+        var map = ["--render-settings": ("settings", NSLocalizedString("FileVault 设置", comment: "window title")),
+                   "--render-history": ("history", NSLocalizedString("FileVault 历史", comment: "window title")),
                    "--render-dashboard": ("dashboard", "FileVault")]
         #if DEBUG
         map["--render-menu"] = ("menu-preview", "FileVault 菜单")

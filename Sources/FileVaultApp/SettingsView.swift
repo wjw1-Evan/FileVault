@@ -53,6 +53,8 @@ final class SettingsModel: ObservableObject {
     @Published var notificationsEnabled: Bool = true
     @Published var autoCheckUpdates: Bool = true
     @Published var debounceSeconds: Int = 5
+    /// "system" | "zh-Hans" | "en" (v3.4.0); applies on relaunch.
+    @Published var language: String = "system"
     @Published var showFileImporter = false
     @Published var connectionAlert: ConnectionAlert?
     @Published var gitignoreEditor: GitignoreEditorState?
@@ -81,6 +83,7 @@ final class SettingsModel: ObservableObject {
         notificationsEnabled = general.notificationsEnabled
         autoCheckUpdates = general.autoCheckUpdates
         debounceSeconds = general.debounceSeconds
+        language = general.language
         generalCommitted = true
 
         rootCards = svc.rootsSnapshot().map { root in
@@ -111,11 +114,11 @@ final class SettingsModel: ObservableObject {
             // the UI just mirrors it (v3.1.3: no local threshold setting).
             let limitText: String
             if GitHubLimits.isGitHubRemote(url) {
-                limitText = "100 MB（GitHub 硬限制）"
+                limitText = NSLocalizedString("100 MB（GitHub 硬限制）", comment: "repo limit")
             } else if let url, !url.isEmpty {
-                limitText = "不限制（远端未提供单文件上限）"
+                limitText = NSLocalizedString("不限制（远端未提供单文件上限）", comment: "repo limit")
             } else {
-                limitText = "不限制（未配置远端）"
+                limitText = NSLocalizedString("不限制（未配置远端）", comment: "repo limit")
             }
             var storedUser: String?
             if let url {
@@ -193,10 +196,10 @@ final class SettingsModel: ObservableObject {
             _ = try SupportBundle.export(report: report,
                                          configDirectory: svc.configStore.directory,
                                          destination: dest)
-            supportMessage = "✓ 诊断包已保存到 \(dest.path)"
+            supportMessage = String(format: NSLocalizedString("✓ 诊断包已保存到 %@", comment: "settings"), dest.path)
             supportMessageIsError = false
         } catch {
-            supportMessage = "⚠️ " + error.localizedDescription
+            supportMessage = String(format: NSLocalizedString("⚠️ %@", comment: "settings"), error.localizedDescription)
             supportMessageIsError = true
         }
     }
@@ -205,6 +208,29 @@ final class SettingsModel: ObservableObject {
         f.locale = Locale(identifier: "en_US_POSIX")
         f.dateFormat = "yyyyMMdd-HHmm"
         return f.string(from: Date())
+    }
+
+    /// Changing the interface language: persist, point the bundle at the new
+    /// localisation and relaunch (SwiftUI only resolves it at launch).
+    func setLanguage(_ code: String) {
+        guard let svc = service else { return }
+        language = code
+        svc.updateGeneral { $0.language = code }
+        AppLanguage.apply(AppLanguage.storedValue(code))
+        relaunchSoon()
+    }
+
+    private func relaunchSoon() {
+        let path = Bundle.main.bundleURL.path
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/bin/sh")
+        p.arguments = ["-c", "sleep 0.6 && /usr/bin/open " + Self.shellQuote(path)]
+        try? p.run()
+        NSApp.terminate(nil)
+    }
+
+    private static func shellQuote(_ s: String) -> String {
+        "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 
     /// Toggling "自动检查更新" back on resumes checking immediately (v3.1.4).
@@ -225,7 +251,7 @@ final class SettingsModel: ObservableObject {
                 service?.updateGeneral { $0.launchAtLoginRequested = on }
             } catch {
                 loginIntent = LaunchAtLogin.isEnabled
-                await alert("设置登录自启失败", error.localizedDescription)
+                await alert(NSLocalizedString("设置登录自启失败", comment: "settings alert"), error.localizedDescription)
             }
         }
     }
@@ -268,7 +294,7 @@ final class SettingsModel: ObservableObject {
                 reload()
             } catch {
                 // Never swallow add-root failures silently (v2.6.1).
-                await alert("添加根目录失败", error.localizedDescription)
+                await alert(NSLocalizedString("添加根目录失败", comment: "settings alert"), error.localizedDescription)
             }
         }
     }
@@ -320,12 +346,12 @@ final class SettingsModel: ObservableObject {
         let auto = section.autoPush
         Task { [weak self] in
             guard let self else { return }
-            await MainActor.run { self.setMessage(id, "正在保存…") }
+            await MainActor.run { self.setMessage(id, NSLocalizedString("正在保存…", comment: "settings status")) }
             do {
                 if url.isEmpty {
                     try await svc.sync.clearRemote(repoPath: id)
                     await MainActor.run {
-                        self.setMessage(id, "已清除远程仓库（仅本地模式）")
+                        self.setMessage(id, NSLocalizedString("已清除远程仓库（仅本地模式）", comment: "settings status"))
                         self.fillRepoDetails(id: id)   // refresh the remote-derived limit
                     }
                     return
@@ -349,13 +375,24 @@ final class SettingsModel: ObservableObject {
                 } else if url.contains("github.com") && url.hasPrefix("https://") {
                     _ = try? await GitRunner.ghAuthSetupGit()
                 }
-                await MainActor.run { self.setMessage(id, "已保存，正在测试连接…") }
+                await MainActor.run { self.setMessage(id, NSLocalizedString("已保存，正在测试连接…", comment: "settings status")) }
                 await MainActor.run { self.fillRepoDetails(id: id) }   // remote limit may have changed
                 let conn = await svc.sync.testConnectivity(repoPath: id)
                 self.editedPaths.remove(id)
-                await MainActor.run { self.setMessage(id, conn.ok ? (auto ? "✓ 已保存并连通，提交后将自动推送" : "✓ 已保存并连通（自动推送未开启）") : "⚠️ 已保存但连接失败：\(conn.detail)", error: !conn.ok) }
+                let status: String
+                if conn.ok {
+                    status = NSLocalizedString(auto ? "✓ 已保存并连通，提交后将自动推送" : "✓ 已保存并连通（自动推送未开启）",
+                                               comment: "settings status")
+                } else {
+                    status = String(format: NSLocalizedString("⚠️ 已保存但连接失败：%@", comment: "settings status"),
+                                    conn.detail)
+                }
+                await MainActor.run { self.setMessage(id, status, error: !conn.ok) }
             } catch {
-                await MainActor.run { self.setMessage(id, "⚠️ 保存失败：\(error.localizedDescription)", error: true) }
+                await MainActor.run {
+                    self.setMessage(id, String(format: NSLocalizedString("⚠️ 保存失败：%@", comment: "settings status"),
+                                               error.localizedDescription), error: true)
+                }
             }
         }
     }
@@ -380,13 +417,19 @@ final class SettingsModel: ObservableObject {
 
     func pull(_ id: String) {
         guard let svc = service else { return }
-        setMessage(id, "正在拉取…")
+        setMessage(id, NSLocalizedString("正在拉取…", comment: "settings status"))
         Task { [weak self] in
             do {
                 let out = try await svc.repoManager.pull(path: id)
-                await MainActor.run { self?.setMessage(id, out.contains("Already up to date") ? "✓ 已是最新" : "✓ 已拉取远程更新（ff-only）") }
+                let text = out.contains("Already up to date")
+                    ? NSLocalizedString("✓ 已是最新", comment: "settings status")
+                    : NSLocalizedString("✓ 已拉取远程更新（ff-only）", comment: "settings status")
+                await MainActor.run { self?.setMessage(id, text) }
             } catch {
-                await MainActor.run { self?.setMessage(id, "⚠️ 拉取失败：\(error.localizedDescription)", error: true) }
+                await MainActor.run {
+                    self?.setMessage(id, String(format: NSLocalizedString("⚠️ 拉取失败：%@", comment: "settings status"),
+                                                error.localizedDescription), error: true)
+                }
             }
         }
     }
@@ -405,7 +448,7 @@ final class SettingsModel: ObservableObject {
     func createRepoAndBind(target: String, name: String) {
         let clean = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !clean.isEmpty else { return }
-        setMessage(target, "正在创建仓库 \(clean)…")
+        setMessage(target, String(format: NSLocalizedString("正在创建仓库 %@…", comment: "settings status"), clean))
         Task { [weak self] in
             guard let self else { return }
             do {
@@ -417,7 +460,10 @@ final class SettingsModel: ObservableObject {
                     self.saveRepo(target)
                 }
             } catch {
-                await MainActor.run { self.setMessage(target, "⚠️ 创建失败: " + error.localizedDescription, error: true) }
+                await MainActor.run {
+                    self.setMessage(target, String(format: NSLocalizedString("⚠️ 创建失败: %@", comment: "settings status"),
+                                                   error.localizedDescription), error: true)
+                }
             }
         }
     }
@@ -566,10 +612,25 @@ struct SettingsView: View {
                 Picker("", selection: Binding(
                     get: { model.debounceSeconds },
                     set: { model.debounceSeconds = $0; model.commitGeneral() })) {
-                    ForEach([2, 5, 10, 30], id: \.self) { s in Text("\(s) 秒").tag(s) }
+                    ForEach([2, 5, 10, 30], id: \.self) { s in
+                        Text(String(format: NSLocalizedString("%d 秒", comment: "delay option"), s)).tag(s)
+                    }
                 }
                 .labelsHidden()
                 .frame(width: 92)
+            }
+            FVHairline(leading: 16)
+            settingRow(title: "语言",
+                       detail: "默认跟随系统；切换后会自动重启应用") {
+                Picker("", selection: Binding(
+                    get: { model.language },
+                    set: { model.setLanguage($0) })) {
+                    ForEach(AppLanguage.allCases) { lang in
+                        Text(lang.displayName).tag(lang.rawValue)
+                    }
+                }
+                .labelsHidden()
+                .frame(width: 150)
             }
             FVHairline(leading: 16)
             settingRow(title: "配置文件",
@@ -581,8 +642,8 @@ struct SettingsView: View {
         .fvCard()
     }
 
-    private func settingRow<Control: View>(title: String,
-                                           detail: String,
+    private func settingRow<Control: View>(title: LocalizedStringKey,
+                                           detail: LocalizedStringKey,
                                            @ViewBuilder control: () -> Control) -> some View {
         HStack(alignment: .center, spacing: 12) {
             VStack(alignment: .leading, spacing: 2) {
@@ -659,7 +720,7 @@ struct SettingsView: View {
                         .truncationMode(.middle)
                 }
                 Spacer(minLength: 8)
-                Text("\(card.repos.count) 个仓库")
+                Text(String(format: NSLocalizedString("%d 个仓库", comment: "settings caption"), card.repos.count))
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
                 Menu {

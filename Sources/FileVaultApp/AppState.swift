@@ -33,7 +33,7 @@ final class AppState: ObservableObject {
     @Published var roots: [RootMenuEntry] = []
     @Published var paused = false
     @Published var envReady = false
-    @Published var statusLine = "正在加载…"
+    @Published var statusLine = NSLocalizedString("正在加载…", comment: "menu state")
     @Published var version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.0.0"
 
     /// Update progress (FR-20): non-nil while an update transaction runs.
@@ -98,8 +98,11 @@ final class AppState: ObservableObject {
         relaunch.executableURL = URL(fileURLWithPath: "/bin/sh")
         relaunch.arguments = ["-c", "sleep 1 && /usr/bin/open " + SelfUpdater.shellQuoted(bundle.path)]
         try? relaunch.run()
-        notificationService.notifyFailure("已回滚到上一版本",
-                                          "新版本连续 3 次未能正常启动，已自动恢复到 v\(marker.previousVersion)。")
+        notificationService.notifyFailure(
+            NSLocalizedString("已回滚到上一版本", comment: "update notification"),
+            String(format: NSLocalizedString("新版本连续 3 次未能正常启动，已自动恢复到 v%@",
+                                             comment: "update notification"),
+                   marker.previousVersion))
         NSApp.terminate(nil)
         return true
     }
@@ -119,7 +122,10 @@ final class AppState: ObservableObject {
             do {
                 try await svc.startWithAutoInstall(installer: svc.envGuard)
             } catch {
-                self?.notificationService.notifyFailure("Git 环境未就绪", "自动安装未完成：请安装 Xcode Command Line Tools 后重启应用。")
+                self?.notificationService.notifyFailure(
+                    NSLocalizedString("Git 环境未就绪", comment: "git setup notification"),
+                    NSLocalizedString("自动安装未完成：请安装 Xcode Command Line Tools 后重启应用。",
+                                      comment: "git setup notification"))
             }
             // The new build reached a working state → confirm the update.
             UpdateGuard.markHealthy(configDirectory: ConfigStore.defaultDirectory)
@@ -214,17 +220,18 @@ final class AppState: ObservableObject {
         let failed = statusCache.values.contains(.failed)
         let state: String
         if paused {
-            state = "已暂停"
+            state = NSLocalizedString("已暂停", comment: "menu state")
         } else if failed {
-            state = "推送失败"
+            state = NSLocalizedString("推送失败", comment: "menu state")
         } else if !envReady {
-            state = "Git 未就绪"
+            state = NSLocalizedString("Git 未就绪", comment: "menu state")
         } else {
-            state = "正常"
+            state = NSLocalizedString("正常", comment: "menu state")
         }
         // Short enough for a single menu line (v3.1.5: the version lives in
         // 「关于 FileVault」 and the dashboard, not in the menu headline).
-        statusLine = "\(repoCount) 个仓库 · \(state)"
+        let units = String(format: NSLocalizedString("%d 个仓库", comment: "menu state"), repoCount)
+        statusLine = units + " · " + state
     }
 
     /// SF Symbol for the overall state (FR-08). Always a visible glyph.
@@ -337,7 +344,10 @@ final class AppState: ObservableObject {
             return
         }
         // v2.4.0: automatic install — silent self-updating with menu progress.
-        notificationService.notifyFailure("发现新版本", "FileVault \(offer.version) 正在自动更新，完成后将自动重启。")
+        notificationService.notifyFailure(
+            NSLocalizedString("发现新版本", comment: "update notification"),
+            String(format: NSLocalizedString("FileVault %@ 正在自动更新，完成后将自动重启。",
+                                             comment: "update notification"), offer.version))
         await installUpdate(offer: offer)
     }
 
