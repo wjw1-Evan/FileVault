@@ -60,6 +60,24 @@ public struct HttpReleaseFetcher: ReleaseFetching {
     }
 
     public func latest() async throws -> ReleaseInfo {
+        // 3 attempts with backoff: api.github.com is intermittently unreachable
+        // on some networks (CN especially) — a single-shot check silently
+        // starved updates for machines that only occasionally connect.
+        var lastError: Error = UpdateError.noRelease
+        for attempt in 1...3 {
+            do {
+                return try await fetchLatest()
+            } catch {
+                lastError = error
+                if attempt < 3 {
+                    try? await Task.sleep(nanoseconds: UInt64(attempt) * 2_000_000_000)
+                }
+            }
+        }
+        throw lastError
+    }
+
+    private func fetchLatest() async throws -> ReleaseInfo {
         guard let url = URL(string: "https://api.github.com/repos/\(repo)/releases/latest") else {
             throw UpdateError.noRelease
         }

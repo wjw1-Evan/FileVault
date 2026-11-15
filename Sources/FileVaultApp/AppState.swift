@@ -100,13 +100,11 @@ final class AppState: ObservableObject {
             }
         }
         // FR-20: silent update check shortly after launch (respects the toggle).
+        // v3.1.2: a FAILED check retries after 10 minutes — one-shot checks
+        // starved updates on flaky networks (the stuck-at-2.6.4 machine).
         if !updateCheckStarted {
             updateCheckStarted = true
-            Task { [weak self] in
-                try? await Task.sleep(nanoseconds: 20_000_000_000)
-                guard let self, self.service?.configStore.load().general.autoCheckUpdates == true else { return }
-                await self.checkForUpdate(silent: true)
-            }
+            scheduleUpdateCheck(delay: 20)
         }
         svc.onStateChange = { [weak self] in
             Task { @MainActor in await self?.refresh() }
@@ -123,6 +121,19 @@ final class AppState: ObservableObject {
         if svc.configStore.load().roots.isEmpty, !UserDefaults.standard.bool(forKey: "fv.onboarded") {
             UserDefaults.standard.set(true, forKey: "fv.onboarded")
             openWindowHandler?("settings")
+        }
+    }
+
+    /// Recurring update check: 20s after launch, then daily — and 10 minutes
+    /// after a FAILED check (flaky networks must not starve updates).
+    private func scheduleUpdateCheck(delay: TimeInterval) {
+        Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            guard let self, let svc = service,
+                  svc.configStore.load().general.autoCheckUpdates else { return }
+            await checkForUpdate(silent: true)
+            let nextDelay: TimeInterval = lastUpdateCheckFailed ? 600 : 24 * 3600
+            scheduleUpdateCheck(delay: nextDelay)
         }
     }
 
@@ -250,12 +261,18 @@ final class AppState: ObservableObject {
 
     // MARK: - Update flow (FR-20)
 
+    /// Last silent check failed → surfaced in the menu so flaky networks are
+    /// visible instead of silently starving updates (v3.1.2).
+    @Published var lastUpdateCheckFailed = false
+
     func checkForUpdate(silent: Bool) async {
         guard let svc = service else { return }
         let offer: ReleaseInfo?
         do {
             offer = try await updateChecker.check()
+            lastUpdateCheckFailed = false
         } catch {
+            lastUpdateCheckFailed = true
             if !silent { await alert("检查更新失败", "\(error.localizedDescription)") }
             return
         }

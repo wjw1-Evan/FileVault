@@ -10,6 +10,11 @@ struct MenuContentView: View {
         Text(app.statusLine)
             .font(.caption)
             .foregroundStyle(.secondary)
+        if app.lastUpdateCheckFailed {
+            Text("上次检查更新失败——将自动重试，也可手动检查")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
         Divider()
         Section("受保护的目录") {
             if app.roots.isEmpty {
@@ -42,6 +47,7 @@ struct MenuContentView: View {
             Button("历史版本…") { app.open("history") }
             Button("设置…") { app.open("settings") }
                 .keyboardShortcut(",", modifiers: [.command])
+            Button("检查更新…") { Task { await app.checkForUpdate(silent: false) } }
             Button("关于 FileVault") { app.showAbout() }
             Button("退出 FileVault") { app.quit() }
                 .keyboardShortcut("q", modifiers: [.command])
