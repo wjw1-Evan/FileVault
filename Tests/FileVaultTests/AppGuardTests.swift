@@ -218,8 +218,45 @@ final class SettingsModelTests: XCTestCase {
         defer { try? FileManager.default.removeItem(atPath: base) }
         XCTAssertEqual(model.rootCards.count, 1)
         XCTAssertEqual(model.rootCards.first?.repos.count, 1)
-        XCTAssertEqual(model.thresholdText, "200")
+        XCTAssertEqual(model.rootCards.first?.repos.first?.name, "alpha")
         XCTAssertEqual(model.debounceSeconds, 5)
+    }
+
+    /// v3.1.3: no local threshold knob — the UI mirrors the remote's value.
+    @MainActor
+    func testRemoteLimitMirrorsGitHub() async throws {
+        let (model, service, base) = try await makeModel()
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let repoPath = base + "/vault/alpha"
+        _ = try await service.repoManager.runner.run(
+            ["remote", "add", "origin", "https://github.com/acme/notes.git"], cwd: repoPath)
+        model.reload()
+        var limit = ""
+        for _ in 0..<40 {
+            limit = model.rootCards.first?.repos.first?.remoteLimit ?? ""
+            if limit.contains("100 MB") { break }
+            try? await Task.sleep(nanoseconds: 200_000_000)
+        }
+        XCTAssertTrue(limit.contains("100 MB"), "settings must display the remote's threshold, got: \(limit)")
+    }
+
+    /// Non-GitHub remotes publish no single-file limit, so the UI says so.
+    @MainActor
+    func testRemoteLimitUnlimitedForLocalRemote() async throws {
+        let (model, service, base) = try await makeModel()
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let repoPath = base + "/vault/alpha"
+        let bare = URL(fileURLWithPath: base).appendingPathComponent("remote.git")
+        _ = try? await service.repoManager.runner.run(["init", "--bare", bare.path])
+        _ = try await service.repoManager.runner.run(["remote", "add", "origin", bare.path], cwd: repoPath)
+        model.reload()
+        var limit = ""
+        for _ in 0..<40 {
+            limit = model.rootCards.first?.repos.first?.remoteLimit ?? ""
+            if limit.contains("不限制") { break }
+            try? await Task.sleep(nanoseconds: 200_000_000)
+        }
+        XCTAssertTrue(limit.contains("不限制"), "expected no remote limit, got: \(limit)")
     }
 
     @MainActor

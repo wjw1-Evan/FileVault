@@ -15,6 +15,8 @@ struct RepoSection: Identifiable, Equatable {
     var authMode: RepoManager.AuthMode = .auto
     var authUser: String = ""
     var authToken: String = ""
+    /// Remote-derived single-file ceiling, e.g. "100 MB（GitHub 硬限制）".
+    var remoteLimit: String = "…"
     var message: String = ""
     var messageIsError: Bool = false
 }
@@ -51,7 +53,6 @@ final class SettingsModel: ObservableObject {
     @Published var notificationsEnabled: Bool = true
     @Published var autoCheckUpdates: Bool = true
     @Published var debounceSeconds: Int = 5
-    @Published var thresholdText: String = "200"
     @Published var showFileImporter = false
     @Published var connectionAlert: ConnectionAlert?
     @Published var gitignoreEditor: GitignoreEditorState?
@@ -80,7 +81,6 @@ final class SettingsModel: ObservableObject {
         notificationsEnabled = general.notificationsEnabled
         autoCheckUpdates = general.autoCheckUpdates
         debounceSeconds = general.debounceSeconds
-        thresholdText = String(general.largeFileThresholdMB)
         generalCommitted = true
 
         rootCards = svc.rootsSnapshot().map { root in
@@ -107,6 +107,16 @@ final class SettingsModel: ObservableObject {
             let healthInfo = await svc.repoManager.health(path: id)
             let st = await svc.sync.status(for: id)
             let mode = await svc.repoManager.authMode(path: id)
+            // The remote is the only authority on the single-file ceiling, so
+            // the UI just mirrors it (v3.1.3: no local threshold setting).
+            let limitText: String
+            if GitHubLimits.isGitHubRemote(url) {
+                limitText = "100 MB（GitHub 硬限制）"
+            } else if let url, !url.isEmpty {
+                limitText = "不限制（远端未提供单文件上限）"
+            } else {
+                limitText = "不限制（未配置远端）"
+            }
             var storedUser: String?
             if let url {
                 storedUser = await CredentialStore.fill(runner: svc.repoManager.runner, url: url)?.username
@@ -123,6 +133,7 @@ final class SettingsModel: ObservableObject {
                 self.rootCards[idx.section].repos[idx.row].statusGlyph = glyph.symbol
                 self.rootCards[idx.section].repos[idx.row].statusColor = glyph.color
                 self.rootCards[idx.section].repos[idx.row].authMode = mode
+                self.rootCards[idx.section].repos[idx.row].remoteLimit = limitText
                 if let storedUser {
                     self.rootCards[idx.section].repos[idx.row].authUser = storedUser
                 }
@@ -159,9 +170,6 @@ final class SettingsModel: ObservableObject {
             g.notificationsEnabled = notificationsEnabled
             g.autoCheckUpdates = autoCheckUpdates
             g.debounceSeconds = debounceSeconds
-            if let mb = Int(thresholdText.trimmingCharacters(in: .whitespaces)), mb > 0 {
-                g.largeFileThresholdMB = mb
-            }
         }
     }
 
@@ -272,7 +280,10 @@ final class SettingsModel: ObservableObject {
             do {
                 if url.isEmpty {
                     try await svc.sync.clearRemote(repoPath: id)
-                    await MainActor.run { self.setMessage(id, "已清除远程仓库（仅本地模式）") }
+                    await MainActor.run {
+                        self.setMessage(id, "已清除远程仓库（仅本地模式）")
+                        self.fillRepoDetails(id: id)   // refresh the remote-derived limit
+                    }
                     return
                 }
                 try await svc.sync.configureRemote(repoPath: id, url: url, autoPush: auto)
@@ -295,6 +306,7 @@ final class SettingsModel: ObservableObject {
                     _ = try? await GitRunner.ghAuthSetupGit()
                 }
                 await MainActor.run { self.setMessage(id, "已保存，正在测试连接…") }
+                await MainActor.run { self.fillRepoDetails(id: id) }   // remote limit may have changed
                 let conn = await svc.sync.testConnectivity(repoPath: id)
                 self.editedPaths.remove(id)
                 await MainActor.run { self.setMessage(id, conn.ok ? (auto ? "✓ 已保存并连通，提交后将自动推送" : "✓ 已保存并连通（自动推送未开启）") : "⚠️ 已保存但连接失败：\(conn.detail)", error: !conn.ok) }
@@ -449,17 +461,6 @@ struct SettingsView: View {
                 set: { model.debounceSeconds = $0; model.commitGeneral() })) {
                 ForEach([2, 5, 10, 30], id: \.self) { s in Text("\(s) 秒").tag(s) }
             }
-            LabeledContent("大文件阈值") {
-                HStack(spacing: 4) {
-                    TextField("", text: Binding(
-                        get: { model.thresholdText },
-                        set: { model.thresholdText = $0; model.commitGeneral() }))
-
-                    Text("MB（超过此大小的文件自动排除出版本管理）")
-                        .foregroundStyle(.secondary)
-                        .font(.caption)
-                }
-            }
             LabeledContent("配置文件") {
                 Button("打开配置文件") { model.openConfigFile() }
             }
@@ -511,6 +512,10 @@ struct SettingsView: View {
                     Text(section.health)
                         .foregroundStyle(.secondary)
                 }
+            }
+            LabeledContent("单文件上限") {
+                Text(section.remoteLimit)
+                    .foregroundStyle(.secondary)
             }
             LabeledContent("远程仓库地址") {
                 TextField("留空 = 仅本地", text: model.urlBinding(section.id))

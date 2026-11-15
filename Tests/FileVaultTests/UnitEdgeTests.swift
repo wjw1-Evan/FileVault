@@ -96,18 +96,23 @@ final class GeneralSettingsTests: XCTestCase {
         // CRITICAL: legacy roots must SURVIVE the decode (v1.3.0 root-loss bug).
         XCTAssertEqual(loaded.roots.count, 1, "legacy roots must not be silently dropped")
         XCTAssertEqual(loaded.roots.first?.path, "/tmp/a")
+        // 1b. Configs from <=v3.1.2 still carry the removed local threshold key;
+        // it must be ignored without dropping the rest (v3.1.3).
+        let oldKey = Data(#"{"roots": [], "general": {"largeFileThresholdMB": 200, "debounceSeconds": 7}}"#.utf8)
+        try? oldKey.write(to: dir.appendingPathComponent("config.json"))
+        let migrated = ConfigStore(directory: dir).load()
+        XCTAssertEqual(migrated.general.debounceSeconds, 7, "other general values survive the removed key")
+        XCTAssertEqual(migrated.general, GeneralSettings(debounceSeconds: 7))
         // 2. Save -> load roundtrip.
         var cfg = loaded
         cfg.general.notificationsEnabled = false
         cfg.general.debounceSeconds = 10
-        cfg.general.largeFileThresholdMB = 512
         store1.save(cfg)
         cfg.general.launchAtLoginRequested = true
         store1.save(cfg)
         let again = ConfigStore(directory: dir).load()
         XCTAssertFalse(again.general.notificationsEnabled)
         XCTAssertEqual(again.general.debounceSeconds, 10)
-        XCTAssertEqual(again.general.largeFileThresholdMB, 512)
         XCTAssertTrue(again.general.launchAtLoginRequested, "login intent persists")
         try? FileManager.default.removeItem(atPath: dir.path)
     }
@@ -127,9 +132,8 @@ final class GeneralSettingsTests: XCTestCase {
         let root = TestSupport.makeTempDir("svcgen")
         let service = FileVaultService(configDirectory: URL(fileURLWithPath: root + "/cfg"))
         try await service.start()
-        service.updateGeneral { $0.debounceSeconds = 30; $0.largeFileThresholdMB = 1 }
+        service.updateGeneral { $0.debounceSeconds = 30 }
         XCTAssertEqual(service.debouncer?.currentQuietInterval, 30)
-        XCTAssertEqual(service.commitEngine?.largeFileThreshold, 1 * 1024 * 1024)
         let persisted = service.configStore.load().general
         XCTAssertEqual(persisted.debounceSeconds, 30)
         try? FileManager.default.removeItem(atPath: root)

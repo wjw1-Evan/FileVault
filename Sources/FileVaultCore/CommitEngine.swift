@@ -9,8 +9,16 @@ public final class CommitEngine: @unchecked Sendable {
     public var onCommit: (@Sendable (String, String, String) -> Void)?
     /// Called when the auto-commit pipeline fails with (repoPath, errorDescription).
     public var onCommitFailure: (@Sendable (String, String) -> Void)?
-    /// Large-file threshold used by the pipeline (injectable for tests; default 200MB).
-    public var largeFileThreshold: UInt64 = RepoManager.defaultLargeFileThreshold
+    /// Effective large-file ceiling for a repo (FR-12, v3.1.3).
+    ///
+    /// There is no local threshold anymore: the value comes from the remote
+    /// (github.com → 100 MiB, other remotes → no known limit, i.e. `0`). The
+    /// remote is the only place that can actually refuse a push, so its value
+    /// is authoritative and the pipeline never invents one.
+    public func effectiveThreshold(for repoPath: String) async -> UInt64 {
+        let remote = await repoManager.remoteURL(path: repoPath)
+        return GitHubLimits.effectiveThreshold(remoteURL: remote)
+    }
 
     private let inFlight = NSLock()
     private var busyKeys: Set<String> = []
@@ -70,7 +78,8 @@ public final class CommitEngine: @unchecked Sendable {
         // Reuse the single status pass for large-file checks and the commit
         // (was 3 git-status invocations per commit, now 1). Excluded files are
         // filtered out so the commit message reflects what is actually committed.
-        let excluded = await repoManager.excludeLargeFiles(path: repoPath, threshold: largeFileThreshold, entries: entries)
+        let threshold = await effectiveThreshold(for: repoPath)
+        let excluded = await repoManager.excludeLargeFiles(path: repoPath, threshold: threshold, entries: entries)
         let excludedSet = Set(excluded)
         let committable = entries.filter { !excludedSet.contains($0.path) }
         do {

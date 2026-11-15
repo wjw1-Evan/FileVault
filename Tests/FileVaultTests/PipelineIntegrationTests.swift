@@ -12,7 +12,11 @@ final class LargeFilePipelineTests: XCTestCase {
         service = FileVaultService(configDirectory: URL(fileURLWithPath: root + "/cfg"))
         try await service.start()
         try await service.addRoot(path: root + "/vault")
-        service.commitEngine.largeFileThreshold = 512 * 1024  // 512KB for tests
+        // v3.1.3: no local threshold — the pipeline follows the remote. Point the
+        // repo at a github.com URL so GitHub's 100 MiB limit applies (auto-push is
+        // off by default, so no network is touched).
+        try await service.repoManager.setRemote(path: root + "/vault/work",
+                                                url: "https://github.com/acme/vault.git")
     }
 
     override func tearDown() {
@@ -33,7 +37,7 @@ final class LargeFilePipelineTests: XCTestCase {
 
     func testPipelineExcludesLargeFileButCommitsSmall() async throws {
         let repo = root + "/vault/work"
-        TestSupport.write(String(repeating: "B", count: 1024 * 1024), to: repo + "/big.bin")
+        XCTAssertTrue(TestSupport.writeSparse(repo + "/big.bin", bytes: 120 * 1024 * 1024))
         TestSupport.write("small", to: repo + "/small.md")
         let n = await waitForCommits(2, repo: repo)
         XCTAssertGreaterThanOrEqual(n, 2, "auto-commit should still fire")

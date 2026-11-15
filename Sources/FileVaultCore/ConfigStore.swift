@@ -27,19 +27,16 @@ public struct GeneralSettings: Codable, Equatable, Sendable {
     public var notificationsEnabled: Bool
     public var autoCheckUpdates: Bool
     public var debounceSeconds: Int          // auto-commit quiet window
-    public var largeFileThresholdMB: Int     // FR-12 threshold
     /// The USER's intent for login-launch; re-registered after updates break it.
     public var launchAtLoginRequested: Bool
 
     public init(notificationsEnabled: Bool = true,
                 autoCheckUpdates: Bool = true,
                 debounceSeconds: Int = 5,
-                largeFileThresholdMB: Int = 200,
                 launchAtLoginRequested: Bool = false) {
         self.notificationsEnabled = notificationsEnabled
         self.autoCheckUpdates = autoCheckUpdates
         self.debounceSeconds = max(1, debounceSeconds)
-        self.largeFileThresholdMB = max(1, largeFileThresholdMB)
         self.launchAtLoginRequested = launchAtLoginRequested
     }
 
@@ -50,7 +47,9 @@ public struct GeneralSettings: Codable, Equatable, Sendable {
         notificationsEnabled = try c.decodeIfPresent(Bool.self, forKey: .notificationsEnabled) ?? true
         autoCheckUpdates = try c.decodeIfPresent(Bool.self, forKey: .autoCheckUpdates) ?? true
         debounceSeconds = max(1, (try c.decodeIfPresent(Int.self, forKey: .debounceSeconds)) ?? 5)
-        largeFileThresholdMB = max(1, (try c.decodeIfPresent(Int.self, forKey: .largeFileThresholdMB)) ?? 200)
+        // v3.1.3: the local large-file threshold was removed (the remote's own
+        // limit is authoritative); old configs that still carry the key keep
+        // decoding because unknown keys are simply ignored.
         launchAtLoginRequested = try c.decodeIfPresent(Bool.self, forKey: .launchAtLoginRequested) ?? false
     }
 }

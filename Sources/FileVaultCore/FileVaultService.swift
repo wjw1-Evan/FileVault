@@ -182,7 +182,8 @@ public final class FileVaultService: @unchecked Sendable {
     /// Apply general settings to runtime components (v1.3.0 complete settings).
     public func applyGeneral(_ g: GeneralSettings) {
         debouncer?.setQuietInterval(TimeInterval(g.debounceSeconds))
-        commitEngine?.largeFileThreshold = UInt64(g.largeFileThresholdMB) * 1024 * 1024
+        // v3.1.3: no large-file threshold to push down — the commit pipeline
+        // resolves it from each repo's remote on every run.
     }
 
     /// Mutate and persist general settings, then apply them at runtime.

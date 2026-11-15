@@ -344,12 +344,16 @@ public final class RepoManager: @unchecked Sendable {
 
     // MARK: - Large file protection (FR-12)
 
-    public static let defaultLargeFileThreshold: UInt64 = 200 * 1024 * 1024
     public static let largeFileMarkerComment = "# filevault-excluded-large-file"
 
     /// Exclude oversize untracked files via .git/info/exclude (not polluting user .gitignore).
+    ///
+    /// `threshold` is the ceiling derived from the repo's remote (see
+    /// `GitHubLimits.effectiveThreshold(remoteURL:)`); `0` means the remote has
+    /// no known single-file limit, so nothing is excluded.
     @discardableResult
-    public func excludeLargeFiles(path: String, threshold: UInt64 = RepoManager.defaultLargeFileThreshold, entries precomputed: [StatusEntry]? = nil) async -> [String] {
+    public func excludeLargeFiles(path: String, threshold: UInt64, entries precomputed: [StatusEntry]? = nil) async -> [String] {
+        guard threshold > 0 else { return [] }
         let fm = FileManager.default
         let entries: [StatusEntry]
         if let precomputed {
