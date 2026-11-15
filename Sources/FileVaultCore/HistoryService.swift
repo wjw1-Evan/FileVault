@@ -73,6 +73,24 @@ public extension HistoryService {
 }
 
 public extension HistoryService {
+    /// Byte size of a file at `hash` (cheap: git cat-file -s).
+    ///
+    /// The history window uses this to decide whether to inline a text preview
+    /// and whether a file is plausibly binary before loading the whole blob.
+    func fileSize(repoPath: String, hash: String, file: String) async throws -> Int {
+        try RepoManager.validateRepoRelativePath(file)
+        guard hash.range(of: "^[0-9a-fA-F]{4,40}$", options: .regularExpression) != nil else {
+            throw HistoryError.commitNotFound(hash)
+        }
+        let r = try await repoManager.runner.run(["cat-file", "-s", "\(hash):\(file)"], cwd: repoPath)
+        guard r.succeeded else {
+            throw HistoryError.fileNotInCommit(file: file, hash: String(hash.prefix(7)))
+        }
+        return Int(r.stdout.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
+    }
+}
+
+public extension HistoryService {
     /// Write the file's content at `hash` to `destination` (binary-safe).
     ///
     /// v3.4.3: the history window can "open" a historical version of a file.

@@ -86,8 +86,15 @@ public final class ConfigStore: @unchecked Sendable {
     private var cache: AppConfig?
 
     /// Default on-disk location (`~/Library/Application Support/FileVault`).
+    ///
+    /// `FV_CONFIG_DIR` overrides it for diagnostics/screenshots and isolated
+    /// runs — rendering a demo vault must never touch the real configuration.
     public static var defaultDirectory: URL {
-        URL(fileURLWithPath: NSHomeDirectory())
+        if let override = ProcessInfo.processInfo.environment["FV_CONFIG_DIR"],
+           !override.isEmpty {
+            return URL(fileURLWithPath: override, isDirectory: true)
+        }
+        return URL(fileURLWithPath: NSHomeDirectory())
             .appendingPathComponent("Library/Application Support/FileVault")
     }
 
