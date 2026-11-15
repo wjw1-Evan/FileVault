@@ -356,11 +356,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         do {
             offer = try await updateChecker.check()
         } catch {
-            if !silent { await MainActor.run { Self.alert("检查更新失败", "\(error.localizedDescription)") } }
+            if !silent { await Self.alert("检查更新失败", "\(error.localizedDescription)") }
             return
         }
         guard let offer else {
-            if !silent { await MainActor.run { Self.alert("已是最新版本", "当前版本 \(updateChecker.currentVersion)，没有可用的更新。") } }
+            if !silent { await Self.alert("已是最新版本", "当前版本 \(updateChecker.currentVersion)，没有可用的更新。") }
             return
         }
         // v2.4.0: automatic install — the user asked for silent self-updating.
@@ -403,17 +403,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             await MainActor.run { NSApp.terminate(nil) }
             exit(0)
         } catch {
-            await MainActor.run {
-                progress.closeWindow()
-                Self.alert("自动更新失败", error.localizedDescription)
-            }
+            await MainActor.run { progress.closeWindow() }
+            await Self.alert("自动更新失败", error.localizedDescription)
         }
     }
 
-    static func alert(_ title: String, _ body: String) {
+    static func alert(_ title: String, _ body: String) async {
         let a = NSAlert()
         a.messageText = title
         a.informativeText = body
-        FVDesign.activateAndRunModal(a)
+        // No host window in update flows: promoted runModal fallback.
+        await FVDesign.activateAndRunModal(a, on: nil)
     }
 }

@@ -179,6 +179,31 @@ if let idx = args.firstIndex(of: "--render-settings"), args.indices.contains(idx
     exit(0)
 }
 
+// Diagnostic: open REAL windows in a normal running instance (manual UI QA):
+// `FileVaultApp --open-ui settings,dashboard,history` keeps running normally.
+if let idx = args.firstIndex(of: "--open-ui"), args.indices.contains(idx + 1) {
+    let which = args[idx + 1]
+    let app = NSApplication.shared
+    app.setActivationPolicy(.accessory)
+    let delegate = AppDelegate(service: nil)
+    app.delegate = delegate
+    delegate.buildStatusItem()
+    Task {
+        let service = FileVaultService()
+        try? await service.startWithAutoInstall(installer: service.envGuard)
+        delegate.service = service
+        await MainActor.run {
+            delegate.refreshMenu()
+            if which.contains("dashboard") { delegate.openDashboard() }
+            if which.contains("history") { delegate.openHistory() }
+            if which.contains("settings") { delegate.openSettings() }
+            NSApp.activate(ignoringOtherApps: true)
+        }
+    }
+    app.run()
+    exit(0)
+}
+
 // Menu bar app (accessory: no Dock icon, resident in the menu bar).
 let app = NSApplication.shared
 let delegate = AppDelegate(service: nil)

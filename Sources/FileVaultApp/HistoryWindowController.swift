@@ -359,25 +359,20 @@ final class HistoryWindowController: NSWindowController, NSWindowDelegate, NSTab
         guard let svc = service, let repo = currentRepo(),
               let file = sender.identifier?.rawValue else { return }
         guard let commit = currentCommit else { return }
-        let alert = NSAlert()
-        alert.messageText = "恢复文件"
-        alert.informativeText = "把「" + file + "」恢复到 " + commit.shortHash + "（" + commit.subject + "）？恢复会形成一次新的提交。"
-        alert.addButton(withTitle: "恢复")
-        alert.addButton(withTitle: "取消")
-        if FVDesign.activateAndRunModal(alert) == .alertFirstButtonReturn {
+        Task { @MainActor in
+            let alert = NSAlert()
+            alert.messageText = "恢复文件"
+            alert.informativeText = "把「" + file + "」恢复到 " + commit.shortHash + "（" + commit.subject + "）？恢复会形成一次新的提交。"
+            alert.addButton(withTitle: "恢复")
+            alert.addButton(withTitle: "取消")
+            guard await FVDesign.activateAndRunModal(alert, on: window) == .alertFirstButtonReturn else { return }
             filesLabel?.stringValue = "正在恢复 " + file + "…"
-            Task {
-                do {
-                    _ = try await svc.history.restoreFile(repoPath: repo, file: file, to: commit.hash)
-                    await MainActor.run {
-                        filesLabel?.stringValue = "✓ 已恢复 " + file + " 到 " + commit.shortHash
-                        self.reloadCommits()
-                    }
-                } catch {
-                    await MainActor.run {
-                        filesLabel?.stringValue = "⚠️ 恢复失败: " + error.localizedDescription
-                    }
-                }
+            do {
+                _ = try await svc.history.restoreFile(repoPath: repo, file: file, to: commit.hash)
+                filesLabel?.stringValue = "✓ 已恢复 " + file + " 到 " + commit.shortHash
+                reloadCommits()
+            } catch {
+                filesLabel?.stringValue = "⚠️ 恢复失败: " + error.localizedDescription
             }
         }
     }
@@ -390,25 +385,20 @@ final class HistoryWindowController: NSWindowController, NSWindowDelegate, NSTab
             return
         }
         let target = commits[row]
-        let alert = NSAlert()
-        alert.messageText = "回滚确认"
-        alert.informativeText = "把「" + (repo as NSString).lastPathComponent + "」整个回滚到 " + target.shortHash + "（" + target.subject + "）？此操作会丢弃之后的提交。"
-        alert.addButton(withTitle: "回滚")
-        alert.addButton(withTitle: "取消")
-        if FVDesign.activateAndRunModal(alert) == .alertFirstButtonReturn {
+        Task { @MainActor in
+            let alert = NSAlert()
+            alert.messageText = "回滚确认"
+            alert.informativeText = "把「" + (repo as NSString).lastPathComponent + "」整个回滚到 " + target.shortHash + "（" + target.subject + "）？此操作会丢弃之后的提交。"
+            alert.addButton(withTitle: "回滚")
+            alert.addButton(withTitle: "取消")
+            guard await FVDesign.activateAndRunModal(alert, on: window) == .alertFirstButtonReturn else { return }
             filesLabel?.stringValue = "正在回滚…"
-            Task {
-                do {
-                    try await svc.history.resetRepo(repoPath: repo, to: target.hash)
-                    await MainActor.run {
-                        filesLabel?.stringValue = "✓ 已回滚到 " + target.shortHash
-                        self.reloadCommits()
-                    }
-                } catch {
-                    await MainActor.run {
-                        filesLabel?.stringValue = "⚠️ 回滚失败: " + error.localizedDescription
-                    }
-                }
+            do {
+                try await svc.history.resetRepo(repoPath: repo, to: target.hash)
+                filesLabel?.stringValue = "✓ 已回滚到 " + target.shortHash
+                reloadCommits()
+            } catch {
+                filesLabel?.stringValue = "⚠️ 回滚失败: " + error.localizedDescription
             }
         }
     }

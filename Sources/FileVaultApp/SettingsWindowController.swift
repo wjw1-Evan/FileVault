@@ -442,15 +442,18 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     // MARK: - Actions
 
     @objc func toggleLaunchAtLogin(_ sender: NSButton) {
-        do {
-            try LaunchAtLogin.setEnabled(sender.state == .on)
-            service?.updateGeneral { $0.launchAtLoginRequested = sender.state == .on }
-        } catch {
-            let alert = NSAlert()
-            alert.messageText = "设置登录自启失败"
-            alert.informativeText = error.localizedDescription
-            FVDesign.activateAndRunModal(alert)
-            sender.state = LaunchAtLogin.isEnabled ? .on : .off
+        let wanted = sender.state == .on
+        Task { @MainActor in
+            do {
+                try LaunchAtLogin.setEnabled(wanted)
+                service?.updateGeneral { $0.launchAtLoginRequested = wanted }
+            } catch {
+                let alert = NSAlert()
+                alert.messageText = "设置登录自启失败"
+                alert.informativeText = error.localizedDescription
+                await FVDesign.activateAndRunModal(alert, on: window)
+                sender.state = LaunchAtLogin.isEnabled ? .on : .off
+            }
         }
     }
 
@@ -543,14 +546,12 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
 
     @objc func testConnection(_ sender: NSButton) {
         guard let svc = service, let repoPath = sender.identifier?.rawValue else { return }
-        Task {
+        Task { @MainActor in
             let result = await svc.sync.testConnectivity(repoPath: repoPath)
-            await MainActor.run {
-                let alert = NSAlert()
-                alert.messageText = result.ok ? "✅ 连接成功" : "⚠️ 连接失败"
-                alert.informativeText = result.detail
-                FVDesign.activateAndRunModal(alert)
-            }
+            let alert = NSAlert()
+            alert.messageText = result.ok ? "✅ 连接成功" : "⚠️ 连接失败"
+            alert.informativeText = result.detail
+            await FVDesign.activateAndRunModal(alert, on: window)
         }
     }
 
@@ -599,7 +600,14 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     @objc func openConfigFile() {
         let file = service?.configStore.directory.appendingPathComponent("config.json")
         guard let file else { return }
-        NSWorkspace.shared.open(file)
+        // `open -t` (default TEXT editor) is deliberate: NSWorkspace.open on a
+        // .json depends on LaunchServices' public.json handler, which can be
+        // missing/unresolvable on some Macs — it then reports success while
+        // opening nothing (caught by live button testing, v2.6.7).
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+        p.arguments = ["-t", file.path]
+        try? p.run()
     }
 
     /// Per-root pause (FR-13).
@@ -615,34 +623,29 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     /// Create a private GitHub repo and bind it to this repo (P2 gh integration).
     @objc func createRepoAction(_ sender: NSButton) {
         guard let svc = service, let repoPath = sender.identifier?.rawValue else { return }
-        let alert = NSAlert()
-        alert.messageText = "在 GitHub 创建私有仓库并绑定"
-        alert.informativeText = "输入仓库名（将创建为当前 gh 账号下的私有仓库）："
-        let input = NSTextField(frame: NSRect(x: 0, y: 0, width: 240, height: 24))
-        input.placeholderString = "my-notes"
-        alert.accessoryView = input
-        alert.window.initialFirstResponder = input
-        alert.addButton(withTitle: "创建并绑定")
-        alert.addButton(withTitle: "取消")
-        if FVDesign.activateAndRunModal(alert) == .alertFirstButtonReturn {
+        Task { @MainActor in
+            let alert = NSAlert()
+            alert.messageText = "在 GitHub 创建私有仓库并绑定"
+            alert.informativeText = "输入仓库名（将创建为当前 gh 账号下的私有仓库）："
+            let input = NSTextField(frame: NSRect(x: 0, y: 0, width: 240, height: 24))
+            input.placeholderString = "my-notes"
+            alert.accessoryView = input
+            alert.window.initialFirstResponder = input
+            alert.addButton(withTitle: "创建并绑定")
+            alert.addButton(withTitle: "取消")
+            guard await FVDesign.activateAndRunModal(alert, on: window) == .alertFirstButtonReturn else { return }
             let name = input.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
             let setMsg: (String, NSColor) -> Void = { text, color in
-                DispatchQueue.main.async {
-                    self.messageLabels[repoPath]?.stringValue = text
-                    self.messageLabels[repoPath]?.textColor = color
-                }
+                self.messageLabels[repoPath]?.stringValue = text
+                self.messageLabels[repoPath]?.textColor = color
             }
             setMsg("正在创建仓库 " + name + "…", .secondaryLabelColor)
-            Task {
-                do {
-                    let url = try await GhRepoCreator().createPrivate(name: name)
-                    await MainActor.run {
-                        self.urlFields[repoPath]?.stringValue = url
-                    }
-                    saveRemote(repoPath: repoPath)
-                } catch {
-                    setMsg("⚠️ 创建失败: " + error.localizedDescription, .systemRed)
-                }
+            do {
+                let url = try await GhRepoCreator().createPrivate(name: name)
+                urlFields[repoPath]?.stringValue = url
+                saveRemote(repoPath: repoPath)
+            } catch {
+                setMsg("⚠️ 创建失败: " + error.localizedDescription, .systemRed)
             }
         }
     }
@@ -681,29 +684,27 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         panel.canChooseFiles = false
         panel.canCreateDirectories = false
         panel.message = "选择要保护的根目录（第一层子文件夹将被独立版本管理）"
-        let modalResult = FVDesign.activateAndRunPanel(panel)
-        if modalResult == .OK, let url = panel.url {
+        Task { @MainActor in
+            let modalResult = await FVDesign.activateAndRunPanel(panel, on: window)
+            guard modalResult == .OK, let url = panel.url else { return }
             let chosen = url.path
-            Task {
-                do {
-                    try await svc.addRoot(path: chosen)
-                    await MainActor.run { self.rebuild() }
-                } catch {
-                    // Never swallow add-root failures silently (v2.6.1).
-                    await MainActor.run {
-                        Self.alert("添加根目录失败", error.localizedDescription)
-                        self.rebuild()
-                    }
-                }
+            do {
+                try await svc.addRoot(path: chosen)
+                rebuild()
+            } catch {
+                // Never swallow add-root failures silently (v2.6.1).
+                await alert("添加根目录失败", error.localizedDescription)
+                rebuild()
             }
         }
     }
 
-    static func alert(_ title: String, _ body: String) {
+    /// Instance alert helper: sheet-modal on this window (v2.6.7).
+    func alert(_ title: String, _ body: String) async {
         let a = NSAlert()
         a.messageText = title
         a.informativeText = body
-        FVDesign.activateAndRunModal(a)
+        await FVDesign.activateAndRunModal(a, on: window)
     }
 
     @objc func removeRootAction(_ sender: NSButton) {

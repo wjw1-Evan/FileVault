@@ -65,17 +65,38 @@ enum FVDesign {
         return img
     }
 
-    /// Activate the accessory app first so modal panels/alerts actually appear
-    /// (menu-bar-only apps otherwise open panels behind/unfocused: the
-    /// "点击没反应" bug).
-    static func activateAndRunModal(_ alert: NSAlert) -> NSApplication.ModalResponse {
+    /// Modal alert attached as a SHEET to `host` when possible: sheets do not
+    /// depend on activation policy at all, which makes them the robust modal
+    /// for a menu-bar app (accessory apps' self-activation is cooperatively
+    /// ignored on modern macOS — invisible-modal bug caught by live button
+    /// testing, v2.6.7). Falls back to a promoted runModal without a host.
+    @MainActor
+    static func activateAndRunModal(_ alert: NSAlert, on host: NSWindow?) async -> NSApplication.ModalResponse {
+        if let host, host.isVisible {
+            return await withCheckedContinuation { cont in
+                alert.beginSheetModal(for: host) { resp in cont.resume(returning: resp) }
+            }
+        }
+        NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
-        return alert.runModal()
+        let response = alert.runModal()
+        NSApp.setActivationPolicy(.accessory)
+        return response
     }
 
-    static func activateAndRunPanel(_ panel: NSOpenPanel) -> NSApplication.ModalResponse {
+    /// Sheet-modal open panel — same rationale as `activateAndRunModal`.
+    @MainActor
+    static func activateAndRunPanel(_ panel: NSOpenPanel, on host: NSWindow?) async -> NSApplication.ModalResponse {
+        if let host, host.isVisible {
+            return await withCheckedContinuation { cont in
+                panel.beginSheetModal(for: host) { resp in cont.resume(returning: resp) }
+            }
+        }
+        NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
-        return panel.runModal()
+        let response = panel.runModal()
+        NSApp.setActivationPolicy(.accessory)
+        return response
     }
 
     /// Status glyph image view (colored SF Symbol).
