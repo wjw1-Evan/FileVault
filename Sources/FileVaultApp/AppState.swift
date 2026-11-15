@@ -37,7 +37,7 @@ final class AppState: ObservableObject {
     @Published var version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.0.0"
 
     /// Update progress (FR-20): non-nil while an update transaction runs.
-    /// v3.1.6: rendered inline in the menu — no progress window is opened.
+    /// v3.1.7: rendered inline in the menu — no progress window is opened.
     @Published var updateActivity: UpdateActivity?
 
     /// Result of the last finished update attempt, shown in the menu until the
@@ -271,7 +271,7 @@ final class AppState: ObservableObject {
         guard service != nil, !updateCheckInFlight else { return }
         updateCheckInFlight = true
         updateNotice = nil
-        // v3.1.6: progress and outcome live in the menu, not in a panel.
+        // v3.1.7: progress and outcome live in the menu, not in a panel.
         if !silent { updateActivity = UpdateActivity(phase: .checking) }
         defer {
             updateCheckInFlight = false
@@ -283,11 +283,15 @@ final class AppState: ObservableObject {
             lastUpdateCheckFailed = false
         } catch {
             lastUpdateCheckFailed = true
-            updateNotice = UpdateStatus.failed(error.localizedDescription)
+            // Background failures already get the standing "将在后台重试" line;
+            // only a check the user asked for needs the reason spelled out.
+            updateNotice = silent ? nil : UpdateStatus.failed(error.localizedDescription)
             return
         }
         guard let offer else {
-            updateNotice = UpdateStatus.upToDate(version)
+            // A persistent "已是最新版本" line after every silent daily check
+            // would just be menu clutter.
+            updateNotice = silent ? nil : UpdateStatus.upToDate(version)
             return
         }
         // v2.4.0: automatic install — silent self-updating with menu progress.
@@ -297,7 +301,7 @@ final class AppState: ObservableObject {
 
     /// No-op under swift run / .build/debug binaries: replacing an unbundled
     /// executable is impossible, so the menu says so instead of silently
-    /// pretending to update (v3.1.6).
+    /// pretending to update (v3.1.7).
     private func installUpdate(offer: ReleaseInfo) async {
         guard Bundle.main.bundleURL.pathExtension == "app" else {
             updateNotice = UpdateStatus.developmentBuild

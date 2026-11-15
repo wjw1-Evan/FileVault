@@ -29,7 +29,7 @@ struct MenuContentView: View {
         Text(app.statusLine)
             .font(.caption)
             .foregroundStyle(.secondary)
-        // v3.1.6: update progress lives here instead of a progress window.
+        // v3.1.7: update progress lives here instead of a progress window.
         if let activity = app.updateActivity {
             Label(activity.menuText, systemImage: "arrow.down.circle")
                 .font(.caption)

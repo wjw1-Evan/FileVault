@@ -92,6 +92,25 @@ final class UpdateActivityTests: XCTestCase {
         XCTAssertFalse(state.isUpdating)
     }
 
+    /// Silent (background) checks must not leave a permanent "已是最新版本"
+    /// caption in the menu — only user-initiated checks report their result.
+    @MainActor
+    func testSilentCheckLeavesNoNotice() async throws {
+        let root = TestSupport.makeTempDir("updsilent")
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let service = FileVaultService(configDirectory: URL(fileURLWithPath: root + "/cfg"))
+        try await service.start()
+        let state = AppState(service: service)
+        let same = ReleaseInfo(version: AppState.bundleVersion, tagName: "v" + AppState.bundleVersion,
+                               notes: "", assetName: "FileVault.zip", sha256: nil)
+        state.updateChecker = UpdateChecker(currentVersion: AppState.bundleVersion,
+                                            fetcher: FakeReleaseFetcher(.success(same)))
+        await state.checkForUpdate(silent: true)
+        XCTAssertNil(state.updateNotice)
+        XCTAssertNil(state.updateActivity)
+        XCTAssertFalse(state.lastUpdateCheckFailed)
+    }
+
     /// A failing manual check also stays in the menu — no alert panel.
     @MainActor
     func testManualCheckFailureStaysInMenu() async throws {
