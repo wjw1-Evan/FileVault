@@ -48,11 +48,6 @@ struct FileVaultApp: App {
                 .frame(minWidth: 660, minHeight: 520)
         }
 
-        Window("FileVault 更新", id: "update-progress") {
-            UpdateProgressView()
-                .environmentObject(app)
-                .frame(width: 380, height: 160)
-        }
     }
 
     /// Flags that must act before any UI exists.

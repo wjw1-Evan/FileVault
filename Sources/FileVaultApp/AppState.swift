@@ -36,14 +36,13 @@ final class AppState: ObservableObject {
     @Published var statusLine = "正在加载…"
     @Published var version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.0.0"
 
-    /// Update progress (FR-20): non-nil while an update transaction is visible.
-    struct UpdateStage: Identifiable, Equatable {
-        let id = UUID()
-        var text: String
-        var fraction: Double?
-        var detail: String
-    }
-    @Published var updateStage: UpdateStage?
+    /// Update progress (FR-20): non-nil while an update transaction runs.
+    /// v3.1.6: rendered inline in the menu — no progress window is opened.
+    @Published var updateActivity: UpdateActivity?
+
+    /// Result of the last finished update attempt, shown in the menu until the
+    /// next check starts (replaces the old "已是最新版本" / failure alerts).
+    @Published var updateNotice: String?
 
     /// Programmatic window opener (onboarding + diagnostics), captured from
     /// the SwiftUI environment once the MenuBarExtra label renders.
@@ -265,54 +264,61 @@ final class AppState: ObservableObject {
     /// toggling the setting back on used to be able to race).
     private var updateCheckInFlight = false
 
+    /// True while a check or install owns the update flow (drives the menu row).
+    var isUpdating: Bool { updateActivity != nil || updateCheckInFlight }
+
     func checkForUpdate(silent: Bool) async {
-        guard let svc = service, !updateCheckInFlight else { return }
+        guard service != nil, !updateCheckInFlight else { return }
         updateCheckInFlight = true
-        defer { updateCheckInFlight = false }
+        updateNotice = nil
+        // v3.1.6: progress and outcome live in the menu, not in a panel.
+        if !silent { updateActivity = UpdateActivity(phase: .checking) }
+        defer {
+            updateCheckInFlight = false
+            updateActivity = nil
+        }
         let offer: ReleaseInfo?
         do {
             offer = try await updateChecker.check()
             lastUpdateCheckFailed = false
         } catch {
             lastUpdateCheckFailed = true
-            if !silent { await alert("检查更新失败", "\(error.localizedDescription)") }
+            updateNotice = UpdateStatus.failed(error.localizedDescription)
             return
         }
         guard let offer else {
-            if !silent { await alert("已是最新版本", "当前版本 \(version)，没有可用的更新。") }
+            updateNotice = UpdateStatus.upToDate(version)
             return
         }
-        // v2.4.0: automatic install — silent self-updating with progress.
+        // v2.4.0: automatic install — silent self-updating with menu progress.
         notificationService.notifyFailure("发现新版本", "FileVault \(offer.version) 正在自动更新，完成后将自动重启。")
         await installUpdate(offer: offer)
     }
 
-    private func alert(_ title: String, _ body: String) async {
-        let a = NSAlert()
-        a.messageText = title
-        a.informativeText = body
-        a.runModal()
-    }
-
+    /// No-op under swift run / .build/debug binaries: replacing an unbundled
+    /// executable is impossible, so the menu says so instead of silently
+    /// pretending to update (v3.1.6).
     private func installUpdate(offer: ReleaseInfo) async {
-        guard Bundle.main.bundleURL.pathExtension == "app" else { return }
-        updateStage = UpdateStage(text: "准备更新…", fraction: nil, detail: "")
-        openWindowHandler?("update-progress")
+        guard Bundle.main.bundleURL.pathExtension == "app" else {
+            updateNotice = UpdateStatus.developmentBuild
+            return
+        }
+        updateActivity = UpdateActivity(phase: .downloading)
         do {
             let zip = try await UpdateDownloader.download(info: offer) { [weak self] fraction, received, total in
                 Task { @MainActor in
-                    self?.updateStage = UpdateStage(
-                        text: "下载更新…", fraction: fraction,
+                    self?.updateActivity = UpdateActivity(
+                        phase: .downloading, fraction: fraction,
                         detail: ByteCountFormatter.string(fromByteCount: received, countStyle: .file)
                             + " / " + ByteCountFormatter.string(fromByteCount: total, countStyle: .file))
                 }
             }
-            updateStage = UpdateStage(text: "校验完整性…", fraction: nil, detail: "")
+            updateActivity = UpdateActivity(phase: .verifying)
             try SelfUpdater.verify(zipURL: zip, expectedSHA256: offer.sha256)
-            updateStage = UpdateStage(text: "安装新版本…", fraction: nil, detail: "")
+            updateActivity = UpdateActivity(phase: .installing)
             try SelfUpdater.replace(bundleURL: Bundle.main.bundleURL, newZipURL: zip, relaunch: false)
-            updateStage = UpdateStage(text: "重启应用…", fraction: nil, detail: "")
-            // Relaunch via a detached helper AFTER we exit: `open` issued while
+            updateActivity = UpdateActivity(phase: .restarting)
+            // Relaunch via a detached helper AFTER we exit: open issued while
             // the old instance is still alive would only activate it (v2.6.6).
             let bundlePath = Bundle.main.bundleURL.path
             let relaunch = Process()
@@ -323,8 +329,8 @@ final class AppState: ObservableObject {
             NSApp.terminate(nil)
             exit(0)
         } catch {
-            updateStage = nil
-            await alert("自动更新失败", error.localizedDescription)
+            updateActivity = nil
+            updateNotice = UpdateStatus.failed(error.localizedDescription)
         }
     }
 

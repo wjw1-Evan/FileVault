@@ -29,10 +29,21 @@ struct MenuContentView: View {
         Text(app.statusLine)
             .font(.caption)
             .foregroundStyle(.secondary)
-        if app.lastUpdateCheckFailed {
-            Text("更新检查失败，将在后台重试")
+        // v3.1.6: update progress lives here instead of a progress window.
+        if let activity = app.updateActivity {
+            Label(activity.menuText, systemImage: "arrow.down.circle")
                 .font(.caption)
-                .foregroundStyle(.secondary)
+        }
+        if app.updateActivity == nil {
+            if let notice = app.updateNotice {
+                Text(notice)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else if app.lastUpdateCheckFailed {
+                Text("更新检查失败，将在后台重试")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
         Divider()
         if app.roots.isEmpty {
@@ -64,7 +75,10 @@ struct MenuContentView: View {
             .keyboardShortcut("p", modifiers: [.command, .shift])
         Menu(MenuLabels.more) {
             Button("立即提交全部") { app.commitAllNow() }
-            Button("检查更新…") { Task { await app.checkForUpdate(silent: false) } }
+            Button(app.isUpdating ? "正在检查更新…" : "检查更新…") {
+                Task { await app.checkForUpdate(silent: false) }
+            }
+            .disabled(app.isUpdating)
             Button("关于 FileVault") { app.showAbout() }
         }
         Divider()
