@@ -63,7 +63,9 @@ FileVault **永久免费**：无试用期、无激活码、无账号、无订阅
 
 ## 下载安装
 
-**最新发布：[v4.0.1](https://github.com/wjw1-Evan/FileVault/releases/tag/v4.0.1)** — [FileVault-4.0.1.zip](https://github.com/wjw1-Evan/FileVault/releases/download/v4.0.1/FileVault-4.0.1.zip)（sha256 `0efa65d4…b3e05be8`）
+**最新发布：[v4.0.2](https://github.com/wjw1-Evan/FileVault/releases/tag/v4.0.2)** — [FileVault-4.0.2.zip](https://github.com/wjw1-Evan/FileVault/releases/download/v4.0.2/FileVault-4.0.2.zip)（sha256 `60047a7a…8884491e`）
+
+> v4.0.2 修复：远程仓库认证选「用户名 + 访问令牌」时没有任何输入框、且选择不生效的问题——现在选择后会出现用户名/令牌两个输入框，点「保存」写入本机凭证库（优先钥匙串，不写进 git 配置）。
 
 > 安装包**已内嵌 git 2.56.1**：不需要预装 Xcode / Command Line Tools / Homebrew，首次启动也不联网下载。若使用精简包，则会按 5 个镜像地址自动下载并做 sha256 校验（见 [docs/07](docs/07-Git自动安装与镜像源.md)）。
 >
