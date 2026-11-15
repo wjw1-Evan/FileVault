@@ -62,7 +62,7 @@ FileVault **永久免费**：无试用期、无激活码、无账号、无订阅
 
 ## 下载安装
 
-**最新发布：[v3.2.0](https://github.com/wjw1-Evan/FileVault/releases/tag/v3.2.0)** — [FileVault-3.2.0.zip](https://github.com/wjw1-Evan/FileVault/releases/download/v3.2.0/FileVault-3.2.0.zip)（sha256 `3d762a04…613b073`）
+**最新发布：[v3.2.1](https://github.com/wjw1-Evan/FileVault/releases/tag/v3.2.1)** — [FileVault-3.2.1.zip](https://github.com/wjw1-Evan/FileVault/releases/download/v3.2.1/FileVault-3.2.1.zip)（sha256 `3c6919db…2acfc435`）
 
 解压后将 `FileVault.app` 拖入「应用程序」，首次打开右键 → 打开（ad-hoc 签名提示未公证），菜单栏即可见图标。
 
