@@ -223,7 +223,7 @@ public final class FileVaultService: @unchecked Sendable {
         var cfg = configStore.load()
         if !cfg.roots.contains(where: { $0.path == p }) {
             cfg.roots.append(ManagedRoot(path: p))
-            configStore.save(cfg)
+            saveConfig(cfg)
         }
         fireStateChange()
     }
@@ -240,7 +240,7 @@ public final class FileVaultService: @unchecked Sendable {
         repoManager.releaseInstanceLock(path: p)
         var cfg = configStore.load()
         cfg.roots.removeAll { $0.path == p }
-        configStore.save(cfg)
+        saveConfig(cfg)
         fireStateChange()
     }
 
@@ -291,7 +291,7 @@ public final class FileVaultService: @unchecked Sendable {
         } else {
             cfg.roots.append(ManagedRoot(path: new, paused: paused))
         }
-        configStore.save(cfg)
+        saveConfig(cfg)
         fireStateChange()
     }
 
@@ -366,7 +366,7 @@ public final class FileVaultService: @unchecked Sendable {
         var cfg = configStore.load()
         if let idx = cfg.roots.firstIndex(where: { $0.path == resolved(root) }) {
             cfg.roots[idx].paused = p
-            configStore.save(cfg)
+            saveConfig(cfg)
         }
         fireStateChange()
         if !p {
@@ -396,8 +396,17 @@ public final class FileVaultService: @unchecked Sendable {
     public func updateGeneral(_ mutate: (inout GeneralSettings) -> Void) {
         var cfg = configStore.load()
         mutate(&cfg.general)
-        configStore.save(cfg)
+        saveConfig(cfg)
         applyGeneral(cfg.general)
+    }
+
+    /// Persist the config and surface a write failure instead of silently
+    /// pretending the change was stored (v4.2.25).
+    private func saveConfig(_ cfg: AppConfig) {
+        guard !configStore.save(cfg) else { return }
+        onFailure(NSLocalizedString("配置未能保存", comment: "config failure"),
+                  NSLocalizedString("设置已在本次运行中生效，但配置文件无法写入（磁盘已满或没有写入权限），重启后可能丢失这次修改。",
+                                    comment: "config failure"))
     }
 
     public func commitAllNow() async {

@@ -9,7 +9,7 @@
 #   CODESIGN_IDENTITY Developer ID 证书名，例如 "Developer ID Application: Your Name (TEAMID)"；
 #                     未设置时回退 ad-hoc 签名（仅本地验证，对外分发不可用）
 #   NOTARY_PROFILE    notarytool 钥匙串 profile 名；设置后自动提交公证并 staple
-set -e
+set -euo pipefail
 cd "$(dirname "$0")/.."
 
 APP_VERSION="${1:?用法: ./scripts/make_app.sh <版本> [构建号]}"
@@ -68,7 +68,7 @@ else
 fi
 
 # 签名：正式分发必须用 Developer ID；ad-hoc 仅供本地自测。
-if [ -n "${CODESIGN_IDENTITY}" ]; then
+if [ -n "${CODESIGN_IDENTITY:-}" ]; then
   echo "签名：${CODESIGN_IDENTITY}"
   codesign --force --deep --options runtime --timestamp -s "${CODESIGN_IDENTITY}" "$APP"
 else
@@ -80,14 +80,19 @@ codesign --verify --deep --strict "$APP" && echo "签名校验通过"
 
 # 公证：需要先执行一次
 #   xcrun notarytool store-credentials <profile> --apple-id <id> --team-id <team> --password <app-specific-password>
-if [ -n "${NOTARY_PROFILE}" ]; then
+if [ -n "${NOTARY_PROFILE:-}" ]; then
+  if [ -z "${CODESIGN_IDENTITY:-}" ]; then
+    echo "✗ 设置了 NOTARY_PROFILE 但没有 CODESIGN_IDENTITY：公证必须使用 Developer ID 签名" >&2
+    exit 1
+  fi
   echo "公证：${NOTARY_PROFILE}"
   NOTARIZE_ZIP="build/${PRODUCT_NAME}-notarize.zip"
   ditto -c -k --keepParent "$APP" "$NOTARIZE_ZIP"
   xcrun notarytool submit "$NOTARIZE_ZIP" --keychain-profile "${NOTARY_PROFILE}" --wait
   xcrun stapler staple "$APP"
   rm -f "$NOTARIZE_ZIP"
-  spctl -a -vv "$APP" || echo "⚠️ spctl 未通过（确认 Developer ID 证书与公证状态）"
+  # Fail the build: shipping a package Gatekeeper rejects is worse than a red CI.
+  spctl -a -vv "$APP" || { echo "✗ spctl 未通过（确认 Developer ID 证书与公证状态）" >&2; exit 1; }
 fi
 
 echo "APP at $APP (版本 $APP_VERSION，构建 $BUILD_NUMBER)"

@@ -1593,13 +1593,13 @@ struct HistoryView: View {
             case .binary(let size):
                 previewNote(symbol: "doc.richtext",
                             title: "无法在应用内预览",
-                            detail: String(format: NSLocalizedString("%@ · 可以用默认应用打开查看内容", comment: "history preview"),
-                                           Self.sizeText(size)))
+                            detail: LocalizedStringKey(String(format: NSLocalizedString("%@ · 可以用默认应用打开查看内容", comment: "history preview"),
+                                                              Self.sizeText(size))))
             case .tooLarge(let size):
                 previewNote(symbol: "doc.badge.ellipsis",
                             title: "文件较大，未在此预览",
-                            detail: String(format: NSLocalizedString("%@ · 可以用默认应用打开查看", comment: "history preview"),
-                                           Self.sizeText(size)))
+                            detail: LocalizedStringKey(String(format: NSLocalizedString("%@ · 可以用默认应用打开查看", comment: "history preview"),
+                                                              Self.sizeText(size))))
             case .deleted:
                 previewNote(symbol: "trash",
                             title: "该版本中此文件已被删除",
@@ -1607,20 +1607,21 @@ struct HistoryView: View {
             case .failed(let message):
                 previewNote(symbol: "exclamationmark.triangle",
                             title: "预览失败",
-                            detail: message)
+                            // Dynamic text: looked up as a key, falls back to itself.
+                            detail: LocalizedStringKey(message))
             case .submodule(let entry):
                 previewNote(symbol: "shippingbox",
                             title: "这是子模块",
-                            detail: entry.map {
+                            detail: LocalizedStringKey(entry.map {
                                 String(format: NSLocalizedString("记录的子模块提交：%@。这里不展开子仓库内部文件。",
                                                                  comment: "history preview"), $0.shortHash)
-                            } ?? "这里只记录子模块的提交号，不能直接预览或恢复。")
+                            } ?? "这里只记录子模块的提交号，不能直接预览或恢复。"))
             case .lfsPointer(let size):
                 previewNote(symbol: "externaldrive.badge.icloud",
                             title: "这个文件由 Git LFS 管理",
-                            detail: String(format: NSLocalizedString("%@ · 应用内只看到指针；可在终端用 git lfs pull 取回实际内容。",
-                                                                     comment: "history preview"),
-                                           Self.sizeText(size)))
+                            detail: LocalizedStringKey(String(format: NSLocalizedString("%@ · 应用内只看到指针；可在终端用 git lfs pull 取回实际内容。",
+                                                                                comment: "history preview"),
+                                                              Self.sizeText(size))))
             case .diff(let diff):
                 if diff.isBinary {
                     previewNote(symbol: "doc.richtext",
@@ -1645,7 +1646,7 @@ struct HistoryView: View {
         }
     }
 
-    private func placeholder(_ text: String) -> some View {
+    private func placeholder(_ text: LocalizedStringKey) -> some View {
         Text(text)
             .font(.system(size: 11))
             .foregroundStyle(.tertiary)
@@ -1654,7 +1655,8 @@ struct HistoryView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    private func previewNote(symbol: String, title: String, detail: String) -> some View {
+    private func previewNote(symbol: String, title: LocalizedStringKey,
+                             detail: LocalizedStringKey) -> some View {
         VStack(spacing: 8) {
             Image(systemName: symbol)
                 .font(.system(size: 24, weight: .light))

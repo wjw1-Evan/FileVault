@@ -153,7 +153,12 @@ public extension HistoryService {
         }
         let process = Process()
         process.executableURL = URL(fileURLWithPath: repoManager.runner.gitExecutable)
-        process.arguments = ["-C", repoPath, "show", "\(hash):\(file)"]
+        // Match GitRunner: raw UTF-8 paths, and trust the folder this process
+        // was asked about (external disks / another macOS account) — without
+        // safe.directory the preview failed as "dubious ownership" (v4.2.25).
+        process.arguments = ["-c", "core.quotepath=false",
+                             "-c", "safe.directory=" + repoPath,
+                             "-C", repoPath, "show", "\(hash):\(file)"]
         process.environment = Self.gitEnvironment(for: repoManager.runner)
         let outPipe = Pipe()
         let errPipe = Pipe()
@@ -164,9 +169,20 @@ public extension HistoryService {
         } catch {
             throw HistoryError.fileNotInCommit(file: file, hash: String(hash.prefix(7)))
         }
+        // Drain stderr concurrently: reading it only after the child exits can
+        // deadlock once git fills the 64 KB pipe buffer.
+        let errLock = NSLock()
+        var errData = Data()
+        let errGroup = DispatchGroup()
+        errGroup.enter()
+        DispatchQueue.global().async {
+            let d = errPipe.fileHandleForReading.readDataToEndOfFile()
+            errLock.lock(); errData = d; errLock.unlock()
+            errGroup.leave()
+        }
         let data = outPipe.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()
-        let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
+        Self.waitForDrain(errGroup)
         guard process.terminationStatus == 0 else {
             let detail = String(decoding: errData, as: UTF8.self)
                 .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -175,6 +191,13 @@ public extension HistoryService {
                 : HistoryError.exportFailed(file: file)
         }
         return data
+    }
+
+    /// Bounded wait for a pipe-draining `DispatchGroup`. Wrapped in a
+    /// synchronous helper so the `noasync` variant of `wait` is never called
+    /// from an async context.
+    private static func waitForDrain(_ group: DispatchGroup) {
+        _ = group.wait(timeout: .now() + 5)
     }
 
     /// Environment for a direct git invocation: a bundled git needs GIT_EXEC_PATH
@@ -201,7 +224,9 @@ public extension HistoryService {
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: repoManager.runner.gitExecutable)
-        process.arguments = ["-C", repoPath, "show", "\(hash):\(file)"]
+        process.arguments = ["-c", "core.quotepath=false",
+                             "-c", "safe.directory=" + repoPath,
+                             "-C", repoPath, "show", "\(hash):\(file)"]
         process.environment = Self.gitEnvironment(for: repoManager.runner)
         process.standardOutput = handle
         let errPipe = Pipe()
@@ -211,8 +236,17 @@ public extension HistoryService {
         } catch {
             throw HistoryError.exportFailed(file: file)
         }
+        let errLock = NSLock()
+        var errData = Data()
+        let errGroup = DispatchGroup()
+        errGroup.enter()
+        DispatchQueue.global().async {
+            let d = errPipe.fileHandleForReading.readDataToEndOfFile()
+            errLock.lock(); errData = d; errLock.unlock()
+            errGroup.leave()
+        }
         process.waitUntilExit()
-        let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
+        Self.waitForDrain(errGroup)
         guard process.terminationStatus == 0 else {
             try? fm.removeItem(at: destination)
             let detail = String(decoding: errData, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)

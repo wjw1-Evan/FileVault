@@ -215,12 +215,14 @@ struct FVHairline: View {
 
 enum FVStatusMeta {
     static func forSync(_ status: SyncStatus) -> (label: String, tint: Color, symbol: String) {
+        // Translate at construction: the labels are consumed as String (menu
+        // rows, accessibility text), where SwiftUI would not look them up.
         switch status {
-        case .noRemote: return ("仅本地", .secondary, "internaldrive")
-        case .synced: return ("已同步", .green, "checkmark.circle.fill")
-        case .pendingPush: return ("待推送", .orange, "arrow.up.circle.fill")
-        case .pushing: return ("同步中", .blue, "arrow.triangle.2.circlepath")
-        case .failed: return ("失败", .red, "exclamationmark.triangle.fill")
+        case .noRemote: return (NSLocalizedString("仅本地", comment: "sync status"), .secondary, "internaldrive")
+        case .synced: return (NSLocalizedString("已同步", comment: "sync status"), .green, "checkmark.circle.fill")
+        case .pendingPush: return (NSLocalizedString("待推送", comment: "sync status"), .orange, "arrow.up.circle.fill")
+        case .pushing: return (NSLocalizedString("同步中", comment: "sync status"), .blue, "arrow.triangle.2.circlepath")
+        case .failed: return (NSLocalizedString("失败", comment: "sync status"), .red, "exclamationmark.triangle.fill")
         }
     }
 }
@@ -228,19 +230,28 @@ enum FVStatusMeta {
 // MARK: - Formatting
 
 enum FVTime {
+    /// Locale of the app's current UI language (not the system default), so an
+    /// English build never mixes "3 minutes ago" formatting with Chinese text —
+    /// or, worse, shows Chinese relative dates in an otherwise English window.
+    static var interfaceLocale: Locale {
+        let code = Bundle.main.preferredLocalizations.first
+            ?? Locale.current.identifier
+        return Locale(identifier: code)
+    }
+
     static func relative(_ date: Date) -> String {
         let f = RelativeDateTimeFormatter()
-        f.locale = Locale(identifier: "zh_Hans_CN")
+        f.locale = interfaceLocale
         f.unitsStyle = .short
         return f.localizedString(for: date, relativeTo: Date())
     }
 
     static func absolute(_ date: Date) -> String {
-        date.formatted(.dateTime.month().day().hour().minute())
+        date.formatted(.dateTime.month().day().hour().minute().locale(interfaceLocale))
     }
 
     static func absoluteWithSeconds(_ date: Date) -> String {
-        date.formatted(.dateTime.month().day().hour().minute().second())
+        date.formatted(.dateTime.month().day().hour().minute().second().locale(interfaceLocale))
     }
 }
 

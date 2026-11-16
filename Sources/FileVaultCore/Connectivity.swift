@@ -10,12 +10,11 @@ public extension SyncManager {
     /// Verify the remote is reachable and credentials work (FR-17).
     /// Uses `git ls-remote origin HEAD` — supports local paths, SSH and HTTPS remotes.
     func testConnectivity(repoPath: String) async -> ConnectivityResult {
-        let hasRemote = await repoManager.remoteURL(path: repoPath) != nil
-        guard hasRemote else {
+        guard let remote = await repoManager.defaultRemoteName(path: repoPath) else {
             return ConnectivityResult(ok: false, detail: NSLocalizedString("未配置远程仓库", comment: "connectivity"))
         }
         do {
-            let r = try await repoManager.runner.run(["ls-remote", "origin", "HEAD"], cwd: repoPath, timeout: 20)
+            let r = try await repoManager.runner.run(["ls-remote", remote, "HEAD"], cwd: repoPath, timeout: 20)
             if r.succeeded {
                 return ConnectivityResult(ok: true, detail: NSLocalizedString("连接成功", comment: "connectivity"))
             }

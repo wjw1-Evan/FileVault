@@ -1044,19 +1044,20 @@ struct RecoveryView: View {
             }
         case .binary(let size):
             noteBlock(symbol: "doc.richtext", title: "无法在应用内预览",
-                      detail: String(format: NSLocalizedString("%@ · 可以用默认应用打开查看内容",
-                                                              comment: "recovery preview"),
-                                     Self.sizeText(size)))
+                      detail: LocalizedStringKey(String(format: NSLocalizedString("%@ · 可以用默认应用打开查看内容",
+                                                                                  comment: "recovery preview"),
+                                                         Self.sizeText(size))))
         case .tooLarge(let size):
             noteBlock(symbol: "doc.badge.ellipsis", title: "文件较大，未在此预览",
-                      detail: String(format: NSLocalizedString("%@ · 可以用默认应用打开查看",
-                                                              comment: "recovery preview"),
-                                     Self.sizeText(size)))
+                      detail: LocalizedStringKey(String(format: NSLocalizedString("%@ · 可以用默认应用打开查看",
+                                                                                  comment: "recovery preview"),
+                                                         Self.sizeText(size))))
         case .deleted:
             noteBlock(symbol: "trash", title: "这个版本里没有这个文件",
                       detail: "它是在这个版本里被删除的。选择更早的版本可以找回内容。")
         case .failed(let message):
-            noteBlock(symbol: "exclamationmark.triangle", title: "读取失败", detail: message)
+            noteBlock(symbol: "exclamationmark.triangle", title: "读取失败",
+                      detail: LocalizedStringKey(message))
         case .submodule:
             noteBlock(symbol: "shippingbox", title: "这是子模块", detail: "子模块只记录提交号，不能在这里恢复。")
         case .diff(let fileDiff):
@@ -1081,7 +1082,7 @@ struct RecoveryView: View {
         .padding(.vertical, 12)
     }
 
-    private func placeholder(_ text: String) -> some View {
+    private func placeholder(_ text: LocalizedStringKey) -> some View {
         Text(text)
             .font(.system(size: 11))
             .foregroundStyle(.tertiary)
@@ -1090,7 +1091,8 @@ struct RecoveryView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    private func noteBlock(symbol: String, title: String, detail: String) -> some View {
+    private func noteBlock(symbol: String, title: LocalizedStringKey,
+                           detail: LocalizedStringKey) -> some View {
         VStack(spacing: 8) {
             Image(systemName: symbol)
                 .font(.system(size: 24, weight: .light))

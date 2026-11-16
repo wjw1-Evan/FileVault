@@ -264,7 +264,7 @@ struct CompareSheet: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if let error {
-            hint("对比失败", detail: error)
+            hint("对比失败", detail: LocalizedStringKey(error))
         } else if files.isEmpty {
             hint("两个版本没有差异", detail: "这些版本之间的文件夹内容完全一致。")
         } else {
@@ -322,8 +322,9 @@ struct CompareSheet: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if let diff {
             if diff.isBinary {
-                hint("二进制文件已更改", detail: NSLocalizedString("无法显示逐行差异，请用默认应用打开查看。",
-                                                              comment: "diff"))
+                hint("二进制文件已更改",
+                     detail: LocalizedStringKey(NSLocalizedString("无法显示逐行差异，请用默认应用打开查看。",
+                                                                  comment: "diff")))
             } else if diff.isEmpty {
                 hint("这个文件没有差异", detail: "选中的文件在两个版本之间没有变化。")
             } else {
@@ -352,7 +353,7 @@ struct CompareSheet: View {
         }
     }
 
-    private func hint(_ title: String, detail: String?) -> some View {
+    private func hint(_ title: LocalizedStringKey, detail: LocalizedStringKey?) -> some View {
         VStack(spacing: 7) {
             Image(systemName: "arrow.left.arrow.right")
                 .font(.system(size: 22, weight: .light))

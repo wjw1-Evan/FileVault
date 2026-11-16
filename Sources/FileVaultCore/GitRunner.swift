@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(Darwin)
+import Darwin
+#endif
 
 /// Result of one git command execution.
 public struct GitResult: Sendable {
@@ -100,6 +103,13 @@ public final class GitRunner: Sendable {
         // askpass) in the background (v4.2.3). Users can still override these
         // through their own environment or git config (core.sshCommand).
         if e["GIT_TERMINAL_PROMPT"] == nil { e["GIT_TERMINAL_PROMPT"] = "0" }
+        // Stable English diagnostics: every failure classifier (PullError,
+        // SyncManager.deterministicPushRejection, blockedUntrackedFiles, …)
+        // matches English phrases. A gettext-enabled git under a Chinese locale
+        // prints translated messages, which silently degraded every failure to
+        // "unknown" (no auto-rebase, no branch-protection stop) (v4.2.25).
+        if e["LC_ALL"] == nil { e["LC_ALL"] = "C" }
+        if e["LANG"] == nil { e["LANG"] = "C" }
         if e["GIT_SSH_COMMAND"] == nil {
             e["GIT_SSH_COMMAND"] = "ssh -o BatchMode=yes -o ConnectTimeout=20"
         }
@@ -137,11 +147,15 @@ public final class GitRunner: Sendable {
             group.leave()
         }
 
-        if let stdin {
+        // stdin is fed AFTER the child is spawned: writing a large payload into
+        // the pipe before `run()` blocks forever once the 64 KB pipe buffer is
+        // full (no reader exists yet). The write also runs off this thread so a
+        // slow consumer can never block the caller (v4.2.25).
+        var stdinPipe: Pipe?
+        if stdin != nil {
             let inPipe = Pipe()
             process.standardInput = inPipe
-            inPipe.fileHandleForWriting.write(Data(stdin.utf8))
-            try? inPipe.fileHandleForWriting.close()
+            stdinPipe = inPipe
         }
 
         do {
@@ -153,7 +167,23 @@ public final class GitRunner: Sendable {
             // limit, starving the whole process under load (full-suite hang).
             outPipe.fileHandleForWriting.closeFile()
             errPipe.fileHandleForWriting.closeFile()
+            // No child will ever read stdin: close it so a queued writer wakes
+            // with EPIPE instead of blocking a global-queue thread forever.
+            stdinPipe?.fileHandleForWriting.closeFile()
             throw error
+        }
+
+        if let stdin, let inPipe = stdinPipe {
+            let payload = Data(stdin.utf8)
+            DispatchQueue.global().async {
+                do {
+                    try inPipe.fileHandleForWriting.write(contentsOf: payload)
+                } catch {
+                    // EPIPE: the command exited without reading its input. Not
+                    // fatal; the exit status and stderr explain the failure.
+                }
+                try? inPipe.fileHandleForWriting.close()
+            }
         }
 
         let exitSem = DispatchSemaphore(value: 0)
@@ -162,7 +192,19 @@ public final class GitRunner: Sendable {
         let waitResult = exitSem.wait(timeout: .now() + timeout)
         if waitResult == .timedOut {
             process.terminate()
-            _ = exitSem.wait(timeout: .now() + 5)
+            if exitSem.wait(timeout: .now() + 5) == .timedOut {
+                // SIGTERM was ignored (or the process is stuck in an
+                // uninterruptible syscall on a dying network mount): force it,
+                // otherwise every timed-out push leaks a child plus its readers.
+                kill(process.processIdentifier, SIGKILL)
+                _ = exitSem.wait(timeout: .now() + 2)
+            }
+            // Release the pipe readers even if a descendant still holds the
+            // write ends; a leaked reader would block a global-queue thread.
+            outPipe.fileHandleForWriting.closeFile()
+            errPipe.fileHandleForWriting.closeFile()
+            stdinPipe?.fileHandleForWriting.closeFile()
+            _ = group.wait(timeout: .now() + 5)
             throw GitCommandError(command: args.joined(separator: " "), exitCode: -9, stderr: "git command timed out after \(timeout)s")
         }
 

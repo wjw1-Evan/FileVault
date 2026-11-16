@@ -16,10 +16,12 @@
 #
 # 退出码：0 通过；1 发现超过失败阈值的 blob；2 用法/环境错误。
 
-set -o pipefail
+# -u: an unset variable must be an error, not an empty string that silently
+#     changes a threshold; pipefail stays so a failing stage cannot look empty.
+set -uo pipefail
 
-WARN_MB="$FV_WARN_MB"
-BLOCK_MB="$FV_BLOCK_MB"
+WARN_MB="${FV_WARN_MB:-}"
+BLOCK_MB="${FV_BLOCK_MB:-}"
 [ -z "$WARN_MB" ] && WARN_MB=50
 [ -z "$BLOCK_MB" ] && BLOCK_MB=100
 
@@ -146,7 +148,18 @@ check_history() {
     return 2
   fi
 
-  listing=$(git rev-list --objects "$range" 2>/dev/null \
+  # Enumerate objects FIRST and check the exit status: a corrupt/missing object
+  # database used to yield an empty list, which this script reported as
+  # "no large blobs" and exit 0 — letting a broken (and unpushable) commit
+  # through (v4.2.25).
+  local objects
+  if ! objects=$(git rev-list --objects "$range" 2>&1); then
+    printf '%s✗ 无法枚举提交对象（仓库可能损坏），拒绝放行：%s%s\n' "$RED" "$range" "$RESET" >&2
+    printf '%s\n' "$objects" | sed -n '1,3p' >&2
+    return 2
+  fi
+
+  listing=$(printf '%s\n' "$objects" \
     | git cat-file --batch-check='%(objecttype) %(objectname) %(objectsize) %(rest)' 2>/dev/null \
     | awk -v warn="$WARN_BYTES" -v block="$BLOCK_BYTES" '
         $1 == "blob" && $3 + 0 > warn {
@@ -160,6 +173,10 @@ check_history() {
           for (p in max) printf "%d\t%s\n", max[p], p
         }' \
     | sort -k1,1rn)
+  if [ $? -ne 0 ]; then
+    printf '%s✗ 读取对象信息失败，拒绝放行（仓库可能损坏）%s\n' "$RED" "$RESET" >&2
+    return 2
+  fi
 
   if [ -z "$listing" ]; then
     printf '%s✓ 历史中未发现超过 %s MiB 的 blob（范围：%s）%s\n' \

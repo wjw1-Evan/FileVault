@@ -64,7 +64,10 @@ public enum SupportBundle {
         lines.append(NSLocalizedString("## 隐私说明", comment: "diagnostics report"))
         lines.append(NSLocalizedString("本报告不含任何文件内容、远程地址或账号；路径已替换为 ~。",
                                        comment: "diagnostics report"))
-        return lines.joined(separator: "\n") + "\n"
+        // Mask the WHOLE report, not just roots/config: the git path and any
+        // diagnostic detail can contain the user name, and the privacy section
+        // promises paths are collapsed to "~" (v4.2.25).
+        return Self.masked(lines.joined(separator: "\n")) + "\n"
     }
 
     /// Write `diagnostics.txt` (plus a redacted config copy) into a zip.
@@ -116,9 +119,16 @@ public enum SupportBundle {
 
     /// Collapse the user's home directory to `~` (reports are shareable).
     public static func masked(_ text: String) -> String {
+        var out = text
         let home = NSHomeDirectory()
-        guard !home.isEmpty, home != "/" else { return text }
-        return text.replacingOccurrences(of: home, with: "~")
+        if !home.isEmpty, home != "/" {
+            out = out.replacingOccurrences(of: home, with: "~")
+        }
+        // Other accounts on the same Mac still reveal a login name; collapse
+        // them too (idempotent for paths already shortened to "~").
+        out = out.replacingOccurrences(of: #"/Users/[^/\s"]+"#, with: "~",
+                                       options: .regularExpression)
+        return out
     }
 }
 

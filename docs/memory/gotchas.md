@@ -37,3 +37,21 @@
 - 原因：`.env` 这类被忽略的文件不在 git 里，回滚会静默删掉它们。
 - 证据：README:13（v4.2.16）
 - 规避：回滚前列出未跟踪文件并拒绝执行，让用户先处理。
+
+## git status 失败不等于“没有改动”
+
+- 原因：`status()` 曾把非 0 退出压成 `[]`，强制拉取/合并/恢复据此判断“干净”，随后 `reset --hard` / `checkout` 覆盖未提交内容。
+- 证据：Sources/FileVaultCore/RepoManager.swift:121（v4.2.25）
+- 规避：任何“是否脏”的安全判断都必须区分“无改动”和“读不到”，读不到就拒绝执行。
+
+## git credential approve 在没有助手时仍返回 0
+
+- 原因：`approve` 只把凭证交给已配置的助手；助手不存在时它照样成功，令牌被静默丢弃。判断助手是否存在也不能只看 127：git 对未知子命令返回 1。
+- 证据：Sources/FileVaultCore/CredentialStore.swift:58（v4.2.25）
+- 规避：按 stderr 的 “is not a git command” 判定不可用；写入后再 `fill` 读回校验。
+
+## 写进 .git/info/exclude 的路径必须转义
+
+- 原因：文件名里的 `[]*?` 会被 gitignore 当成通配符，规则匹配不到文件，大文件仍被提交并推送失败，界面却提示“已排除”。
+- 证据：Sources/FileVaultCore/RepoManager.swift:1830（v4.2.25）
+- 规避：规则按字面转义后用 `git check-ignore -q` 自校验，再决定是否告诉用户“已排除”。

@@ -65,7 +65,9 @@ FileVault **永久免费**：无试用期、无激活码、无账号、无订阅
 
 ## 下载安装
 
-**最新发布：[v4.2.24](https://github.com/wjw1-Evan/FileVault/releases/tag/v4.2.24)** — [FileVault-4.2.24.zip](https://github.com/wjw1-Evan/FileVault/releases/download/v4.2.24/FileVault-4.2.24.zip)（sha256 `7e3d3b31…b7132f`，约 22 MB）
+**最新发布：[v4.2.25](https://github.com/wjw1-Evan/FileVault/releases/tag/v4.2.25)** — [FileVault-4.2.25.zip](https://github.com/wjw1-Evan/FileVault/releases/download/v4.2.25/FileVault-4.2.25.zip)（sha256 `89566b3c…4efdeda`，约 22 MB）
+
+> v4.2.25 全量审计修复（业务流程 + 代码）：**读不到改动 ≠ 没有改动**——`git status` 失败时强制拉取/合并/恢复会拒绝执行，不再覆盖未提交内容；同步时保留的「本地副本」自动加入忽略规则，**刻意忽略的私密文件不会再被提交/推送**；大文件排除规则按字面转义并自校验（名字含 `[]*?` 的文件不再「提示已排除却被提交」）；推送改用仓库实际远程名（接管非 origin 远程的旧仓库不再永远推送失败），同一仓库只跑一个推送循环；`git credential approve` 在没有助手时也返回 0 → 现在会判断助手是否真的存在并在写入后读回校验，不再假装保存成功；版本对比与文件夹回滚改用 NUL 解析并关闭重命名检测（改名、含引号/换行的文件不再漏删或错行）；git 调用固定英文诊断（`LC_ALL=C`，错误分类不再随系统语言失效）、大输入不再自锁、超时后强杀进程；tar 解包并发读 stderr（损坏安装包不会让首次启动卡死）；配置写盘失败会明确通知而不是显示「已保存」；更新包轮换失败给出可读原因并清理临时文件；启动失败的监听会被安全巡检真正重启；诊断包整体脱敏；菜单、状态词、空态与相对时间都会跟随界面语言，移除文件夹后菜单栏不再残留旧的失败图标/文案。
 
 > v4.1.1 修复：设置里「拉取远程更新」失败时不再只显示「未能完成操作。（FileVaultCore.GitCommandError 错误 1.）」——现在直接说明原因（本地与远程分叉并给出双方提交数、历史互不相关、认证失败、网络不可达、远程缺分支、文件夹已不是仓库…）并给出下一步；同时修好「没有配置上游的仓库根本拉不动」（此前 `git pull --ff-only origin` 缺分支参数，git 在 fetch 前就以「未指定分支」退出），并纠正 SSH 连接失败被当成令牌过期、分支名含 401 被当成 HTTP 401 的误判。
 
@@ -82,7 +84,7 @@ FileVault **永久免费**：无试用期、无激活码、无账号、无订阅
 
 ```bash
 swift build          # 构建
-swift test           # 运行全部测试（465 项）
+swift test           # 运行全部测试（474 项）
 .build/debug/FileVaultApp            # 启动菜单栏应用
 .build/debug/FileVaultApp --smoke    # 无 UI 冒烟自检
 swift run FileVaultApp --help        # 命令行参数

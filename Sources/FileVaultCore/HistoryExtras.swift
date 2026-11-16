@@ -227,8 +227,10 @@ public extension HistoryService {
     func compare(repoPath: String, from: String, to: String) async throws -> [ComparedFile] {
         try Self.requireHash(from, error: HistoryError.commitNotFound(from))
         try Self.requireHash(to, error: HistoryError.commitNotFound(to))
+        // -z keeps names with tabs/newlines/quotes intact; without it a single
+        // odd filename produced bogus rows and a truncated path (v4.2.25).
         let names = try await repoManager.runner.run(
-            ["diff", "--name-status", "--no-renames", from, to],
+            ["diff", "--name-status", "-z", "--no-renames", from, to],
             cwd: repoPath
         )
         guard names.succeeded else {
@@ -251,11 +253,14 @@ public extension HistoryService {
             }
         }
         var result: [ComparedFile] = []
-        for line in names.stdout.split(separator: "\n") {
-            let parts = line.split(separator: "\t", omittingEmptySubsequences: false)
-            guard parts.count >= 2 else { continue }
-            let status = String(parts[0])
-            let path = String(parts[parts.count - 1])
+        // --no-renames: every record is "STATUS\0PATH\0".
+        let tokens = names.stdout.split(separator: "\u{0}", omittingEmptySubsequences: true).map(String.init)
+        var index = 0
+        while index + 1 < tokens.count {
+            let status = tokens[index]
+            let path = tokens[index + 1]
+            index += 2
+            guard !path.isEmpty else { continue }
             let s = stats[path] ?? (0, 0, false)
             result.append(ComparedFile(path: path, status: status,
                                        added: s.0, removed: s.1, isBinary: s.2))
@@ -463,15 +468,21 @@ public extension HistoryService {
 
         let exists = try await repoManager.runner.run(["cat-file", "-e", hash + ":" + dir], cwd: repoPath)
         if exists.succeeded {
-            // Files present in HEAD but absent from the target must go.
+            // Files present in HEAD but absent from the target must go. Rename
+            // detection is disabled on purpose: with it, "a.txt -> b.txt" hides
+            // b.txt from --diff-filter=D and the rollback leaves it behind
+            // (v4.2.25). -z keeps names with quotes/newlines usable.
             let deleted = try await repoManager.runner.run(
-                ["diff", "--name-only", "--diff-filter=D", "HEAD", hash, "--", dir],
+                ["diff", "--name-only", "-z", "--no-renames", "--diff-filter=D", "HEAD", hash, "--", dir],
                 cwd: repoPath
             )
             if deleted.succeeded {
-                let paths = deleted.stdout.split(separator: "\n").map(String.init).filter { !$0.isEmpty }
+                let paths = deleted.stdout.split(separator: "\u{0}").map(String.init).filter { !$0.isEmpty }
                 if !paths.isEmpty {
-                    _ = try await repoManager.runner.run(["rm", "-f", "--"] + paths, cwd: repoPath)
+                    let rm = try await repoManager.runner.run(["rm", "-f", "--"] + paths, cwd: repoPath)
+                    guard rm.succeeded else {
+                        throw HistoryError.restoreFailed(stderr: rm.stderr)
+                    }
                 }
             }
             let checkout = try await repoManager.runner.run(["checkout", hash, "--", dir], cwd: repoPath)

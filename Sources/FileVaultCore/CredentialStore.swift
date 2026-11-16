@@ -47,9 +47,18 @@ public enum CredentialStore {
         return base.appendingPathComponent("FileVault/git-credentials")
     }
 
+    /// Whether Apple's keychain helper is usable by this git.
+    ///
+    /// `git credential-osxkeychain` with no subcommand exits 128 (usage) when
+    /// the helper exists, but git answers an unknown helper with exit code 1 and
+    /// "is not a git command". Checking only for 127 therefore reported the
+    /// helper as present on Macs without Xcode/CLT, so PAT mode configured a
+    /// helper that did not exist: `git credential approve` still exits 0 and the
+    /// token was silently dropped (v4.2.25).
     public static func isAvailable(runner: GitRunner) async -> Bool {
-        // osxkeychain helper presence (bundled with Apple git).
         guard let r = try? await runner.run(["credential-osxkeychain"], timeout: 5) else { return false }
+        let text = (r.stdout + " " + r.stderr).lowercased()
+        if text.contains("is not a git command") || text.contains("not found") { return false }
         return r.exitCode != 127
     }
 
@@ -113,6 +122,13 @@ public enum CredentialStore {
         let input = "url=" + url + "\nusername=" + username + "\npassword=" + password + "\n"
         let r = try await runner.run(["credential", "approve"], timeout: 10, stdin: input)
         guard r.succeeded else { throw CredentialError.storeFailed(r.stderr) }
+        // `approve` exits 0 even when no helper is configured (nothing is
+        // stored), so confirm the value is actually retrievable. A helper that
+        // cannot read back returns nil; that is not treated as a failure here.
+        if let stored = await fill(runner: runner, url: url), stored.password != password {
+            throw CredentialError.storeFailed(
+                NSLocalizedString("写入后无法读回同一凭证（凭证助手异常）", comment: "credential error"))
+        }
     }
 
     /// Read stored credentials (host+path match). Returns username/password.

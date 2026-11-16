@@ -10,11 +10,17 @@ final class FakeChangeSource: ChangeSource, @unchecked Sendable {
     private(set) var startedPaths: [String] = []
     private(set) var stopCount = 0
 
-    func start(paths: [String], onEvent: @escaping @Sendable ([String]) -> Void) {
+    /// Set to false to simulate FSEventStreamCreate/Start failing.
+    var startSucceeds = true
+
+    @discardableResult
+    func start(paths: [String], onEvent: @escaping @Sendable ([String]) -> Void) -> Bool {
         lock.lock()
         startedPaths = paths
         handler = onEvent
+        let ok = startSucceeds
         lock.unlock()
+        return ok
     }
 
     func stop() {

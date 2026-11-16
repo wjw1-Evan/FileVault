@@ -4,7 +4,7 @@
 
 ## 项目速览
 
-- 产品：FileVault，macOS 菜单栏常驻的 Git 自动版本管理工具（当前 v4.2.24）。
+- 产品：FileVault，macOS 菜单栏常驻的 Git 自动版本管理工具（当前 v4.2.25）。
 - 技术栈：Swift 6（工具链 6.0，源码按 `swiftLanguageMode(.v5)` 编译）、SwiftUI、macOS 14+。
 - 目录：
   - `Sources/FileVaultCore/` — 纯逻辑（Git、同步、恢复、更新、配置），不依赖 UI。

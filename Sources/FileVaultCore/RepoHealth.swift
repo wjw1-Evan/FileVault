@@ -62,11 +62,11 @@ public extension RepoManager {
         guard isRepo(at: path) else {
             return RepoHealth(commitCount: 0, sizeBytes: 0, lastCommitDate: nil, available: false)
         }
-        let gitDir = (path as NSString).appendingPathComponent(".git")
+        let gitDir = RepoManager.gitDirectory(forRepoAt: path)
         var size: UInt64 = 0
         if let e = FileManager.default.enumerator(atPath: gitDir) {
-            for f in e {
-                let full = (gitDir as NSString).appendingPathComponent(f as! String)
+            for case let f as String in e {
+                let full = (gitDir as NSString).appendingPathComponent(f)
                 if let attrs = try? FileManager.default.attributesOfItem(atPath: full),
                    let s = attrs[.size] as? UInt64 {
                     size += s

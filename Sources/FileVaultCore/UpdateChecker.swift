@@ -32,6 +32,8 @@ public enum UpdateError: Error, LocalizedError, Equatable {
     case notBundled
     /// The extracted bundle failed the code-signature / identity check (v3.3.0).
     case signatureRejected(String)
+    /// Rotating the running bundle aside failed (permissions, read-only volume).
+    case installFailed(String)
 
     public static func == (lhs: UpdateError, rhs: UpdateError) -> Bool {
         switch (lhs, rhs) {
@@ -39,6 +41,8 @@ public enum UpdateError: Error, LocalizedError, Equatable {
              (.checksumMismatch, .checksumMismatch), (.notBundled, .notBundled):
             return true
         case (.signatureRejected(let a), .signatureRejected(let b)):
+            return a == b
+        case (.installFailed(let a), .installFailed(let b)):
             return a == b
         default:
             return false
@@ -59,6 +63,8 @@ public enum UpdateError: Error, LocalizedError, Equatable {
             return NSLocalizedString("仅 .app 包内运行时支持自动更新", comment: "update error")
         case .signatureRejected(let detail):
             return String(format: NSLocalizedString("更新包签名校验未通过：%@", comment: "update error"), detail)
+        case .installFailed(let detail):
+            return String(format: NSLocalizedString("安装更新失败：%@", comment: "update error"), detail)
         }
     }
 }

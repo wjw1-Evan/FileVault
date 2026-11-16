@@ -81,13 +81,15 @@ struct MenuContentView: View {
             .padding(.horizontal, 14)
             .padding(.bottom, 8)
         } else if let notice = app.updateNotice {
-            noticeText(notice)
+            // Already-localized text from AppState: look up as a key, falls back
+            // to the text itself.
+            noticeText(LocalizedStringKey(notice))
         } else if app.lastUpdateCheckFailed {
             noticeText("更新检查失败，将在后台重试")
         }
     }
 
-    private func noticeText(_ text: String) -> some View {
+    private func noticeText(_ text: LocalizedStringKey) -> some View {
         HStack(spacing: 6) {
             Image(systemName: "arrow.down.circle")
                 .font(.system(size: 9))
@@ -248,7 +250,10 @@ struct RootMenuRow: View {
 /// Standard action row with optional keyboard shortcut + visible hint.
 struct MenuActionRow: View {
     let symbol: String
-    let title: String
+    /// LocalizedStringKey (not String): a String parameter selects SwiftUI's
+    /// verbatim Text initializer, so the rows stayed Chinese in English builds
+    /// even though every key was translated (v4.2.25).
+    let title: LocalizedStringKey
     var key: KeyEquivalent? = nil
     var modifiers: EventModifiers = [.command]
     var hint: String? = nil

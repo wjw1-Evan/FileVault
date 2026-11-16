@@ -3,7 +3,11 @@ import CoreServices
 
 /// Injectable event source protocol.
 public protocol ChangeSource: AnyObject {
-    func start(paths: [String], onEvent: @escaping @Sendable ([String]) -> Void)
+    /// Start watching. Returns false when the platform stream could not be
+    /// created/started, so the caller knows the watch is NOT running and can
+    /// retry it later (v4.2.25).
+    @discardableResult
+    func start(paths: [String], onEvent: @escaping @Sendable ([String]) -> Void) -> Bool
     func stop()
 }
 
@@ -24,11 +28,12 @@ public final class FSEventsChangeSource: ChangeSource {
 
     public init() {}
 
-    public func start(paths: [String], onEvent: @escaping @Sendable ([String] ) -> Void) {
+    @discardableResult
+    public func start(paths: [String], onEvent: @escaping @Sendable ([String] ) -> Void) -> Bool {
         lifecycleLock.lock()
         guard !started else {
             lifecycleLock.unlock()
-            return
+            return true
         }
         started = true
         lifecycleLock.unlock()
@@ -79,7 +84,7 @@ public final class FSEventsChangeSource: ChangeSource {
             started = false
             lifecycleLock.unlock()
             Unmanaged<EventBox>.fromOpaque(info).release()
-            return
+            return false
         }
         FSEventStreamSetDispatchQueue(stream, streamQueue)
         let startedOK = FSEventStreamStart(stream)
@@ -96,9 +101,10 @@ public final class FSEventsChangeSource: ChangeSource {
             lifecycleLock.lock()
             started = false
             lifecycleLock.unlock()
-            return
+            return false
         }
         self.stream = stream
+        return true
     }
 
     public func stop() {
@@ -158,10 +164,10 @@ public final class WatcherEngine {
     /// Like start(onActivity:), but also reports the changed paths relative to
     /// the watched root. The commit pipeline needs them to recognise brand-new
     /// empty folders (Git cannot track an empty directory by itself).
-    public func start(onActivityPaths: @escaping @Sendable ([String]) -> Void) {
-        stateLock.lock(); runningFlag = true; stateLock.unlock()
+    @discardableResult
+    public func start(onActivityPaths: @escaping @Sendable ([String]) -> Void) -> Bool {
         let root = realRoot
-        source.start(paths: [root]) { eventPaths in
+        let ok = source.start(paths: [root]) { eventPaths in
             var relative: [String] = []
             var seen = Set<String>()
             for p in eventPaths {
@@ -177,6 +183,11 @@ public final class WatcherEngine {
             }
             if !relative.isEmpty { onActivityPaths(relative) }
         }
+        // Only a successfully started stream counts as running: the safety
+        // sweep restarts watchers with isRunning == false, so a failed start
+        // used to be invisible (no live commits until the next restart).
+        stateLock.lock(); runningFlag = ok; stateLock.unlock()
+        return ok
     }
 
     public func stop() {

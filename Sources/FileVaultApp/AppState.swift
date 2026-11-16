@@ -71,8 +71,15 @@ final class AppState: ObservableObject {
     private func recoverFromFailedUpdateIfNeeded() -> Bool {
         let configDirectory = ConfigStore.defaultDirectory
         guard let marker = UpdateGuard.consumeLaunch(configDirectory: configDirectory),
-              UpdateGuard.shouldRollback(marker),
-              let source = UpdateGuard.rollbackSource(for: Bundle.main.bundleURL) else {
+              UpdateGuard.shouldRollback(marker) else {
+            return false
+        }
+        guard let source = UpdateGuard.rollbackSource(for: Bundle.main.bundleURL) else {
+            // Nothing to roll back to (the .old copy was cleaned or never
+            // existed). Clear the marker instead of re-entering this branch on
+            // every launch — otherwise a FUTURE update would be treated as a
+            // crash loop and rolled back on its very first start (v4.2.25).
+            UpdateGuard.markHealthy(configDirectory: configDirectory)
             return false
         }
         let fm = FileManager.default
@@ -228,20 +235,26 @@ final class AppState: ObservableObject {
     func refresh() async {
         guard let svc = service else { return }
         var newRoots: [RootMenuEntry] = []
+        // Rebuild the cache every pass: a removed folder used to leave its old
+        // .failed state behind, so the menu bar kept a warning icon and the
+        // status line kept "推送失败" for a folder that no longer exists.
+        var newStatusCache: [String: SyncStatus] = [:]
         let rootPaths = svc.rootsSnapshot()
+        notificationService.enabled = svc.configStore.load().general.notificationsEnabled
         for root in rootPaths {
             // v4.0: one repo per protected folder — no subfolder enumeration.
             let st = await svc.sync.status(for: root)
-            statusCache[root] = st
+            newStatusCache[root] = st
             newRoots.append(RootMenuEntry(id: root,
                                           name: (root as NSString).lastPathComponent,
                                           path: root,
                                           status: st))
         }
         roots = newRoots
+        statusCache = newStatusCache
         rootCount = rootPaths.count
         envReady = svc.detection != nil
-        let failed = statusCache.values.contains(.failed)
+        let failed = newStatusCache.values.contains(.failed)
         let state: String
         if failed {
             state = NSLocalizedString("推送失败", comment: "menu state")
@@ -390,9 +403,17 @@ final class AppState: ObservableObject {
                 }
             }
             updateActivity = UpdateActivity(phase: .verifying)
-            try SelfUpdater.verify(zipURL: zip, expectedSHA256: offer.sha256)
+            do {
+                try SelfUpdater.verify(zipURL: zip, expectedSHA256: offer.sha256)
+            } catch {
+                try? FileManager.default.removeItem(at: zip)
+                throw error
+            }
             updateActivity = UpdateActivity(phase: .installing)
             try SelfUpdater.replace(bundleURL: Bundle.main.bundleURL, newZipURL: zip, relaunch: false)
+            // The extracted bundle is in place; the zip is no longer needed
+            // (each successful update used to leave ~22 MB in /tmp).
+            try? FileManager.default.removeItem(at: zip)
             // Arm crash-loop detection: the marker is cleared once the new
             // build reaches a working startup (see start()).
             UpdateGuard.beginUpdate(configDirectory: ConfigStore.defaultDirectory,

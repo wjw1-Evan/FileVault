@@ -38,9 +38,18 @@ public enum UpdateDownloader {
             throw UpdateError.downloadFailed
         }
         let total = info.assetSize > 0 ? info.assetSize : response.expectedContentLength
-        let dest = FileManager.default.temporaryDirectory.appendingPathComponent("fv-update-\(info.assetName)")
+        // The asset name comes from the GitHub API: never let it add path
+        // components, and use a fresh file per attempt so a smaller re-upload
+        // can never leave tail bytes from an earlier download (sha mismatch
+        // forever). (v4.2.25)
+        let rawName = (info.assetName as NSString).lastPathComponent
+        let name = rawName.isEmpty ? "update.zip" : rawName
+        let dest = FileManager.default.temporaryDirectory
+            .appendingPathComponent("fv-update-\(UUID().uuidString.prefix(8))-\(name)")
+        try? FileManager.default.removeItem(at: dest)
         FileManager.default.createFile(atPath: dest.path, contents: nil)
         let handle = try FileHandle(forWritingTo: dest)
+        try handle.truncate(atOffset: 0)
         defer { try? handle.close() }
         var buffer = Data()
         var received: Int64 = 0

@@ -63,14 +63,19 @@ final class DashboardModel: ObservableObject {
     private var listenerToken: UUID?
 
     func bind(_ app: AppState) {
-        guard self.app == nil else { return }
         self.app = app
-        listenerToken = app.service?.addStateListener { [weak self] in
-            Task { @MainActor in await self?.refresh() }
+        // Re-binding after the window was hidden and shown again must restore
+        // the listener and timer; the old "guard self.app == nil" returned early,
+        // leaving a window that never refreshed again (v4.2.25).
+        if listenerToken == nil, let svc = app.service {
+            listenerToken = svc.addStateListener { [weak self] in
+                Task { @MainActor in await self?.refresh() }
+            }
         }
-        timer?.invalidate()
-        timer = Timer.scheduledTimer(withTimeInterval: 10.0, repeats: true) { [weak self] _ in
-            Task { @MainActor in await self?.refresh() }
+        if timer == nil {
+            timer = Timer.scheduledTimer(withTimeInterval: 10.0, repeats: true) { [weak self] _ in
+                Task { @MainActor in await self?.refresh() }
+            }
         }
         Task { @MainActor in await refresh() }
     }
@@ -226,12 +231,16 @@ struct DashboardView: View {
                        tint: .blue,
                        value: "\(model.rootCount)",
                        label: "受保护文件夹",
-                       caption: model.rootRows.isEmpty ? "尚未添加文件夹" : "全部纳入版本管理")
+                       caption: model.rootRows.isEmpty
+                           ? NSLocalizedString("尚未添加文件夹", comment: "dashboard tile")
+                           : NSLocalizedString("全部纳入版本管理", comment: "dashboard tile"))
             FVStatTile(symbol: "clock.fill",
                        tint: .purple,
                        value: model.lastActivity.map(FVTime.relative) ?? "—",
                        label: "最近提交",
-                       caption: model.lastRootName.isEmpty ? "等待第一次记录" : model.lastRootName)
+                       caption: model.lastRootName.isEmpty
+                           ? NSLocalizedString("等待第一次记录", comment: "dashboard tile")
+                           : model.lastRootName)
             FVStatTile(symbol: model.failedCount > 0
                           ? "exclamationmark.triangle.fill"
                           : (model.pendingCount > 0 ? "arrow.up.circle.fill" : "checkmark.icloud.fill"),
@@ -239,8 +248,10 @@ struct DashboardView: View {
                        value: "\(model.failedCount > 0 ? model.failedCount : model.pendingCount)",
                        label: model.failedCount > 0 ? "推送失败" : "待推送",
                        caption: model.failedCount > 0
-                           ? "本地版本已保留"
-                           : (model.pendingCount > 0 ? "正在等待上传" : "云端已最新"))
+                           ? NSLocalizedString("本地版本已保留", comment: "dashboard tile")
+                           : (model.pendingCount > 0
+                              ? NSLocalizedString("正在等待上传", comment: "dashboard tile")
+                              : NSLocalizedString("云端已最新", comment: "dashboard tile")))
         }
     }
 

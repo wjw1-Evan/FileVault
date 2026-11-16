@@ -708,3 +708,9 @@
 "⚠️ 恢复失败：%@" = "⚠️ Restore failed: %@";
 "⚠️ 打开失败：%@" = "⚠️ Couldn't open: %@";
 
+/* v4.2.25 audit fixes */
+"安装更新失败：%@" = "Could not install the update: %@";
+"写入后无法读回同一凭证（凭证助手异常）" = "The credential could not be read back after saving (credential helper failed)";
+"配置未能保存" = "Could not save settings";
+"设置已在本次运行中生效，但配置文件无法写入（磁盘已满或没有写入权限），重启后可能丢失这次修改。" = "The change is active for this session, but the config file could not be written (disk full or no permission) and may be lost after a restart.";
+

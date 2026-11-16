@@ -32,7 +32,8 @@ public struct GhRepoCreator {
     /// Run one gh invocation with a bounded wait — an unresponsive network used
     /// to block the creation Task forever (v2.6.6 audit).
     private func runGh(_ ghPath: String, _ args: [String], timeout: TimeInterval) async throws -> GitResult {
-        guard FileManager.default.isExecutableFile(atPath: ghPath) else {
+        guard !ghPath.isEmpty, ghPath != "/usr/bin/env",
+              FileManager.default.isExecutableFile(atPath: ghPath) else {
             throw GitCommandError(command: args.joined(separator: " "), exitCode: -1,
                                   stderr: NSLocalizedString("gh 不可用（请安装 GitHub CLI）", comment: "gh repo error"))
         }
@@ -66,10 +67,19 @@ public struct GhRepoCreator {
         return GitResult(exitCode: p.terminationStatus, stdout: stdout, stderr: stderr)
     }
 
+    /// Absolute path of an installed gh, or "" when there is none.
+    ///
+    /// The old fallback returned "/usr/bin/env", which is always executable, so
+    /// the "gh 不可用（请安装 GitHub CLI）" guard never fired and the user got
+    /// "env: repo: No such file or directory" with exit code 127 instead
+    /// (v4.2.25).
     public static func defaultGhPath() -> String {
         for p in ["/opt/homebrew/bin/gh", "/usr/local/bin/gh"] {
             if FileManager.default.isExecutableFile(atPath: p) { return p }
         }
-        return "/usr/bin/env"
+        for p in ["/usr/bin/gh", "/opt/local/bin/gh"] {
+            if FileManager.default.isExecutableFile(atPath: p) { return p }
+        }
+        return ""
     }
 }

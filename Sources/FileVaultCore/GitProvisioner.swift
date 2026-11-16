@@ -472,9 +472,24 @@ public final class GitBinaryProvisioner: GitProvisioning, @unchecked Sendable {
         } catch {
             throw GitProvisionError.extractFailed(error.localizedDescription)
         }
+        // Drain stderr WHILE tar runs: a corrupt archive prints hundreds of
+        // lines, and waiting first deadlocks as soon as the 64 KB pipe buffer
+        // fills — on the very first launch (v4.2.25).
+        let errLock = NSLock()
+        var errData = Data()
+        let errGroup = DispatchGroup()
+        errGroup.enter()
+        DispatchQueue.global().async {
+            let d = err.fileHandleForReading.readDataToEndOfFile()
+            errLock.lock(); errData = d; errLock.unlock()
+            errGroup.leave()
+        }
         process.waitUntilExit()
+        // Synchronous wrapper keeps the noasync `wait` out of the caller (this
+        // function is already synchronous, but the helper documents the bound).
+        Self.waitForRedirection(errGroup)
         guard process.terminationStatus == 0 else {
-            let detail = String(decoding: err.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+            let detail = String(decoding: errData, as: UTF8.self)
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             throw GitProvisionError.extractFailed(
                 detail.isEmpty
@@ -482,6 +497,10 @@ public final class GitBinaryProvisioner: GitProvisioning, @unchecked Sendable {
                              process.terminationStatus)
                     : detail)
         }
+    }
+
+    private static func waitForRedirection(_ group: DispatchGroup) {
+        _ = group.wait(timeout: .now() + 10)
     }
 
     /// Find the directory that contains `bin/git` (tarballs may or may not nest one level).

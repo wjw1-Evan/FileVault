@@ -96,8 +96,11 @@ final class SupplementalTests: XCTestCase {
         })
         let downloaded = try Data(contentsOf: dest)
         XCTAssertEqual(downloaded, payload, "streamed bytes must match the asset")
-        XCTAssertEqual(dest.lastPathComponent, "fv-update-asset.zip",
-                       "temp download carries the fv-update- prefix")
+        // v4.2.25: a unique per-attempt name, so a smaller re-upload can never
+        // inherit tail bytes from an earlier download.
+        XCTAssertTrue(dest.lastPathComponent.hasPrefix("fv-update-"),
+                      "temp download carries the fv-update- prefix")
+        XCTAssertTrue(dest.lastPathComponent.hasSuffix("asset.zip"))
         XCTAssertTrue(fractions.contains(1.0), "final progress must be reported")
         if let first = fractions.first {
             XCTAssertLessThanOrEqual(first, 1.0)

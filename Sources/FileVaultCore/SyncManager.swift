@@ -12,6 +12,13 @@ public actor SyncManager {
     public nonisolated let onStatusChange = EventCallbackBox()
 
     private var states: [String: RepoSyncState] = [:]
+    /// Monotonic id of the push loop currently owning a repo. A loop that was
+    /// superseded (cancelled by a manual push) must not clear the state of the
+    /// loop that replaced it (v4.2.25).
+    private var pushGenerations: [String: Int] = [:]
+    /// Repos with a manual push in flight; a commit arriving meanwhile is queued
+    /// through `needsPushAgain` instead of starting a second `git push`.
+    private var manualPushes: Set<String> = []
     /// Repos whose current push-failure episode already produced a notification.
     private var failureStreakNotified: Set<String> = []
     private let streakLock = NSLock()
@@ -131,6 +138,17 @@ public actor SyncManager {
             setState(repoPath, .pendingPush)
             return
         }
+        // A manual push owns the repo until it returns: queue this request
+        // instead of racing it with a second `git push`.
+        if manualPushes.contains(repoPath) {
+            if states[repoPath] == nil {
+                states[repoPath] = RepoSyncState(status: .pendingPush, task: nil,
+                                                 attempt: 0, needsPushAgain: true)
+            } else {
+                states[repoPath]?.needsPushAgain = true
+            }
+            return
+        }
         if var st = states[repoPath] {
             if st.task != nil {
                 st.needsPushAgain = true
@@ -138,16 +156,50 @@ public actor SyncManager {
                 return
             }
         }
-        let task = Task.detached { await self.pushLoop(repoPath: repoPath) }
+        startPushLoop(repoPath: repoPath)
+    }
+
+    /// Register and start one push loop for a repo. The state entry is created
+    /// FIRST: the old code assigned the task through an optional chain that was
+    /// a no-op while `states[repoPath]` was nil, so two quick commits could each
+    /// start a loop and push concurrently (v4.2.25).
+    private func startPushLoop(repoPath: String) {
+        let generation = (pushGenerations[repoPath] ?? 0) + 1
+        pushGenerations[repoPath] = generation
+        if states[repoPath] == nil {
+            states[repoPath] = RepoSyncState(status: .pendingPush, task: nil,
+                                             attempt: 0, needsPushAgain: false)
+        }
+        let task = Task.detached { [weak self] in
+            guard let self else { return }
+            await self.pushLoop(repoPath: repoPath, generation: generation)
+        }
         states[repoPath]?.task = task
     }
 
+    /// Called when a loop ends: clear the slot only if this loop still owns it,
+    /// and restart when a commit arrived while it was finishing/cancelled
+    /// (a dropped request used to wait for the next file change).
+    private func finishPushLoop(repoPath: String, generation: Int) {
+        guard pushGenerations[repoPath] == generation else { return }
+        states[repoPath]?.task = nil
+        if states[repoPath]?.needsPushAgain == true {
+            states[repoPath]?.needsPushAgain = false
+            startPushLoop(repoPath: repoPath)
+        }
+    }
+
+    /// Test/diagnostic hook: whether a push loop is registered for a repo.
+    func hasActivePushLoop(repoPath: String) -> Bool {
+        states[repoPath]?.task != nil
+    }
+
     /// Serial per-repo push loop with exponential backoff retries.
-    private func pushLoop(repoPath: String) async {
+    private func pushLoop(repoPath: String, generation: Int) async {
         if ProcessInfo.processInfo.environment["FV_DEBUG"] != nil {
             print("[FV_DEBUG] pushLoop enter \(repoPath)")
         }
-        defer { states[repoPath]?.task = nil }
+        defer { finishPushLoop(repoPath: repoPath, generation: generation) }
         var attempt = 0
         while true {
             // A cancelled loop (pushNow superseded it) must not race the
@@ -243,10 +295,28 @@ public actor SyncManager {
     }
 
     private func push(repoPath: String, timeout: TimeInterval) async throws {
-        let r = try await repoManager.runner.run(["push", "-u", "origin", "HEAD"], cwd: repoPath,
+        let headRef = try await repoManager.runner.run(["symbolic-ref", "--quiet", "--short", "HEAD"],
+                                                       cwd: repoPath)
+        let branch = headRef.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Push to the SAME remote/branch a pull would use; "origin" is only a
+        // default, not a guarantee (adopted repos may name it differently).
+        // When HEAD cannot be resolved (detached HEAD, or a git wrapper that
+        // does not implement symbolic-ref), keep the previous "push HEAD"
+        // behaviour instead of refusing outright.
+        let targetRemote: String
+        let refspec: String
+        if headRef.succeeded, !branch.isEmpty {
+            let target = try await repoManager.pushTarget(path: repoPath, currentBranch: branch)
+            targetRemote = target.remote
+            refspec = "HEAD:refs/heads/" + target.branch
+        } else {
+            targetRemote = "origin"
+            refspec = "HEAD"
+        }
+        let r = try await repoManager.runner.run(["push", "-u", targetRemote, refspec], cwd: repoPath,
                                                  timeout: timeout)
         guard r.succeeded else {
-            throw GitCommandError(command: "push", exitCode: r.exitCode, stderr: r.stderr)
+            throw GitCommandError(command: "push " + targetRemote, exitCode: r.exitCode, stderr: r.stderr)
         }
     }
 
@@ -262,6 +332,17 @@ public actor SyncManager {
     public func pushNow(repoPath: String) async -> Bool {
         states[repoPath]?.task?.cancel()
         states[repoPath]?.task = nil
+        // Hold the repo for the duration of the manual push so a commit that
+        // lands meanwhile is queued (and pushed afterwards) instead of starting
+        // a concurrent push loop.
+        manualPushes.insert(repoPath)
+        defer {
+            manualPushes.remove(repoPath)
+            if states[repoPath]?.needsPushAgain == true {
+                states[repoPath]?.needsPushAgain = false
+                startPushLoop(repoPath: repoPath)
+            }
+        }
         setState(repoPath, .pushing)
         do {
             try await pushWithReconcile(repoPath: repoPath)

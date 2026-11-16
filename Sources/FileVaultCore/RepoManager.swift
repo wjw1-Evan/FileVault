@@ -123,7 +123,14 @@ public final class RepoManager: @unchecked Sendable {
         // C-quotes names containing newlines/quotes, and a rename whose NEW name
         // contains " -> " would be split at the wrong place (v4.2.10).
         let r = try await runner.run(["status", "--porcelain", "-z", "--untracked-files=all"], cwd: path)
-        guard r.succeeded else { return [] }
+        // A failed status is NOT "no changes": callers use this result for
+        // fail-closed decisions (refuse reset --hard on a dirty tree, back up
+        // edits before a rollback). Reporting [] here silently turned a locked
+        // index or an unreadable repo into "clean" and let force-pull discard
+        // uncommitted work (v4.2.25).
+        guard r.succeeded else {
+            throw GitCommandError(command: "status", exitCode: r.exitCode, stderr: r.stderr)
+        }
         let records = r.stdout.split(separator: "\0", omittingEmptySubsequences: false).map(String.init)
         var entries: [StatusEntry] = []
         var i = 0
@@ -173,9 +180,11 @@ public final class RepoManager: @unchecked Sendable {
     }
 
     /// Whether the working tree has any change (self-heal check before commit).
-    public func isDirty(path: String) async -> Bool {
-        guard let entries = try? await status(path: path) else { return false }
-        return !entries.isEmpty
+    ///
+    /// Throws when git cannot read the status: "unknown" must never be treated
+    /// as "clean" (v4.2.25).
+    public func isDirty(path: String) async throws -> Bool {
+        try await !status(path: path).isEmpty
     }
 
     // MARK: - Empty folders
@@ -620,7 +629,8 @@ public final class RepoManager: @unchecked Sendable {
         }
         let wasMissing = !FileManager.default.fileExists(atPath: full)
         // Never lose data: snapshot pending changes before rewriting the file.
-        let dirty = (try? await status(path: path)) ?? []
+        // A failed status aborts the restore instead of assuming a clean tree.
+        let dirty = try await status(path: path)
         if !dirty.isEmpty {
             _ = try await commitAll(path: path, message: "backup: 恢复前自动保存未提交改动")
         }
@@ -645,7 +655,7 @@ public final class RepoManager: @unchecked Sendable {
         guard verify.succeeded else {
             throw HistoryError.commitNotFound(hash)
         }
-        let dirty = (try? await status(path: path)) ?? []
+        let dirty = try await status(path: path)
         if !dirty.isEmpty {
             _ = try await commitAll(path: path, message: "backup: 回滚前自动保存未提交改动")
         }
@@ -752,7 +762,9 @@ public final class RepoManager: @unchecked Sendable {
         // Local-first: pending edits become a commit before the working tree is
         // touched (same rule as rollback). Otherwise a pull can refuse on dirty
         // files, or a rebase would start with an unstaged state.
-        if await isDirty(path: path) {
+        // A status failure (locked index, unreadable repo) aborts BEFORE the
+        // working tree is touched, rather than pulling over unbacked-up edits.
+        if try await isDirty(path: path) {
             _ = try? await commitAll(path: path, message: "auto: 拉取前自动保存未提交改动")
         }
         let before = try? await resolveHead(path: path)
@@ -876,13 +888,20 @@ public final class RepoManager: @unchecked Sendable {
         let target = try await pullTarget(path: path, currentBranch: branch)
 
         // Preserve pending edits in history first (same rule as rollback).
-        if await isDirty(path: path) {
-            _ = try? await commitAll(path: path, message: "auto: 强制拉取前自动保存未提交改动")
-        }
-        // Fail closed: reset --hard would silently destroy edits we failed to
-        // commit, so refuse instead of proceeding.
-        guard !(await isDirty(path: path)) else {
-            throw PullError.localChanges(detail: "")
+        // Fail closed: a status failure means "unknown", and reset --hard would
+        // silently destroy edits we failed to commit, so refuse instead of
+        // proceeding (v4.2.25).
+        do {
+            if try await isDirty(path: path) {
+                _ = try? await commitAll(path: path, message: "auto: 强制拉取前自动保存未提交改动")
+            }
+            guard try !(await isDirty(path: path)) else {
+                throw PullError.localChanges(detail: "")
+            }
+        } catch let error as PullError {
+            throw error
+        } catch {
+            throw PullError.localChanges(detail: (error as? GitCommandError)?.stderr ?? "")
         }
         let oldHead = try? await resolveHead(path: path)
 
@@ -976,6 +995,33 @@ public final class RepoManager: @unchecked Sendable {
         }
         if remotes.count > 1 { throw PullError.ambiguousRemote(remotes: remotes.map(\.name)) }
         throw PullError.noRemote
+    }
+
+    /// Remote/branch a push should target (v4.2.25): the configured upstream
+    /// when there is one, otherwise origin, otherwise the only configured
+    /// remote — the same choice a pull makes. The old code hard-coded "origin",
+    /// so an adopted repo whose remote is named differently could pull fine but
+    /// never push ("'origin' does not appear to be a git repository").
+    public func pushTarget(path: String, currentBranch: String) async throws -> (remote: String, branch: String) {
+        try await pullTarget(path: path, currentBranch: currentBranch)
+    }
+
+    /// Name of the remote a connectivity probe should use: the upstream's
+    /// remote when configured, else origin, else the only/first remote.
+    public func defaultRemoteName(path: String) async -> String? {
+        let names = await allRemotes(path: path).map(\.name)
+        guard !names.isEmpty else { return nil }
+        if let upstream = try? await runner.run(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"],
+                                                cwd: path),
+           upstream.succeeded {
+            let full = upstream.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+            if let slash = full.firstIndex(of: "/") {
+                let remote = String(full[..<slash])
+                if names.contains(remote) { return remote }
+            }
+        }
+        if names.contains("origin") { return "origin" }
+        return names.count == 1 ? names[0] : names.sorted()[0]
     }
 
     /// Whether HEAD and the freshly fetched remote tip share a commit. Pull only
@@ -1101,7 +1147,8 @@ public final class RepoManager: @unchecked Sendable {
     /// PID of ANOTHER live FileVault instance currently managing this folder
     /// (two copies of the app must never commit/push the same repo) (v4.2.9).
     public func foreignInstancePID(path: String) -> Int32? {
-        let file = (path as NSString).appendingPathComponent(".git/filevault-instance.pid")
+        let file = (Self.gitDirectory(forRepoAt: path) as NSString)
+            .appendingPathComponent("filevault-instance.pid")
         guard let raw = try? String(contentsOfFile: file, encoding: .utf8),
               let pid = Int32(raw.trimmingCharacters(in: .whitespacesAndNewlines)),
               pid > 0, pid != getpid() else { return nil }
@@ -1113,14 +1160,22 @@ public final class RepoManager: @unchecked Sendable {
     @discardableResult
     public func acquireInstanceLock(path: String) -> Bool {
         if foreignInstancePID(path: path) != nil { return false }
-        let file = (path as NSString).appendingPathComponent(".git/filevault-instance.pid")
-        try? Data(String(getpid()).utf8).write(to: URL(fileURLWithPath: file))
+        let file = (Self.gitDirectory(forRepoAt: path) as NSString)
+            .appendingPathComponent("filevault-instance.pid")
+        // Fail closed: when the lock cannot be written (weird .git layout, read-
+        // only repo) a second instance must not believe it owns the folder.
+        do {
+            try Data(String(getpid()).utf8).write(to: URL(fileURLWithPath: file))
+        } catch {
+            return false
+        }
         return true
     }
 
     /// Release the instance lock only when this process owns it.
     public func releaseInstanceLock(path: String) {
-        let file = (path as NSString).appendingPathComponent(".git/filevault-instance.pid")
+        let file = (Self.gitDirectory(forRepoAt: path) as NSString)
+            .appendingPathComponent("filevault-instance.pid")
         guard let raw = try? String(contentsOfFile: file, encoding: .utf8),
               raw.trimmingCharacters(in: .whitespacesAndNewlines) == String(getpid()) else { return }
         try? FileManager.default.removeItem(atPath: file)
@@ -1129,6 +1184,34 @@ public final class RepoManager: @unchecked Sendable {
     private func isProcessAlive(_ pid: Int32) -> Bool {
         if kill(pid, 0) == 0 { return true }
         return errno == EPERM
+    }
+
+    /// Absolute git directory of a repo, resolving a `.git` FILE (worktrees and
+    /// linked checkouts) and a linked worktree's `commondir`. Everything that
+    /// must live inside the repository (info/exclude, the instance lock) goes
+    /// through here instead of hard-coding "<repo>/.git/…" (v4.2.25).
+    static func gitDirectory(forRepoAt path: String) -> String {
+        let dotGit = (path as NSString).appendingPathComponent(".git")
+        guard let attrs = try? FileManager.default.attributesOfItem(atPath: dotGit),
+              (attrs[.type] as? FileAttributeType) == .typeRegular,
+              let content = try? String(contentsOfFile: dotGit, encoding: .utf8) else {
+            return dotGit
+        }
+        let first = content.split(separator: "\n").first.map(String.init) ?? ""
+        let prefix = "gitdir:"
+        guard first.hasPrefix(prefix) else { return dotGit }
+        var dir = first.dropFirst(prefix.count).trimmingCharacters(in: .whitespaces)
+        if !dir.hasPrefix("/") { dir = (path as NSString).appendingPathComponent(dir) }
+        dir = (dir as NSString).standardizingPath
+        // Linked worktrees keep their own gitdir; shared files (info/exclude)
+        // live in the common directory pointed to by "commondir".
+        let commonFile = (dir as NSString).appendingPathComponent("commondir")
+        if let shared = try? String(contentsOfFile: commonFile, encoding: .utf8) {
+            var common = shared.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !common.hasPrefix("/") { common = (dir as NSString).appendingPathComponent(common) }
+            return (common as NSString).standardizingPath
+        }
+        return dir
     }
 
     /// Resolve a path under .git (handles worktrees where it lives outside).
@@ -1232,10 +1315,16 @@ public final class RepoManager: @unchecked Sendable {
 
         // Local-first: pending edits become a commit (fail closed when that is
         // impossible - the merge must not lose them).
-        if await isDirty(path: path) {
-            _ = try? await commitAll(path: path, message: "auto: 同步前自动保存未提交改动")
+        do {
+            if try await isDirty(path: path) {
+                _ = try? await commitAll(path: path, message: "auto: 同步前自动保存未提交改动")
+            }
+            guard try !(await isDirty(path: path)) else { throw PullError.localChanges(detail: "") }
+        } catch let error as PullError {
+            throw error
+        } catch {
+            throw PullError.localChanges(detail: (error as? GitCommandError)?.stderr ?? "")
         }
-        guard !(await isDirty(path: path)) else { throw PullError.localChanges(detail: "") }
 
         let fetch = try await runNetwork(["fetch", target.remote], cwd: path)
         guard fetch.succeeded else {
@@ -1501,6 +1590,12 @@ public final class RepoManager: @unchecked Sendable {
             do {
                 try fm.moveItem(atPath: src, toPath: dst)
                 moved.append(copy)
+                // The copy must stay out of version control. It holds content
+                // the user deliberately ignored (often secrets); without a rule
+                // the next auto-commit would add it and push it to the remote
+                // (v4.2.25).
+                _ = appendExcludeRule(path: path, section: Self.preservedCopyMarkerComment,
+                                      rule: Self.escapedExcludeRule(copy))
             } catch {
                 continue
             }
@@ -1666,6 +1761,10 @@ public final class RepoManager: @unchecked Sendable {
     // MARK: - Large file protection (FR-12)
 
     public static let largeFileMarkerComment = "# filevault-excluded-large-file"
+    /// Section for local copies preserved while syncing. They hold content the
+    /// user deliberately ignored, so they must stay ignored (never committed to
+    /// a remote) (v4.2.25).
+    public static let preservedCopyMarkerComment = "# filevault-preserved-copy"
 
     /// Exclude oversize untracked files via .git/info/exclude (not polluting user .gitignore).
     ///
@@ -1688,8 +1787,15 @@ public final class RepoManager: @unchecked Sendable {
             let abs = (path as NSString).appendingPathComponent(e.path)
             if let attrs = try? fm.attributesOfItem(atPath: abs),
                let size = attrs[.size] as? UInt64, size > threshold {
-                appendExcludeRule(path: path, rule: e.path)
-                excluded.append(e.path)
+                // Escape glob characters and verify with git itself: a raw rule
+                // like "a[1].bin" matches nothing, so the file was still added,
+                // pushed (and rejected) while the user was told it was excluded.
+                let rule = Self.escapedExcludeRule(e.path)
+                _ = appendExcludeRule(path: path, section: Self.largeFileMarkerComment, rule: rule)
+                if let check = try? await runner.run(["check-ignore", "-q", "--", e.path], cwd: path),
+                   check.exitCode == 0 {
+                    excluded.append(e.path)
+                }
             }
         }
         return excluded
@@ -1699,33 +1805,86 @@ public final class RepoManager: @unchecked Sendable {
     /// file limit (recorded in .git/info/exclude). They are NOT versioned, so
     /// the UI must say so instead of leaving them silently unprotected (v4.2.6).
     public func excludedLargeFiles(path: String) -> [String] {
-        let file = (path as NSString).appendingPathComponent(".git/info/exclude")
+        let file = (Self.gitDirectory(forRepoAt: path) as NSString).appendingPathComponent("info/exclude")
         guard let content = try? String(contentsOfFile: file, encoding: .utf8) else { return [] }
         var rules: [String] = []
-        var inSection = false
+        var section: String?
         for line in content.split(separator: "\n", omittingEmptySubsequences: false) {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
-            if trimmed == Self.largeFileMarkerComment {
-                inSection = true
+            // Only our large-file section; preserved-copy rules are not "backup
+            // failures" and must not be shown as such.
+            if trimmed.hasPrefix("# filevault-") {
+                section = trimmed
                 continue
             }
-            guard inSection, !trimmed.isEmpty, !trimmed.hasPrefix("#") else { continue }
-            rules.append(trimmed)
+            guard section == Self.largeFileMarkerComment,
+                  !trimmed.isEmpty, !trimmed.hasPrefix("#") else { continue }
+            rules.append(Self.unescapedExcludeRule(trimmed))
         }
         return rules
     }
 
-    /// Append a rule to .git/info/exclude with marker comment if not present.
-    private func appendExcludeRule(path: String, rule: String) {
-        let file = URL(fileURLWithPath: path).appendingPathComponent(".git/info/exclude")
-        let current = (try? String(contentsOf: file, encoding: .utf8)) ?? ""
-        if current.contains(rule) { return }
-        var out = current
-        if !current.hasSuffix("\n") && !current.isEmpty { out += "\n" }
-        if !current.contains(Self.largeFileMarkerComment) {
-            out += Self.largeFileMarkerComment + "\n"
+    /// Make a repo-relative path a literal gitignore pattern. Wildcards would
+    /// otherwise turn "a[1].bin" / "what?.txt" into patterns that match nothing
+    /// (v4.2.25).
+    public static func escapedExcludeRule(_ raw: String) -> String {
+        var out = ""
+        for ch in raw {
+            if "*?[]\\".contains(ch) {
+                out.append("\\")
+            }
+            out.append(ch)
         }
+        if out.hasPrefix("#") || out.hasPrefix("!") { out = "\\" + out }
+        // Trailing spaces are stripped by gitignore unless escaped.
+        var trailing = 0
+        for ch in out.reversed() {
+            if ch == " " { trailing += 1 } else { break }
+        }
+        if trailing > 0 {
+            out = String(out.dropLast(trailing)) + String(repeating: "\\ ", count: trailing)
+        }
+        return out
+    }
+
+    /// Best-effort display form of a stored exclude rule.
+    public static func unescapedExcludeRule(_ rule: String) -> String {
+        var out = ""
+        var escaped = false
+        for ch in rule {
+            if escaped {
+                out.append(ch)
+                escaped = false
+            } else if ch == "\\" {
+                escaped = true
+            } else {
+                out.append(ch)
+            }
+        }
+        return out
+    }
+
+    /// Append a rule to <gitdir>/info/exclude under the given section marker.
+    /// Duplicates are detected per LINE (the old substring test let "big.bin"
+    /// suppress "big.bin2"). Returns whether the rule is on disk afterwards.
+    @discardableResult
+    private func appendExcludeRule(path: String, section: String, rule: String) -> Bool {
+        let file = URL(fileURLWithPath: Self.gitDirectory(forRepoAt: path))
+            .appendingPathComponent("info/exclude")
+        try? FileManager.default.createDirectory(at: file.deletingLastPathComponent(),
+                                                 withIntermediateDirectories: true)
+        let current = (try? String(contentsOf: file, encoding: .utf8)) ?? ""
+        let lines = current.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        if lines.contains(rule) { return true }
+        var out = current
+        if !current.isEmpty && !current.hasSuffix("\n") { out += "\n" }
+        if !lines.contains(section) { out += section + "\n" }
         out += rule + "\n"
-        try? out.write(to: file, atomically: true, encoding: .utf8)
+        do {
+            try out.write(to: file, atomically: true, encoding: .utf8)
+            return true
+        } catch {
+            return false
+        }
     }
 }

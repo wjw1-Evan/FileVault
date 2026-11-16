@@ -143,7 +143,12 @@ public final class ConfigStore: @unchecked Sendable {
         return AppConfig()
     }
 
-    public func save(_ config: AppConfig) {
+    /// Persist the configuration. Returns false when the file could not be
+    /// written (disk full, read-only folder): callers must tell the user that
+    /// the change works for this session but may not survive a restart — the
+    /// old silent `try?` made "已保存" a lie (v4.2.25).
+    @discardableResult
+    public func save(_ config: AppConfig) -> Bool {
         lock.lock(); defer { lock.unlock() }
         cache = config
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -162,8 +167,13 @@ public final class ConfigStore: @unchecked Sendable {
                     toPath: directory.appendingPathComponent("config.corrupt-\(stamp).json").path)
             }
         }
-        guard let data = try? JSONEncoder().encode(config) else { return }
-        try? data.write(to: primary, options: .atomic)
+        guard let data = try? JSONEncoder().encode(config) else { return false }
+        do {
+            try data.write(to: primary, options: .atomic)
+            return true
+        } catch {
+            return false
+        }
     }
 
     static let backupFileName = "config.backup.json"

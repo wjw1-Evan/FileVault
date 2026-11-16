@@ -59,7 +59,15 @@ public enum SelfUpdater {
         // 3. Rotate: current -> .old, new -> current, relaunch, cleanup.
         let oldURL = parent.appendingPathComponent(bundleURL.lastPathComponent + ".old")
         try? fm.removeItem(at: oldURL)
-        _ = try? fm.moveItem(at: bundleURL, to: oldURL)
+        // Fail loudly if the running bundle cannot be moved aside (read-only
+        // volume, sandbox, missing permission): the old code ignored the error
+        // and then failed with a generic "download failed".
+        do {
+            try fm.moveItem(at: bundleURL, to: oldURL)
+        } catch {
+            try? fm.removeItem(at: tmpExtract)
+            throw UpdateError.installFailed(error.localizedDescription)
+        }
         do {
             _ = try fm.moveItem(at: newApp, to: bundleURL)
         } catch {

@@ -60,7 +60,10 @@ enum SmokeTest {
             check("auto commit fired", commits.count >= 2)
             // 4. auto-push to a local bare remote
             let remote = tmp + "/remote.git"
-            let git = service.detection!.gitPath
+            guard let git = service.detection?.gitPath else {
+                check("git path available", false)
+                return false
+            }
             let runner = GitRunner.forExecutable(git)
             // Explicit branch: Apple git defaults a bare repo to "main", the bundled
             // payload to "master" — FileVault always creates repos on "main".
