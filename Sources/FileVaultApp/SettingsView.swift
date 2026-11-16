@@ -66,6 +66,8 @@ final class SettingsModel: ObservableObject {
 
     /// Paths the user typed into — async refill must not wipe them.
     private var editedPaths: Set<String> = []
+    /// Folders with a remote pull/sync already running (reentrancy guard).
+    private var busyRepos: Set<String> = []
     private var generalCommitted = false
     private var app: AppState?
 
@@ -364,6 +366,21 @@ final class SettingsModel: ObservableObject {
         rootCards[idx].repo.messageIsError = error
     }
 
+    /// Reentrancy guard: only one pull/sync/force-pull per folder at a time, so
+    /// two overlapping git operations can never race each other (v4.1.4).
+    private func beginRepoOp(_ id: String) -> Bool {
+        guard !busyRepos.contains(id) else {
+            setMessage(id, NSLocalizedString("正在处理上一个操作，请稍候…", comment: "settings status"))
+            return false
+        }
+        busyRepos.insert(id)
+        return true
+    }
+
+    private func endRepoOp(_ id: String) {
+        busyRepos.remove(id)
+    }
+
     /// Shared save path: persist auth mode, configure + test + inline feedback (FR-06).
     func saveRepo(_ id: String) {
         guard let svc = service, let idx = indexOf(id) else { return }
@@ -442,7 +459,7 @@ final class SettingsModel: ObservableObject {
                     // Discoverability for the "remote already has files" case
                     // (v4.1.3): point at the lossless union sync right where the
                     // remote was just bound.
-                    let syncHint = NSLocalizedString("。远程已有内容时，点「更多 → 同步（保留双方文件）」可把两边文件合到一起，不会丢文件",
+                    let syncHint = NSLocalizedString("。远程已有内容时，点「更多 → 同步远程文件到本地（保留本地文件）」可把两边文件合到一起，不会丢文件",
                                                      comment: "settings status")
                     status = base + credentialNote + syncHint
                 } else {
@@ -478,9 +495,10 @@ final class SettingsModel: ObservableObject {
     }
 
     func pull(_ id: String) {
-        guard let svc = service else { return }
+        guard let svc = service, beginRepoOp(id) else { return }
         setMessage(id, NSLocalizedString("正在拉取…", comment: "settings status"))
         Task { [weak self] in
+            defer { self?.endRepoOp(id) }
             do {
                 let result = try await svc.repoManager.pull(path: id)
                 let text: String
@@ -521,17 +539,21 @@ final class SettingsModel: ObservableObject {
     /// design, so it always asks first and keeps the replaced HEAD in a backup
     /// ref the History window can restore.
     func forcePull(_ id: String) {
-        guard let svc = service else { return }
+        guard let svc = service, beginRepoOp(id) else { return }
         let confirm = NSAlert()
         confirm.messageText = NSLocalizedString("强制拉取（以远程为准）", comment: "settings alert")
         confirm.informativeText = NSLocalizedString("会用远程分支的内容覆盖这个文件夹：本地未推送的提交会被丢弃，远程版本里没有的受版本管理文件会从磁盘删除。旧版本会先备份到隐藏 ref（refs/filevault/backup），之后可在历史窗口的「找回被回滚的版本」里找回。确定继续？",
                                                     comment: "settings alert")
         confirm.addButton(withTitle: NSLocalizedString("取消", comment: "settings alert"))
         confirm.addButton(withTitle: NSLocalizedString("强制拉取", comment: "settings alert"))
-        guard confirm.runModal() == .alertSecondButtonReturn else { return }
+        guard confirm.runModal() == .alertSecondButtonReturn else {
+            endRepoOp(id)
+            return
+        }
 
         setMessage(id, NSLocalizedString("正在强制拉取…", comment: "settings status"))
         Task { [weak self] in
+            defer { self?.endRepoOp(id) }
             do {
                 let result = try await svc.repoManager.forcePull(path: id)
                 let text: String
@@ -555,41 +577,50 @@ final class SettingsModel: ObservableObject {
         }
     }
 
-    /// v4.1.3: lossless union sync — bring the remote's files into the folder
-    /// while keeping local-only files; same-name differences are kept as
-    /// "name (本地副本).ext" instead of overwriting either side.
+    /// v4.1.4: sync remote files into the folder while keeping local files.
+    /// Remote-only paths are added, local-only paths stay, same-name differences
+    /// keep the local file at the original path and save the remote version as
+    /// "name (远程副本).ext". Any local commits still ahead of the remote are
+    /// pushed afterwards, so the sync is a full round trip.
     func mergeSync(_ id: String) {
-        guard let svc = service else { return }
+        guard let svc = service, beginRepoOp(id) else { return }
         let confirm = NSAlert()
-        confirm.messageText = NSLocalizedString("同步（保留双方文件）", comment: "settings alert")
-        confirm.informativeText = NSLocalizedString("会把远程的文件与本地文件夹合并，双方都不丢：远程独有的文件下载到本地，本地独有的文件原样保留；同名但内容不同的文件会保留两份——远程版本用原文件名，本地版本另存为「名称 (本地副本)」。同步会生成一个合并提交，之后可正常推送。确定继续？",
+        confirm.messageText = NSLocalizedString("同步远程文件到本地（保留本地文件）", comment: "settings alert")
+        confirm.informativeText = NSLocalizedString("会把远程的文件同步到这个文件夹，本地文件一个都不丢：远程独有的文件下载到本地；本地独有的文件原样保留；同名但内容不同的文件保留两份——本地版本沿用原文件名，远程版本另存为「名称 (远程副本)」。之后会把本地结果推送到远程，让两边保持一致。确定继续？",
                                                     comment: "settings alert")
         confirm.addButton(withTitle: NSLocalizedString("取消", comment: "settings alert"))
         confirm.addButton(withTitle: NSLocalizedString("同步", comment: "settings alert"))
-        guard confirm.runModal() == .alertSecondButtonReturn else { return }
+        guard confirm.runModal() == .alertSecondButtonReturn else {
+            endRepoOp(id)
+            return
+        }
 
         setMessage(id, NSLocalizedString("正在同步…", comment: "settings status"))
         Task { [weak self] in
+            defer { self?.endRepoOp(id) }
             do {
                 let result = try await svc.repoManager.mergeSync(path: id)
-                let text: String
-                if !result.didChange && result.addedFromRemote == 0 && result.localCopies.isEmpty {
+                var text: String
+                if !result.didChange && result.addedFromRemote == 0 && result.remoteCopies.isEmpty {
                     text = NSLocalizedString("✓ 已是最新，两边没有需要同步的文件", comment: "settings status")
-                } else if result.localCopies.isEmpty {
+                } else if result.remoteCopies.isEmpty {
                     text = String(format: NSLocalizedString("✓ 已同步：新增远程文件 %d 个，保留本地文件 %d 个",
                                                              comment: "settings status"),
                                   result.addedFromRemote, result.keptLocalOnly)
                 } else {
-                    text = String(format: NSLocalizedString("✓ 已同步：新增远程文件 %d 个，保留本地文件 %d 个，%d 个同名文件保留两份（本地版本另存为「本地副本」）",
+                    text = String(format: NSLocalizedString("✓ 已同步：新增远程文件 %d 个，保留本地文件 %d 个，%d 个同名文件保留两份（远程版本另存为「远程副本」）",
                                                              comment: "settings status"),
-                                  result.addedFromRemote, result.keptLocalOnly, result.localCopies.count)
+                                  result.addedFromRemote, result.keptLocalOnly, result.remoteCopies.count)
+                }
+                if result.needsPush {
+                    // A "sync" is a round trip: push the merge commit and any
+                    // local-only commits so the remote gets the local files too.
+                    let pushed = await svc.sync.pushNow(repoPath: id)
+                    text += pushed
+                        ? NSLocalizedString("，已推送到远程", comment: "settings status")
+                        : NSLocalizedString("（本地已合并，但推送失败，请稍后点「立即推送」）", comment: "settings status")
                 }
                 self?.setMessage(id, text)
-                if result.didChange {
-                    // The merge commit is ahead of the remote: push it so both
-                    // machines converge (respects the auto-push toggle).
-                    await svc.sync.enqueuePush(repoPath: id)
-                }
                 self?.fillRepoDetails(id: id)
             } catch {
                 let description = error.localizedDescription
@@ -602,6 +633,8 @@ final class SettingsModel: ObservableObject {
             }
         }
     }
+
+
 
     /// v4.0.5: read-only repository integrity check (git fsck --full).
     func checkIntegrity(_ id: String) {
@@ -1044,7 +1077,7 @@ struct SettingsView: View {
                     Button("立即推送") { model.pushNow(repo.id) }
                     Button("拉取远程更新") { model.pull(repo.id) }
                     Button("强制拉取（以远程为准）…") { model.forcePull(repo.id) }
-                    Button("同步（保留双方文件）…") { model.mergeSync(repo.id) }
+                    Button("同步远程文件到本地（保留本地文件）…") { model.mergeSync(repo.id) }
                     Button("编辑忽略规则…") { model.openGitignoreEditor(repo.id) }
                     Button("在 GitHub 建仓并绑定…") { model.createRepoTarget = repo.id }
                     Divider()

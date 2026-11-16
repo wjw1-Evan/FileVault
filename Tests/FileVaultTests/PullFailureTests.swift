@@ -506,17 +506,19 @@ final class PullScenarioTests: XCTestCase {
         XCTAssertTrue(result.didChange)
         XCTAssertEqual(result.addedFromRemote, 1, "remote-only.md came from the remote")
         XCTAssertEqual(result.keptLocalOnly, 1, "local-only.md stayed")
-        XCTAssertEqual(result.localCopies.count, 1)
-        let copy = try XCTUnwrap(result.localCopies.first)
+        XCTAssertEqual(result.remoteCopies.count, 1)
+        let copy = try XCTUnwrap(result.remoteCopies.first)
         XCTAssertEqual(copy.path, "dir/shared.md")
-        XCTAssertEqual(copy.copyPath, "dir/shared (本地副本).md")
+        XCTAssertEqual(copy.copyPath, "dir/shared (远程副本).md")
         XCTAssertNotNil(result.backupRef, "the replaced HEAD must stay recoverable")
+        XCTAssertTrue(result.needsPush, "a sync is a round trip: local work must be pushed")
+        XCTAssertGreaterThan(result.aheadCommits, 0)
 
-        // Remote version at the original path, local version in the copy.
+        // Local version at the original path, remote version in the copy.
         let sharedNow = try String(contentsOfFile: local + "/dir/shared.md", encoding: .utf8)
-        let localCopyNow = try String(contentsOfFile: local + "/dir/shared (本地副本).md", encoding: .utf8)
-        XCTAssertEqual(sharedNow, "remote shared\n")
-        XCTAssertEqual(localCopyNow, "local shared\n")
+        let remoteCopyNow = try String(contentsOfFile: local + "/dir/shared (远程副本).md", encoding: .utf8)
+        XCTAssertEqual(sharedNow, "local shared\n")
+        XCTAssertEqual(remoteCopyNow, "remote shared\n")
         XCTAssertTrue(FileManager.default.fileExists(atPath: local + "/remote-only.md"))
         XCTAssertTrue(FileManager.default.fileExists(atPath: local + "/local-only.md"))
         let dirty = try await repos.status(path: local).count
@@ -550,7 +552,7 @@ final class PullScenarioTests: XCTestCase {
         let second = try await repos.mergeSync(path: local)
         XCTAssertFalse(second.didChange)
         XCTAssertEqual(second.addedFromRemote, 0)
-        XCTAssertTrue(second.localCopies.isEmpty)
+        XCTAssertTrue(second.remoteCopies.isEmpty)
         let headAfterSecond = try await repos.resolveHead(path: local)
         XCTAssertEqual(headAfterSecond, headAfterFirst)
     }
@@ -568,7 +570,8 @@ final class PullScenarioTests: XCTestCase {
         let result = try await repos.mergeSync(path: machineB)
         XCTAssertEqual(result.addedFromRemote, 1, "remote2.md")
         XCTAssertEqual(result.keptLocalOnly, 1, "local.md")
-        XCTAssertTrue(result.localCopies.isEmpty, "different paths need no copies")
+        XCTAssertTrue(result.remoteCopies.isEmpty, "different paths need no copies")
+        XCTAssertEqual(result.aheadCommits, 2, "local.md commit + the merge commit")
         XCTAssertTrue(FileManager.default.fileExists(atPath: machineB + "/local.md"))
         XCTAssertTrue(FileManager.default.fileExists(atPath: machineB + "/remote2.md"))
         let parents = try await repos.runner.run(["rev-list", "--parents", "-n", "1", "HEAD"], cwd: machineB)
@@ -588,5 +591,51 @@ final class PullScenarioTests: XCTestCase {
         }
         let after = try await repos.resolveHead(path: repo)
         XCTAssertEqual(after, before)
+    }
+
+    /// Local already contains everything from the remote: sync must not create a
+    /// merge commit, but must report the local commits still waiting to push.
+    func testMergeSyncLocalAheadReportsPushNeeded() async throws {
+        let (remote, _) = try await seededRemote()
+        let machineB = try await cloneOf(remote, as: "machine-b-ahead")
+        try await commit("local\n", file: "local-ahead.md", in: machineB)
+        let before = try await repos.resolveHead(path: machineB)
+
+        let result = try await repos.mergeSync(path: machineB)
+        XCTAssertFalse(result.didChange)
+        XCTAssertEqual(result.addedFromRemote, 0)
+        XCTAssertTrue(result.remoteCopies.isEmpty)
+        XCTAssertTrue(result.needsPush)
+        XCTAssertEqual(result.aheadCommits, 1)
+        let after = try await repos.resolveHead(path: machineB)
+        XCTAssertEqual(after, before)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: machineB + "/local-ahead.md"))
+    }
+
+    /// Unrelated histories whose trees are already identical still get a merge
+    /// commit, so the two sides can be pushed/pulled together afterwards.
+    func testMergeSyncIdenticalTreesCreatesMergeCommit() async throws {
+        let (remote, seed) = try await seededRemote()
+        let local = try await makeRepo("local-identical")   // same file contents as seed
+        // Two FileVault initial commits built in the same second are identical
+        // objects; re-date the local one so the histories are truly unrelated
+        // while the trees stay equal.
+        _ = try await repos.runner.run(["commit", "--amend", "--no-edit", "--date", "2020-01-01T00:00:00"],
+                                       cwd: local)
+        try await repos.setRemote(path: local, url: remote)
+        let localHead = try await repos.resolveHead(path: local)
+        let remoteHead = try await repos.resolveHead(path: seed)
+
+        let result = try await repos.mergeSync(path: local)
+        XCTAssertTrue(result.didChange, "unrelated roots need a merge commit even with equal trees")
+        XCTAssertEqual(result.addedFromRemote, 0)
+        XCTAssertEqual(result.keptLocalOnly, 0)
+        XCTAssertTrue(result.remoteCopies.isEmpty)
+        let dirty = try await repos.status(path: local).count
+        XCTAssertEqual(dirty, 0)
+        let parents = try await repos.runner.run(["rev-list", "--parents", "-n", "1", "HEAD"], cwd: local)
+        let hashes = parents.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+            .split(separator: " ").map(String.init)
+        XCTAssertEqual(Set(hashes.suffix(2)), Set([localHead, remoteHead]))
     }
 }

@@ -750,7 +750,7 @@ public final class RepoManager: @unchecked Sendable {
 
     // MARK: - Merge sync (keep files from both sides)
 
-    /// Outcome of "sync with the remote and keep both sides' files".
+    /// Outcome of "sync remote files into the folder, keep local files".
     public struct MergeSyncResult: Sendable, Equatable {
         public let headBefore: String?
         public let headAfter: String
@@ -758,34 +758,40 @@ public final class RepoManager: @unchecked Sendable {
         public let addedFromRemote: Int
         /// Paths that only the local folder had (kept untouched).
         public let keptLocalOnly: Int
-        /// Same path changed on both sides: the remote version stays at the
-        /// original path, the local version is saved next to it.
-        public let localCopies: [LocalCopy]
+        /// Same path changed on both sides: the LOCAL version stays at the
+        /// original path, the REMOTE version is saved next to it.
+        public let remoteCopies: [RemoteCopy]
         public let backupRef: String?
+        /// Commits on the local branch that the remote does not have yet, i.e.
+        /// work still to be pushed after the sync (0 = nothing to push).
+        public let aheadCommits: Int
         /// Whether new commits were created (false when already in sync).
         public var didChange: Bool { headBefore != headAfter }
+        /// Whether the sync has local work the remote is still missing.
+        public var needsPush: Bool { aheadCommits > 0 }
 
-        public struct LocalCopy: Sendable, Equatable {
-            /// Original path (now holds the remote version).
+        public struct RemoteCopy: Sendable, Equatable {
+            /// Original path (now holds the local version).
             public let path: String
-            /// Where the local version was saved, e.g. "note (本地副本).md".
+            /// Where the remote version was saved, e.g. "note (远程副本).md".
             public let copyPath: String
         }
     }
 
-    /// Merge the remote branch into the local folder while keeping files from
-    /// both sides (v4.1.3).
+    /// Sync remote files into the local folder while keeping local files
+    /// (v4.1.4).
     ///
     /// This is the "bind a remote to a folder that already has files" path and
     /// it is deliberately lossless:
     /// - remote-only paths are added to the folder;
     /// - local-only paths are kept untouched;
-    /// - same path with different content keeps BOTH: the remote version at the
-    ///   original path (other machines stay stable) and the local version as
-    ///   "name (本地副本).ext" next to it;
+    /// - same path with different content keeps BOTH: the LOCAL version stays
+    ///   at the original path (this is a "keep local files" sync) and the REMOTE
+    ///   version is saved as "name (远程副本).ext" next to it;
     /// - modify/delete vs delete/modify keeps the surviving side.
-    /// It creates a merge commit (both parents are history), and the pre-merge
-    /// HEAD is also kept in a backup ref. Files are never silently dropped.
+    /// It creates a merge commit (both parents are history), the pre-merge HEAD
+    /// is kept in a backup ref, and the result reports how many local commits
+    /// still need pushing so the caller can finish the round trip.
     public func mergeSync(path: String) async throws -> MergeSyncResult {
         guard isRepo(at: path) else { throw PullError.notARepository }
         let headRef = try await runner.run(["symbolic-ref", "--quiet", "--short", "HEAD"], cwd: path)
@@ -823,18 +829,20 @@ public final class RepoManager: @unchecked Sendable {
             let counts = await treeDiffCounts(path: path, old: nil, new: remoteTip)
             return MergeSyncResult(headBefore: nil, headAfter: after,
                                    addedFromRemote: counts.added, keptLocalOnly: 0,
-                                   localCopies: [], backupRef: nil)
+                                   remoteCopies: [], backupRef: nil, aheadCommits: 0)
         }
         if oldHead == remoteTip {
             return MergeSyncResult(headBefore: oldHead, headAfter: oldHead,
                                    addedFromRemote: 0, keptLocalOnly: 0,
-                                   localCopies: [], backupRef: nil)
+                                   remoteCopies: [], backupRef: nil, aheadCommits: 0)
         }
         if await isAncestor(remoteTip, of: oldHead, path: path) {
-            // Already contains the remote: nothing to bring in.
+            // Already contains the remote: nothing to bring in, but local
+            // commits may still need pushing.
             return MergeSyncResult(headBefore: oldHead, headAfter: oldHead,
                                    addedFromRemote: 0, keptLocalOnly: 0,
-                                   localCopies: [], backupRef: nil)
+                                   remoteCopies: [], backupRef: nil,
+                                   aheadCommits: await countCommits(path: path, from: remoteTip, to: oldHead))
         }
         if await isAncestor(oldHead, of: remoteTip, path: path) {
             // Local is behind: a fast-forward cannot lose local files.
@@ -846,7 +854,7 @@ public final class RepoManager: @unchecked Sendable {
             let counts = await treeDiffCounts(path: path, old: oldHead, new: remoteTip)
             return MergeSyncResult(headBefore: oldHead, headAfter: after,
                                    addedFromRemote: counts.added, keptLocalOnly: 0,
-                                   localCopies: [], backupRef: nil)
+                                   remoteCopies: [], backupRef: nil, aheadCommits: 0)
         }
 
         // Keep the replaced HEAD recoverable before touching the working tree.
@@ -872,21 +880,28 @@ public final class RepoManager: @unchecked Sendable {
             throw PullError.classify(stderr: merge.stderr, remote: target.remote, branch: target.branch)
         }
 
-        // Resolve conflicts without losing either side.
-        var copies: [MergeSyncResult.LocalCopy] = []
+        // Resolve conflicts without losing either side. This mode keeps local
+        // files: the local content stays at the original path, the remote
+        // version is saved beside it as "name (远程副本).ext".
+        var copies: [MergeSyncResult.RemoteCopy] = []
         for file in conflicts {
             let stages = await unmergedStages(path: path, file: file)
             let hasLocal = stages.contains(2)
             let hasRemote = stages.contains(3)
             if hasLocal && hasRemote {
-                // Remote wins the original path; keep the local version beside it.
-                if let copyPath = Self.localCopyPath(for: file, exists: { relative in
+                if let copyPath = Self.remoteCopyPath(for: file, exists: { relative in
                     FileManager.default.fileExists(atPath: (path as NSString).appendingPathComponent(relative))
-                }), await materializeLocalStage(path: path, file: file, to: copyPath) {
+                }), await materializeStage(3, path: path, file: file, to: copyPath) {
                     _ = try? await runner.run(["add", "--", copyPath], cwd: path)
-                    copies.append(MergeSyncResult.LocalCopy(path: file, copyPath: copyPath))
+                    copies.append(MergeSyncResult.RemoteCopy(path: file, copyPath: copyPath))
+                } else {
+                    // Could not materialize the remote copy: never drop it, so
+                    // abort instead of silently keeping only one side.
+                    _ = try? await runner.run(["merge", "--abort"], cwd: path)
+                    throw GitCommandError(command: "checkout-index (remote copy)",
+                                          exitCode: -1, stderr: "could not materialize remote copy of " + file)
                 }
-                _ = try? await runner.run(["checkout", "--theirs", "--", file], cwd: path)
+                _ = try? await runner.run(["checkout", "--ours", "--", file], cwd: path)
                 _ = try? await runner.run(["add", "--", file], cwd: path)
             } else if hasRemote {
                 // Local deleted it, remote changed it: bring the remote back.
@@ -899,7 +914,7 @@ public final class RepoManager: @unchecked Sendable {
             }
         }
         _ = try? await runner.run(["add", "-A"], cwd: path)
-        let commit = try await runner.run(["commit", "-m", "sync: 合并远程与本地文件（保留双方）"], cwd: path)
+        let commit = try await runner.run(["commit", "-m", "sync: 同步远程文件到本地（保留本地文件）"], cwd: path)
         guard commit.succeeded else {
             if await mergeInProgress(path: path) {
                 _ = try? await runner.run(["merge", "--abort"], cwd: path)
@@ -911,11 +926,12 @@ public final class RepoManager: @unchecked Sendable {
         let counts = await treeDiffCounts(path: path, old: oldHead, new: remoteTip)
         return MergeSyncResult(headBefore: oldHead, headAfter: after,
                                addedFromRemote: counts.added, keptLocalOnly: counts.deleted,
-                               localCopies: copies, backupRef: backupRef)
+                               remoteCopies: copies, backupRef: backupRef,
+                               aheadCommits: await countCommits(path: path, from: remoteTip, to: after))
     }
 
-    /// "name (本地副本).ext" - a unique sibling path for the local version.
-    static func localCopyPath(for file: String, exists: (String) -> Bool) -> String? {
+    /// "name (远程副本).ext" - a unique sibling path for the remote version.
+    static func remoteCopyPath(for file: String, exists: (String) -> Bool) -> String? {
         let ns = file as NSString
         let dir = ns.deletingLastPathComponent
         let base = ns.lastPathComponent as NSString
@@ -923,8 +939,8 @@ public final class RepoManager: @unchecked Sendable {
         let stem = base.deletingPathExtension
         func candidate(_ index: Int) -> String {
             let suffix = index == 1
-                ? NSLocalizedString(" (本地副本)", comment: "sync conflict copy suffix")
-                : String(format: NSLocalizedString(" (本地副本 %d)", comment: "sync conflict copy suffix"), index)
+                ? NSLocalizedString(" (远程副本)", comment: "sync conflict copy suffix")
+                : String(format: NSLocalizedString(" (远程副本 %d)", comment: "sync conflict copy suffix"), index)
             let name = ext.isEmpty ? stem + suffix : stem + suffix + "." + ext
             return dir.isEmpty ? name : dir + "/" + name
         }
@@ -936,15 +952,16 @@ public final class RepoManager: @unchecked Sendable {
         return candidate(index)
     }
 
-    /// Write the stage-2 (local) blob to destination, binary-safe.
-    private func materializeLocalStage(path: String, file: String, to destination: String) async -> Bool {
+    /// Write one merge stage (2 = local, 3 = remote) to destination, binary-safe.
+    private func materializeStage(_ stage: Int, path: String, file: String,
+                                 to destination: String) async -> Bool {
         let fm = FileManager.default
         let tmp = fm.temporaryDirectory.appendingPathComponent("fv-sync-" + UUID().uuidString.prefix(8),
                                                               isDirectory: true)
         try? fm.createDirectory(at: tmp, withIntermediateDirectories: true)
         defer { try? fm.removeItem(at: tmp) }
         let prefix = tmp.path + "/"
-        guard let r = try? await runner.run(["checkout-index", "--stage=2", "--force",
+        guard let r = try? await runner.run(["checkout-index", "--stage=" + String(stage), "--force",
                                              "--prefix=" + prefix, "--", file], cwd: path),
               r.succeeded else { return false }
         let produced = tmp.appendingPathComponent(file)
