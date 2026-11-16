@@ -190,7 +190,10 @@ final class AppState: ObservableObject {
         guard let svc = service else { return }
         if svc.configStore.load().roots.isEmpty, !UserDefaults.standard.bool(forKey: "fv.onboarded") {
             UserDefaults.standard.set(true, forKey: "fv.onboarded")
-            openWindowHandler?("settings")
+            // v4.2.18: first run goes straight to the one-step add folder
+            // sheet instead of the settings page.
+            quickAddRequested = true
+            openWindowHandler?("dashboard")
         }
     }
 
@@ -329,6 +332,8 @@ final class AppState: ObservableObject {
     /// Last silent check failed → surfaced in the menu so flaky networks are
     /// visible instead of silently starving updates (v3.1.2).
     @Published var lastUpdateCheckFailed = false
+    /// Set by the menu bar to open the dashboard's quick-add sheet (v4.2.18).
+    @Published var quickAddRequested = false
 
     /// Guards against overlapping checks (timer tick + manual menu item +
     /// toggling the setting back on used to be able to race).

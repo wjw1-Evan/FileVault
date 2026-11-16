@@ -153,6 +153,7 @@ struct DashboardView: View {
     @EnvironmentObject var app: AppState
     @Environment(\.openWindow) private var openWindow
     @StateObject private var model = DashboardModel()
+    @State private var quickAddPresented = false
 
     var body: some View {
         // v3.4.1: no ScrollView — the window is sized to the content, so the
@@ -173,6 +174,25 @@ struct DashboardView: View {
         .fvCanvas()
         .task { model.bind(app) }
         .onDisappear { model.unbind() }
+        .sheet(isPresented: $quickAddPresented) {
+            QuickAddSheet {
+                Task { await model.refresh() }
+            }
+            .environmentObject(app)
+        }
+        .onChange(of: app.quickAddRequested) { _, requested in
+            guard requested else { return }
+            app.quickAddRequested = false
+            quickAddPresented = true
+        }
+        .onAppear {
+            // The request may already be set when this window is first shown
+            // (first-run onboarding), so onChange alone is not enough.
+            if app.quickAddRequested {
+                app.quickAddRequested = false
+                quickAddPresented = true
+            }
+        }
     }
 
     // MARK: Header
@@ -310,8 +330,8 @@ struct DashboardView: View {
                 FVEmptyState(symbol: "folder.badge.plus",
                              title: "还没有受保护的文件夹",
                              message: "添加一个文件夹，里面的所有文件都会自动拥有版本历史。",
-                             actionTitle: "打开设置",
-                             action: { openWindow(id: "settings") })
+                             actionTitle: "添加文件夹",
+                             action: { quickAddPresented = true })
             } else {
                 VStack(spacing: 0) {
                     // Bounded list: the window fits its content, so cap the rows
@@ -341,7 +361,7 @@ struct DashboardView: View {
                 Spacer(minLength: 0)
                 FVHairline(leading: 0)
                 Button {
-                    openWindow(id: "settings")
+                    quickAddPresented = true
                 } label: {
                     HStack(spacing: 6) {
                         Image(systemName: "plus.circle.fill")

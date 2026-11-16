@@ -111,7 +111,10 @@ struct MenuContentView: View {
                 Text("尚未添加文件夹")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
-                Button("去设置添加…") { app.open("settings") }
+                Button("添加文件夹…") {
+                    app.quickAddRequested = true
+                    app.open("dashboard")
+                }
                     .buttonStyle(.link)
                     .font(.system(size: 11))
             }
