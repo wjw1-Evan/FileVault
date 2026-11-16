@@ -110,7 +110,7 @@
 "仓库当前不在任何分支上，无法拉取" = "The repository is not on any branch — cannot pull";
 "远程仓库 %@ 还没有 %@ 分支，无法拉取" = "Remote %@ has no branch %@ yet — cannot pull";
 "远程仓库 %@ 没有 %@ 分支（现有：%@），无法拉取" = "Remote %@ has no branch %@ (it has: %@) — cannot pull";
-"如果远程用的是别的分支名（现有：%@），可在终端执行 git branch --set-upstream-to=%@/<分支>；否则点「立即推送」把本地分支推上去，或在终端执行 git push -u %@ %@。" = "If the remote uses a different branch name (it has: %@), run git branch --set-upstream-to=%@/<branch> in Terminal; otherwise click Push now to push the local branch, or run git push -u %@ %@.";
+"如果远程用的是别的分支名（现有：%@），可在终端执行 git branch --set-upstream-to=%@/<分支>；否则应用会自动重试推送，也可在终端执行 git push -u %@ %@。" = "If the remote uses a different branch name (it has: %@), run git branch --set-upstream-to=%@/<branch> in Terminal; otherwise the app retries the push automatically, or run git push -u %@ %@.";
 "仓库正被另一个 Git 操作占用（锁文件）" = "The repository is locked by another Git operation (lock file)";
 "等几秒后重试；若一直失败，确认没有其他 Git 工具在操作这个文件夹后，可在终端删除 .git/index.lock 再重试。" = "Try again in a few seconds; if it keeps failing, make sure no other Git tool is using this folder, then delete .git/index.lock in Terminal and retry.";
 "操作超时（网络较慢或仓库较大，已等待 120 秒）" = "The operation timed out (slow network or a large repository; waited 120 seconds)";
@@ -187,7 +187,7 @@
 " (远程副本 %d)" = " (remote copy %d)";
 "在设置里填写远程仓库地址（留空表示仅本地），保存并连通后再拉取。" = "Enter the remote URL in Settings (empty = local only), save it, and pull once the connection works.";
 "在终端执行 git switch main 回到主分支后再试。" = "In Terminal run git switch main to return to the main branch, then try again.";
-"先把本地分支推送上去：点「立即推送」，或在终端执行 git push -u %@ %@。" = "Push the local branch first: click Push Now, or run git push -u %@ %@ in Terminal.";
+"应用会自动重试推送；若一直失败，在终端执行 git push -u %@ %@ 把本地分支推上去。" = "The app retries the push automatically; if it keeps failing, run git push -u %@ %@ in Terminal.";
 "这个远程仓库已经有一套自己的历史。若以远程为准，先备份文件夹，再在终端执行 git fetch origin，然后 git reset --hard 远程分支；若以本地为准，需要强制推送（会覆盖远程历史）。" = "This remote already carries its own history. To keep the remote, back up the folder first, then run git fetch origin and git reset --hard <remote branch> in Terminal; to keep the local copy, a force push is required (it overwrites the remote history).";
 "检查网络或代理设置后重试。" = "Check your network or proxy settings and try again.";
 "核对设置里的远程地址；私有仓库请确认访问令牌有该仓库的读写权限。" = "Double-check the remote URL in Settings; for private repositories make sure the access token can read and write that repository.";

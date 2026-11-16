@@ -155,6 +155,16 @@ public final class FileVaultService: @unchecked Sendable {
         }
         // v4.0: the managed root itself is the one repo.
         _ = try await repoManager.ensureRepo(at: p)
+        // v4.2: syncing is the app's only remote mode — a repo that already has
+        // a remote but still carries the old "auto-push off" flag is switched on
+        // so an upgraded install keeps syncing without any user action.
+        if await repoManager.remoteURL(path: p) != nil {
+            let autoPush = await repoManager.autoPushEnabled(path: p)
+            if !autoPush {
+                await repoManager.setAutoPush(path: p, enabled: true)
+                await sync.enqueuePush(repoPath: p)
+            }
+        }
         if paused {
             pause.setPaused(true, forRoot: p)
         }

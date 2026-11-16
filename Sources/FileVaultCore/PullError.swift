@@ -125,10 +125,10 @@ public enum PullError: Error, LocalizedError, Equatable {
                                      comment: "pull recovery")
         case .remoteBranchMissing(let remote, let branch, let available):
             if available.isEmpty {
-                return String(format: NSLocalizedString("先把本地分支推送上去：点「立即推送」，或在终端执行 git push -u %@ %@。",
+                return String(format: NSLocalizedString("应用会自动重试推送；若一直失败，在终端执行 git push -u %@ %@ 把本地分支推上去。",
                                                         comment: "pull recovery"), remote, branch)
             }
-            return String(format: NSLocalizedString("如果远程用的是别的分支名（现有：%@），可在终端执行 git branch --set-upstream-to=%@/<分支>；否则点「立即推送」把本地分支推上去，或在终端执行 git push -u %@ %@。",
+            return String(format: NSLocalizedString("如果远程用的是别的分支名（现有：%@），可在终端执行 git branch --set-upstream-to=%@/<分支>；否则应用会自动重试推送，也可在终端执行 git push -u %@ %@。",
                                                     comment: "pull recovery"),
                           available.joined(separator: "、"), remote, remote, branch)
         case .unrelatedHistories:

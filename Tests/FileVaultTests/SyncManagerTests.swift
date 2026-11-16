@@ -263,9 +263,10 @@ final class SyncManagerTests: XCTestCase {
             GitCommandError(command: "push", exitCode: -9, stderr: "git command timed out after 120s"))
         XCTAssertTrue(message.contains("推送超时"), message)
     }
-    /// Unrelated histories cannot be reconciled automatically: the auto-push
-    /// loop must report once and stop rather than retrying on a timer.
-    func testAutoPushStopsOnUnrelatedHistories() async throws {
+    /// v4.2: an unrelated remote is no longer a dead end. The remote files are
+    /// merged into the folder losslessly (both sides kept) and the result is
+    /// pushed — no decision step, no retry loop, no forced update.
+    func testUnrelatedHistoriesAreMergedAutomatically() async throws {
         let remote = makeBareRemote("r5")
         // Seed the remote from a different repo (a different root history).
         let seed = root + "/seedRepo"
@@ -281,30 +282,24 @@ final class SyncManagerTests: XCTestCase {
         _ = try await repos.commitAll(path: repo)
         let localHead = try await repos.resolveHead(path: repo)
 
-        var messages: [String] = []
-        let lock = NSLock()
-        sync.onPushFailure.handler = { _, reason in lock.lock(); messages.append(reason); lock.unlock() }
         let change = try await sync.configureRemote(repoPath: repo, url: remote, autoPush: true)
-        XCTAssertTrue(change.needsDecision, "a remote that already has commits needs an explicit decision")
+        XCTAssertTrue(change.needsDecision, "the remote does carry its own history")
         let pending = await repos.remoteSwitchPending(path: repo)
-        XCTAssertTrue(pending)
-        let statusWhilePending = await sync.status(for: repo)
-        XCTAssertEqual(statusWhilePending, .pendingPush, "nothing is auto-pushed while undecided")
+        XCTAssertFalse(pending, "the automatic merge resolves the switch")
+        await waitForStatus(.synced, repo: repo)
 
-        // After the user explicitly opts to push, v4.1.5 reconciliation refuses
-        // the unrelated histories with a readable message instead of retrying.
-        await repos.clearRemoteSwitchPending(path: repo)
-        await sync.enqueuePush(repoPath: repo)
-        await waitForStatus(.failed, repo: repo)
-        try? await Task.sleep(nanoseconds: 400_000_000)
-        lock.lock(); let seen = messages; lock.unlock()
-        XCTAssertTrue(seen.contains { $0.contains("互不相关") }, seen.joined(separator: " || "))
+        // Both sides survive and the merge commit reached the remote.
+        XCTAssertTrue(FileManager.default.fileExists(atPath: repo + "/own.md"), "local file kept")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: repo + "/seed.md"), "remote file merged in")
         let headNow = try await repos.resolveHead(path: repo)
-        XCTAssertEqual(headNow, localHead, "the local history must be preserved")
+        XCTAssertNotEqual(headNow, localHead, "a merge commit was created")
         let dirty = try await repos.status(path: repo).count
         XCTAssertEqual(dirty, 0)
-        let finalStatus = await sync.status(for: repo)
-        XCTAssertEqual(finalStatus, .failed)
+        let remoteLog = try await repos.runner.run(["--git-dir=" + remote, "log", "--oneline", "main"],
+                                                   cwd: remote)
+        XCTAssertTrue(remoteLog.succeeded, remoteLog.stderr)
+        XCTAssertTrue(remoteLog.stdout.contains("own.md") || remoteLog.stdout.contains("auto:"), remoteLog.stdout)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: repo + "/.git/rebase-merge"))
     }
 
     // MARK: - Switching the remote repository (v4.1.6)
@@ -347,9 +342,10 @@ final class SyncManagerTests: XCTestCase {
                        "remote-tracking refs must describe the NEW remote")
     }
 
-    /// A replaced remote that already has commits must not be merged or pushed
-    /// automatically: the user decides (sync / force pull / push) afterwards.
-    func testSwitchToRemoteWithContentWaitsForDecision() async throws {
+    /// v4.2: a replaced remote that already has commits is merged into the folder
+    /// automatically — local files stay, remote-only files come in — and the
+    /// merged result is pushed. Nothing waits for the user.
+    func testSwitchToRemoteWithContentMergesAutomatically() async throws {
         let repo = root + "/repoA"
         _ = try await repos.ensureRepo(at: repo)
         let oldRemote = makeBareRemote("old2")
@@ -373,24 +369,23 @@ final class SyncManagerTests: XCTestCase {
         XCTAssertTrue(change.needsDecision)
         XCTAssertGreaterThan(change.remoteCommitCount, 0)
         let pending = await repos.remoteSwitchPending(path: repo)
-        XCTAssertTrue(pending)
-        let statusNow = await sync.status(for: repo)
-        XCTAssertEqual(statusNow, .pendingPush)
+        XCTAssertFalse(pending, "no decision is left behind")
+        await waitForStatus(.synced, repo: repo)
 
-        // Nothing was pushed while the decision is pending.
-        let beforeCount = try await repos.runner.run(["--git-dir=" + newRemote, "rev-list", "--count", "main"],
-                                                     cwd: newRemote)
-        try? await Task.sleep(nanoseconds: 400_000_000)
-        let afterCount = try await repos.runner.run(["--git-dir=" + newRemote, "rev-list", "--count", "main"],
-                                                    cwd: newRemote)
-        XCTAssertEqual(beforeCount.stdout, afterCount.stdout, "auto-push must wait for the decision")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: repo + "/local.md"), "local file kept")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: repo + "/seed.md"), "remote file merged in")
         let headNow = try await repos.resolveHead(path: repo)
-        XCTAssertEqual(headNow, localHead)
+        XCTAssertNotEqual(headNow, localHead, "the merge commit replaced the old head")
+        let countResult = try await repos.runner.run(["--git-dir=" + newRemote, "rev-list", "--count", "main"],
+                                                     cwd: newRemote)
+        let remoteCount = Int(countResult.stdout.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
+        XCTAssertGreaterThan(remoteCount, 1, "the merged local commits are pushed to the new remote")
         XCTAssertFalse(FileManager.default.fileExists(atPath: repo + "/.git/rebase-merge"))
     }
 
-    /// An explicit push after the switch resolves the pending decision.
-    func testExplicitPushAfterRemoteSwitchClearsDecision() async throws {
+    /// v4.2: switching to a diverged remote reconciles on the spot (merge of both
+    /// sides, then push) instead of waiting for an explicit push.
+    func testDivergedRemoteSwitchMergesAndPushes() async throws {
         let repo = root + "/repoA"
         _ = try await repos.ensureRepo(at: repo)
         let oldRemote = makeBareRemote("old3")
@@ -414,18 +409,16 @@ final class SyncManagerTests: XCTestCase {
         XCTAssertTrue(pushSibling.succeeded, "sibling push: " + pushSibling.stderr)
         let change = try await sync.configureRemote(repoPath: repo, url: newRemote, autoPush: true)
         XCTAssertTrue(change.needsDecision)
-        let pendingBefore = await repos.remoteSwitchPending(path: repo)
-        XCTAssertTrue(pendingBefore)
-
-        let ok = await sync.pushNow(repoPath: repo)
-        XCTAssertTrue(ok, "an explicit push must resolve the switch")
         let pendingAfter = await repos.remoteSwitchPending(path: repo)
-        XCTAssertFalse(pendingAfter, "explicit push clears the pending decision")
-        let statusAfter = await sync.status(for: repo)
-        XCTAssertEqual(statusAfter, .synced)
+        XCTAssertFalse(pendingAfter, "the automatic merge resolves the switch")
+        await waitForStatus(.synced, repo: repo)
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: repo + "/after.md"), "local commit kept")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: repo + "/sibling.md"), "remote commit merged in")
         let log = try await repos.runner.run(["--git-dir=" + newRemote, "log", "--oneline", "main"],
                                              cwd: newRemote)
-        XCTAssertTrue(log.stdout.contains("after.md") || log.stdout.contains("auto:"), log.stdout)
+        XCTAssertTrue(log.stdout.contains("sibling") || log.stdout.contains("after.md") || log.stdout.contains("auto:"),
+                      log.stdout)
     }
 
 
