@@ -70,6 +70,11 @@ final class RecoveryTests: XCTestCase {
         try FileManager.default.removeItem(atPath: repo + "/" + relative)
     }
 
+    private func topSubject() async throws -> String {
+        let r = try await git(["log", "-1", "--pretty=%s"])
+        return r.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     private func head() async throws -> String {
         let r = try await git(["rev-parse", "HEAD"])
         return r.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -567,6 +572,151 @@ final class RecoveryTests: XCTestCase {
     }
 
     // MARK: - Log parsing (format regression guard)
+
+
+    // MARK: - Additional recovery coverage (v4.2.18)
+
+    /// A file deleted and later re-added: "找回" must use the newest version
+    /// that existed BEFORE the deletion, not the re-added one.
+    func testRestoreDeletedReAddedFileUsesPreDeletionVersion() async throws {
+        try write("v1 content", to: "re.md")
+        _ = try await commitAll("v1")
+        try removeFile("re.md")
+        _ = try await commitAll("delete re")
+        let dele = try await head()
+        try write("v2 re-added", to: "re.md")
+        _ = try await commitAll("re-add re")
+
+        let result = try await recovery.restoreDeleted(repoPath: repo, file: "re.md", deletedIn: dele)
+        guard case .restored = result else { return XCTFail("got \(result)") }
+        XCTAssertEqual(read("re.md"), "v1 content", "must restore the pre-deletion content")
+    }
+
+    /// versions(limit:) caps the timeline (the window shows the newest first).
+    func testVersionsRespectLimit() async throws {
+        try write("one", to: "lim.md")
+        _ = try await commitAll("v1")
+        try write("two", to: "lim.md")
+        _ = try await commitAll("v2")
+        try write("three", to: "lim.md")
+        _ = try await commitAll("v3")
+        let all = try await recovery.versions(repoPath: repo, file: "lim.md")
+        XCTAssertEqual(all.count, 3)
+        let one = try await recovery.versions(repoPath: repo, file: "lim.md", limit: 1)
+        XCTAssertEqual(one.count, 1)
+        XCTAssertEqual(one[0].subject, "v3")
+        XCTAssertTrue(one[0].exists)
+    }
+
+    /// A huge working diff is cut at maxBytes and flagged, so the window cannot
+    /// freeze on a multi-megabyte file.
+    func testWorkingDiffTruncatesLargeOutput() async throws {
+        let lines = (0..<200).map { "line \($0)" }.joined(separator: "\n")
+        try write(lines, to: "big.md")
+        _ = try await commitAll("v1")
+        let v1 = try await head()
+        let more = (0..<400).map { "line \($0)" }.joined(separator: "\n")
+        try write(more, to: "big.md")
+
+        let diff = try await recovery.workingDiff(repoPath: repo, file: "big.md",
+                                                  version: v1, maxBytes: 500)
+        XCTAssertTrue(diff.truncated)
+        XCTAssertLessThanOrEqual(diff.text.utf8.count, 500)
+        XCTAssertFalse(diff.isBinary)
+        XCTAssertGreaterThan(diff.added, 0)
+    }
+
+    /// Binary files are reported as binary instead of dumping mojibake.
+    func testWorkingDiffFlagsBinaryFiles() async throws {
+        try writeBytes([0x00, 0x01, 0x02, 0x00], to: "blob.bin")
+        _ = try await commitAll("v1 binary")
+        let v1 = try await head()
+        try writeBytes([0x00, 0x03, 0x04, 0x00], to: "blob.bin")
+
+        let diff = try await recovery.workingDiff(repoPath: repo, file: "blob.bin", version: v1)
+        XCTAssertTrue(diff.isBinary, diff.text)
+        XCTAssertFalse(diff.text.isEmpty)
+    }
+
+    /// Restoring an empty file must produce an actually empty file.
+    func testRestoreEmptyFileIsBitExact() async throws {
+        try writeBytes([], to: "empty.md")
+        _ = try await commitAll("v1 empty")
+        let v1 = try await head()
+        try write("not empty any more", to: "empty.md")
+        _ = try await commitAll("v2")
+
+        _ = try await recovery.restore(repoPath: repo, file: "empty.md", to: v1)
+        let bytes = readBytes("empty.md")
+        XCTAssertEqual(bytes, Data(), "the restored file must be 0 bytes")
+    }
+
+    /// A file without a trailing newline / with CRLF keeps its exact bytes.
+    func testRestorePreservesExactBytesWithoutTrailingNewline() async throws {
+        let original: [UInt8] = Array("line1\r\nline2".utf8)
+        try writeBytes(original, to: "crlf.md")
+        _ = try await commitAll("v1 crlf")
+        let v1 = try await head()
+        try writeBytes(Array("different".utf8), to: "crlf.md")
+        _ = try await commitAll("v2")
+
+        _ = try await recovery.restore(repoPath: repo, file: "crlf.md", to: v1)
+        XCTAssertEqual(readBytes("crlf.md").map { Array($0) }, original)
+    }
+
+    /// After restoring, the file is back in sync with HEAD and the snapshot
+    /// shows it as available (not modified).
+    func testSnapshotShowsAvailableAfterRestore() async throws {
+        try write("v1", to: "back.md")
+        _ = try await commitAll("v1")
+        let v1 = try await head()
+        try write("edited locally", to: "back.md")
+        var snap = try await snapshot()
+        XCTAssertEqual(file("back.md", in: snap)?.state, .modified)
+
+        _ = try await recovery.restore(repoPath: repo, file: "back.md", to: v1)
+        snap = try await snapshot()
+        XCTAssertEqual(file("back.md", in: snap)?.state, .available)
+        XCTAssertEqual(read("back.md"), "v1")
+    }
+
+    /// The auto commit created by a restore names the file (both variants).
+    func testRestoreCommitMessageNamesTheFile() async throws {
+        try write("v1", to: "note.md")
+        _ = try await commitAll("v1")
+        let v1 = try await head()
+        try write("v2", to: "note.md")
+        _ = try await commitAll("v2")
+        _ = try await recovery.restore(repoPath: repo, file: "note.md", to: v1)
+        var top = try await topSubject()
+        XCTAssertTrue(top.contains("restore:"), top)
+        XCTAssertTrue(top.contains("note.md"), top)
+
+        try removeFile("note.md")
+        _ = try await commitAll("delete note")
+        _ = try await recovery.restoreDeleted(repoPath: repo, file: "note.md", deletedIn: try await head())
+        top = try await topSubject()
+        XCTAssertTrue(top.contains("restore:"), top)
+        XCTAssertTrue(top.contains("note.md"), top)
+        XCTAssertTrue(top.contains("找回"), top)
+    }
+
+    /// Paths with spaces and double quotes survive commit → restore → commit.
+    func testRestoreHandlesQuotesAndSpacesInPath() async throws {
+        let path = "a \"quoted\" name.md"
+        try write("v1", to: path)
+        _ = try await commitAll("v1 quoted")
+        let v1 = try await head()
+        try write("v2", to: path)
+        _ = try await commitAll("v2 quoted")
+
+        _ = try await recovery.restore(repoPath: repo, file: path, to: v1)
+        XCTAssertEqual(read(path), "v1")
+        let top = try await topSubject()
+        XCTAssertTrue(top.contains("a \"quoted\" name.md"), top)
+        let status = try? await repos.status(path: repo)
+        XCTAssertEqual(status?.count, 0)
+    }
 
     func testParseLogUnderstandsNulLayoutAndRenames() throws {
         let nul = "\u{0}"
