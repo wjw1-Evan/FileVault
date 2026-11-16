@@ -66,6 +66,16 @@ public final class FileVaultService: @unchecked Sendable {
             self?.onFailure(NSLocalizedString("自动提交失败", comment: "notification title"),
                             "\((repoPath as NSString).lastPathComponent)：\(reason)")
         }
+        commitEngine.onLargeFilesExcluded = { [weak self] repoPath, files in
+            let name = (repoPath as NSString).lastPathComponent
+            let shown = files.prefix(3).joined(separator: "、")
+            let more = files.count > 3
+                ? String(format: NSLocalizedString(" 等 %d 个文件", comment: "list more"), files.count)
+                : ""
+            self?.onFailure(NSLocalizedString("大文件未纳入版本管理", comment: "notification title"),
+                            String(format: NSLocalizedString("%@：%@%@ 超过远程单文件上限，已自动排除、不会同步；需要备份请拆分文件或移出受保护文件夹",
+                                                             comment: "large file excluded"), name, shown, more))
+        }
         sync.onPushFailure.handler = { [weak self] repoPath, reason in
             self?.onFailure(NSLocalizedString("推送失败", comment: "notification title"),
                             "\((repoPath as NSString).lastPathComponent)：\(reason)")

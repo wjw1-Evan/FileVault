@@ -12,6 +12,9 @@ public final class CommitEngine: @unchecked Sendable {
     public var onCommit: (@Sendable (String, String, String) -> Void)?
     /// Called when the auto-commit pipeline fails with (repoPath, errorDescription).
     public var onCommitFailure: (@Sendable (String, String) -> Void)?
+    /// Called once when files were auto-excluded for exceeding the remote's
+    /// single-file limit (repoPath, excluded relative paths) (v4.2.6).
+    public var onLargeFilesExcluded: (@Sendable (String, [String]) -> Void)?
     /// Effective large-file ceiling for a repo (FR-12, v3.1.3).
     ///
     /// There is no local threshold anymore: the value comes from the remote
@@ -155,6 +158,11 @@ public final class CommitEngine: @unchecked Sendable {
         // filtered out so the commit message reflects what is actually committed.
         let threshold = await effectiveThreshold(for: repoPath)
         let excluded = await repoManager.excludeLargeFiles(path: repoPath, threshold: threshold, entries: entries)
+        if !excluded.isEmpty {
+            // Never let a file quietly fall out of version control: tell the user
+            // it was excluded because the remote refuses files that large.
+            onLargeFilesExcluded?(repoPath, excluded)
+        }
         let excludedSet = Set(excluded)
         let committable = entries.filter { !excludedSet.contains($0.path) }
         do {

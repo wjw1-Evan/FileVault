@@ -152,6 +152,9 @@
 "仓库正被另一个 Git 操作占用（锁文件），稍后会自动重试" = "The repository is locked by another Git operation (lock file); it will retry automatically";
 "Git 拒绝访问这个文件夹（所有者与本机账户不一致）" = "Git refuses this folder because its owner differs from the current account";
 "已自动重试 %d 次仍未成功，稍后新的改动会再试" = "Retried automatically %d times without success; a new change will try again later";
+" · ⚠️ %d 个大文件未同步" = " · ⚠️ %d large file(s) not synced";
+"大文件未纳入版本管理" = "A large file is not under version control";
+"%@：%@%@ 超过远程单文件上限，已自动排除、不会同步；需要备份请拆分文件或移出受保护文件夹" = "%@: %@%@ exceeds the remote single-file limit and was excluded, so it is not synced; split the file or move it out of the protected folder if you need a backup";
 "上次的合并、变基或 Git 操作没有正常结束（可能是崩溃或强退）。清理会丢弃那一步的中间状态（包括过期的 .git/index.lock），已提交的历史和文件不会丢失。" = "The last merge, rebase or Git operation did not finish (a crash or force-quit). Cleaning up discards only that step's intermediate state (including a stale .git/index.lock); committed history and files are kept.";
 "远程仓库与本地历史互不相关，不能快进合并" = "The remote and local histories are unrelated — cannot fast-forward";
 "本地与远程改动了同一个文件，自动合并已中止（仓库已恢复原状）" = "Local and remote changed the same file — the automatic merge was aborted (the repository is back to its previous state)";

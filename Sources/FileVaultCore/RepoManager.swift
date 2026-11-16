@@ -1616,6 +1616,26 @@ public final class RepoManager: @unchecked Sendable {
         return excluded
     }
 
+    /// Paths that were auto-excluded because they exceed the remote's single
+    /// file limit (recorded in .git/info/exclude). They are NOT versioned, so
+    /// the UI must say so instead of leaving them silently unprotected (v4.2.6).
+    public func excludedLargeFiles(path: String) -> [String] {
+        let file = (path as NSString).appendingPathComponent(".git/info/exclude")
+        guard let content = try? String(contentsOfFile: file, encoding: .utf8) else { return [] }
+        var rules: [String] = []
+        var inSection = false
+        for line in content.split(separator: "\n", omittingEmptySubsequences: false) {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed == Self.largeFileMarkerComment {
+                inSection = true
+                continue
+            }
+            guard inSection, !trimmed.isEmpty, !trimmed.hasPrefix("#") else { continue }
+            rules.append(trimmed)
+        }
+        return rules
+    }
+
     /// Append a rule to .git/info/exclude with marker comment if not present.
     private func appendExcludeRule(path: String, rule: String) {
         let file = URL(fileURLWithPath: path).appendingPathComponent(".git/info/exclude")

@@ -5,11 +5,16 @@ public struct RepoHealth: Equatable, Sendable {
     public var commitCount: Int
     public var sizeBytes: UInt64
     public var lastCommitDate: Date?
+    /// Files that were auto-excluded because they exceed the remote's single
+    /// file limit — they are NOT backed up, so the UI must surface them.
+    public var excludedLargeFileCount: Int
 
-    public init(commitCount: Int, sizeBytes: UInt64, lastCommitDate: Date?) {
+    public init(commitCount: Int, sizeBytes: UInt64, lastCommitDate: Date?,
+                excludedLargeFileCount: Int = 0) {
         self.commitCount = commitCount
         self.sizeBytes = sizeBytes
         self.lastCommitDate = lastCommitDate
+        self.excludedLargeFileCount = excludedLargeFileCount
     }
 
     public var summary: String {
@@ -23,6 +28,10 @@ public struct RepoHealth: Equatable, Sendable {
         }
         if sizeBytes > RepoManager.repoSizeWarningThreshold {
             t += NSLocalizedString(" · ⚠️ 超过 2GB", comment: "repo health")
+        }
+        if excludedLargeFileCount > 0 {
+            t += String(format: NSLocalizedString(" · ⚠️ %d 个大文件未同步", comment: "repo health"),
+                        excludedLargeFileCount)
         }
         return t
     }
@@ -56,7 +65,9 @@ public extension RepoManager {
         let countResult = try? await runner.run(["rev-list", "--count", "HEAD"], cwd: path)
         let count = countResult.flatMap { Int($0.stdout.trimmingCharacters(in: .whitespacesAndNewlines)) } ?? 0
         let log = (try? await self.log(path: path, max: 1)) ?? []
-        return RepoHealth(commitCount: count, sizeBytes: size, lastCommitDate: log.first?.date)
+        let excluded = self.excludedLargeFiles(path: path).count
+        return RepoHealth(commitCount: count, sizeBytes: size, lastCommitDate: log.first?.date,
+                          excludedLargeFileCount: excluded)
     }
 }
 
