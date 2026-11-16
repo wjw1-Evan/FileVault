@@ -269,10 +269,34 @@ public actor SyncManager {
         }
         if text.contains("file is too large") || text.contains("exceeds github's file size limit")
             || (text.contains("push was rejected") && (text.contains("mb") || text.contains("limit"))) {
-            return NSLocalizedString("远程仓库因为文件过大拒绝了这次推送。请检查大文件排除规则，或把大文件移出受保护文件夹后再试。",
-                                     comment: "push rejected")
+            var message = NSLocalizedString("远程仓库因为文件过大拒绝了这次推送。请检查大文件排除规则，或把大文件移出受保护文件夹后再试。",
+                                            comment: "push rejected")
+            let files = Self.oversizedFiles(in: e.stderr)
+            if !files.isEmpty {
+                let shown = files.prefix(3).joined(separator: NSLocalizedString("、", comment: "list joiner"))
+                let more = files.count > 3
+                    ? String(format: NSLocalizedString(" 等 %d 个文件", comment: "list more"), files.count)
+                    : ""
+                message += String(format: NSLocalizedString("（超限文件：%@%@）", comment: "push rejected files"),
+                                  shown, more)
+            }
+            return message
         }
         return nil
+    }
+
+    /// File names mentioned by a "file is too large" push rejection.
+    static func oversizedFiles(in stderr: String) -> [String] {
+        var names: [String] = []
+        for raw in stderr.split(separator: "\n") {
+            let line = String(raw)
+            guard let fileRange = line.range(of: "File "),
+                  let isRange = line.range(of: " is ", range: fileRange.upperBound..<line.endIndex) else { continue }
+            let name = String(line[fileRange.upperBound..<isRange.lowerBound])
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if !name.isEmpty && !names.contains(name) { names.append(name) }
+        }
+        return names
     }
 
     /// Notify text for a failed push (reuses pull wording where available).

@@ -520,7 +520,7 @@ final class SettingsModel: ObservableObject {
             do {
                 let result = try await svc.repoManager.pull(path: id)
                 await svc.repoManager.clearRemoteSwitchPending(path: id)
-                let text: String
+                var text: String
                 if result.pulledCommits == 0 {
                     text = NSLocalizedString("✓ 已是最新", comment: "settings status")
                 } else if result.strategy == .rebased {
@@ -532,6 +532,7 @@ final class SettingsModel: ObservableObject {
                     text = String(format: NSLocalizedString("✓ 已拉取 %d 个新版本（快进）", comment: "settings status"),
                                   result.pulledCommits)
                 }
+                text += self?.movedCopiesNote(result.movedLocalCopies) ?? ""
                 self?.setMessage(id, text)
                 if result.replayedCommits > 0 {
                     // The rebase rewrote the local commit SHAs: push them right
@@ -576,13 +577,14 @@ final class SettingsModel: ObservableObject {
             do {
                 let result = try await svc.repoManager.forcePull(path: id)
                 await svc.repoManager.clearRemoteSwitchPending(path: id)
-                let text: String
+                var text: String
                 if result.discardedCommits > 0 {
                     text = String(format: NSLocalizedString("✓ 已强制拉取：丢弃 %d 个本地提交，旧版本已备份（可在历史窗口找回）",
                                                              comment: "settings status"), result.discardedCommits)
                 } else {
                     text = NSLocalizedString("✓ 已强制拉取：本地已更新到远程最新版本", comment: "settings status")
                 }
+                text += self?.movedCopiesNote(result.movedLocalCopies) ?? ""
                 self?.setMessage(id, text)
                 self?.fillRepoDetails(id: id)
             } catch {
@@ -633,6 +635,7 @@ final class SettingsModel: ObservableObject {
                                                              comment: "settings status"),
                                   result.addedFromRemote, result.keptLocalOnly, result.remoteCopies.count)
                 }
+                text += self?.movedCopiesNote(result.movedLocalCopies) ?? ""
                 if result.needsPush {
                     // A "sync" is a round trip: push the merge commit and any
                     // local-only commits so the remote gets the local files too.
@@ -658,6 +661,18 @@ final class SettingsModel: ObservableObject {
 
 
     /// v4.0.5: read-only repository integrity check (git fsck --full).
+    /// Note appended when a pull/sync had to move ignored local files aside
+    /// because the remote tree also adds them (v4.1.8).
+    private func movedCopiesNote(_ copies: [String]) -> String {
+        guard !copies.isEmpty else { return "" }
+        let shown = copies.prefix(3).joined(separator: "、")
+        let more = copies.count > 3
+            ? String(format: NSLocalizedString(" 等 %d 个文件", comment: "settings status"), copies.count)
+            : ""
+        return String(format: NSLocalizedString("；被占用的本地文件已另存为：%@%@（内容未丢失）", comment: "settings status"),
+                       shown, more)
+    }
+
     func checkIntegrity(_ id: String) {
         guard let svc = service else { return }
         setMessage(id, NSLocalizedString("正在检查仓库完整性…", comment: "settings status"))
@@ -676,6 +691,43 @@ final class SettingsModel: ObservableObject {
                 await MainActor.run {
                     self?.setMessage(id, String(format: NSLocalizedString("⚠️ 检查失败：%@", comment: "settings status"),
                                                 error.localizedDescription), error: true)
+                }
+            }
+        }
+    }
+
+    /// v4.1.8: a crash or force-quit can leave a half-applied rebase/merge that
+    /// blocks auto-commits and pulls. Offer a one-click cleanup.
+    func repairInterruptedOperation(_ id: String) {
+        guard let svc = service else { return }
+        Task { [weak self] in
+            guard let self else { return }
+            let state = await svc.repoManager.interruptedOperation(path: id)
+            if state.isEmpty {
+                await MainActor.run {
+                    self.setMessage(id, NSLocalizedString("没有发现未完成的合并或变基", comment: "settings status"))
+                }
+                return
+            }
+            let confirm = NSAlert()
+            confirm.messageText = NSLocalizedString("清理未完成的合并/变基？", comment: "settings alert")
+            confirm.informativeText = NSLocalizedString("上次的合并或变基没有正常结束（可能是崩溃或强退）。清理会丢弃那一步的中间状态，已提交的历史和文件不会丢失。",
+                                                        comment: "settings alert")
+            confirm.addButton(withTitle: NSLocalizedString("清理", comment: "settings alert"))
+            confirm.addButton(withTitle: NSLocalizedString("取消", comment: "settings alert"))
+            guard confirm.runModal() == .alertFirstButtonReturn else { return }
+            do {
+                if let cleaned = try await svc.repoManager.repairInterruptedOperation(path: id) {
+                    await MainActor.run {
+                        self.setMessage(id, String(format: NSLocalizedString("✓ 已清理未完成的%@，可以继续拉取/推送",
+                                                                             comment: "settings status"), cleaned))
+                        self.fillRepoDetails(id: id)
+                    }
+                }
+            } catch {
+                await MainActor.run {
+                    self.setMessage(id, String(format: NSLocalizedString("⚠️ 清理失败：%@", comment: "settings status"),
+                                               error.localizedDescription), error: true)
                 }
             }
         }
@@ -1103,6 +1155,7 @@ struct SettingsView: View {
                     Button("在 GitHub 建仓并绑定…") { model.createRepoTarget = repo.id }
                     Divider()
                     Button("检查仓库完整性…") { model.checkIntegrity(repo.id) }
+                    Button("修复未完成的合并/变基…") { model.repairInterruptedOperation(repo.id) }
                 }
                 .controlSize(.small)
                 .menuStyle(.borderlessButton)

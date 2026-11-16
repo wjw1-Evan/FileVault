@@ -243,10 +243,16 @@ final class SyncManagerTests: XCTestCase {
             GitCommandError(command: "push", exitCode: 1,
                             stderr: "remote: error: pre-receive hook declined"))
         XCTAssertTrue(hook?.contains("分支保护") == true)
+        let tooLargeStderr = """
+            remote: error: File big.bin is 150.00 MB; this exceeds GitHub's file size limit of 100.00 MB
+            remote: error: File photos/b.jpg is 120.00 MB; this exceeds GitHub's file size limit of 100.00 MB
+            """
         let tooLarge = SyncManager.deterministicPushRejection(
-            GitCommandError(command: "push", exitCode: 1,
-                            stderr: "remote: error: File big.bin is 150.00 MB; this exceeds GitHub's file size limit of 100.00 MB"))
+            GitCommandError(command: "push", exitCode: 1, stderr: tooLargeStderr))
         XCTAssertTrue(tooLarge?.contains("文件过大") == true)
+        XCTAssertTrue(tooLarge?.contains("big.bin") == true, tooLarge ?? "")
+        XCTAssertTrue(tooLarge?.contains("photos/b.jpg") == true, tooLarge ?? "")
+        XCTAssertEqual(SyncManager.oversizedFiles(in: tooLargeStderr), ["big.bin", "photos/b.jpg"])
         XCTAssertNil(SyncManager.deterministicPushRejection(
             GitCommandError(command: "push", exitCode: 1,
                             stderr: "fatal: unable to access 'https://x': Could not resolve host")))

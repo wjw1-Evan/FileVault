@@ -984,6 +984,69 @@ final class PullScenarioTests: XCTestCase {
                           error.recoverySuggestion ?? "")
         }
     }
+
+    /// Ignored local files (.DS_Store) that the remote starts tracking must not
+    /// block the pull: they are preserved as "本地副本" and nothing is lost
+    /// (v4.1.8).
+    func testPullPreservesIgnoredLocalFileInsteadOfFailing() async throws {
+        let (remote, seed) = try await seededRemote()
+        let machineB = try await cloneOf(remote, as: "machine-b-ignored-file")
+        // The remote starts tracking .DS_Store (force-added: it is gitignored).
+        TestSupport.write("remote version\n", to: seed + "/.DS_Store")
+        _ = try await repos.runner.run(["add", "-f", ".DS_Store"], cwd: seed)
+        _ = try await repos.runner.run(["commit", "-m", "test: track DS_Store"], cwd: seed)
+        await git(["push"], cwd: seed)
+        // Locally the same name is an ignored, untracked file with other content.
+        TestSupport.write("local version\n", to: machineB + "/.DS_Store")
+        let dirty = try await repos.status(path: machineB).count
+        XCTAssertEqual(dirty, 0, "the local .DS_Store must stay ignored")
+
+        let result = try await repos.pull(path: machineB)
+        XCTAssertEqual(result.movedLocalCopies, [".DS_Store (本地副本)"])
+        XCTAssertEqual(try String(contentsOfFile: machineB + "/.DS_Store", encoding: .utf8),
+                       "remote version\n")
+        XCTAssertEqual(try String(contentsOfFile: machineB + "/.DS_Store (本地副本)", encoding: .utf8),
+                       "local version\n", "the local content must not be lost")
+    }
+
+
+    /// Sync (keep local files) must protect ignored local files too: the merge
+    /// would otherwise overwrite them silently (v4.1.8).
+    func testMergeSyncPreservesIgnoredLocalFileInsteadOfFailing() async throws {
+        let (remote, seed) = try await seededRemote()
+        let machineB = try await cloneOf(remote, as: "machine-b-ignored-sync")
+        TestSupport.write("remote version\n", to: seed + "/.DS_Store")
+        _ = try await repos.runner.run(["add", "-f", ".DS_Store"], cwd: seed)
+        _ = try await repos.runner.run(["commit", "-m", "test: track DS_Store"], cwd: seed)
+        await git(["push"], cwd: seed)
+        TestSupport.write("local version\n", to: machineB + "/.DS_Store")
+
+        let result = try await repos.mergeSync(path: machineB)
+        XCTAssertEqual(result.movedLocalCopies, [".DS_Store (本地副本)"])
+        XCTAssertEqual(try String(contentsOfFile: machineB + "/.DS_Store", encoding: .utf8),
+                       "remote version\n")
+        XCTAssertEqual(try String(contentsOfFile: machineB + "/.DS_Store (本地副本)", encoding: .utf8),
+                       "local version\n", "the local content must not be lost")
+    }
+    /// The same protection applies to the destructive force pull reset.
+    func testForcePullPreservesIgnoredLocalFileInsteadOfFailing() async throws {
+        let (remote, seed) = try await seededRemote()
+        let machineB = try await cloneOf(remote, as: "machine-b-ignored-force")
+        TestSupport.write("remote version\n", to: seed + "/.DS_Store")
+        _ = try await repos.runner.run(["add", "-f", ".DS_Store"], cwd: seed)
+        _ = try await repos.runner.run(["commit", "-m", "test: track DS_Store"], cwd: seed)
+        await git(["push"], cwd: seed)
+        TestSupport.write("local version\n", to: machineB + "/.DS_Store")
+
+        let result = try await repos.forcePull(path: machineB)
+        XCTAssertEqual(result.movedLocalCopies, [".DS_Store (本地副本)"])
+        XCTAssertEqual(try String(contentsOfFile: machineB + "/.DS_Store", encoding: .utf8),
+                       "remote version\n")
+        XCTAssertEqual(try String(contentsOfFile: machineB + "/.DS_Store (本地副本)", encoding: .utf8),
+                       "local version\n", "the local content must not be lost")
+        let seedHead = try await repos.resolveHead(path: seed)
+        XCTAssertEqual(result.headAfter, seedHead)
+    }
 }
 
 /// The auto-commit pipeline must stay out of the way while a pull's rebase or a
@@ -1029,5 +1092,80 @@ final class CommitPipelineGuardTests: XCTestCase {
         XCTAssertEqual(afterClean, 1, "pipeline commits again when the repo is free")
         let dirty = try await repos.status(path: dir).count
         XCTAssertEqual(dirty, 0)
+    }
+}
+
+
+/// A crash or force-quit can leave a half-applied rebase/merge behind; the
+/// repair action must clear it without touching committed history (v4.1.8).
+final class InterruptedOperationRepairTests: XCTestCase {
+    private var root = ""
+    private var repos: RepoManager!
+
+    override func setUp() async throws {
+        root = TestSupport.makeTempDir("repair")
+        repos = RepoManager(runner: TestSupport.newRunner())
+    }
+
+    override func tearDown() async throws {
+        if !root.isEmpty { try? FileManager.default.removeItem(atPath: root) }
+    }
+
+    private func git(_ args: [String], _ cwd: String) async {
+        _ = try? await repos.runner.run(args, cwd: cwd)
+    }
+
+    func testRepairCleansLeftoverRebaseAndMerge() async throws {
+        let dir = root + "/repo"
+        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        TestSupport.write("seed\n", to: dir + "/seed.md")
+        _ = try await repos.ensureRepo(at: dir)
+        let base = try await repos.resolveHead(path: dir)
+
+        // A real conflicting rebase leaves .git/rebase-merge behind.
+        await git(["checkout", "-b", "other"], dir)
+        TestSupport.write("other\n", to: dir + "/seed.md")
+        _ = try await repos.commitAll(path: dir, message: "test: other")
+        await git(["checkout", "main"], dir)
+        TestSupport.write("main\n", to: dir + "/seed.md")
+        _ = try await repos.commitAll(path: dir, message: "test: main")
+        let mainHead = try await repos.resolveHead(path: dir)
+        XCTAssertNotEqual(mainHead, base)
+        await git(["rebase", "other"], dir)
+
+        var state = await repos.interruptedOperation(path: dir)
+        XCTAssertTrue(state.rebase, "a conflicted rebase must be detected")
+        XCTAssertFalse(state.isEmpty)
+        let cleanedRebase = try await repos.repairInterruptedOperation(path: dir)
+        XCTAssertNotNil(cleanedRebase, "the leftover rebase must be cleaned")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: dir + "/.git/rebase-merge"))
+        let afterRebaseRepair = try await repos.resolveHead(path: dir)
+        XCTAssertEqual(afterRebaseRepair, mainHead, "aborting must restore the original HEAD")
+        let dirtyAfterRebase = try await repos.status(path: dir).count
+        XCTAssertEqual(dirtyAfterRebase, 0)
+
+        // A real conflicting merge leaves MERGE_HEAD behind.
+        await git(["merge", "other"], dir)
+        state = await repos.interruptedOperation(path: dir)
+        XCTAssertTrue(state.merge, "a conflicted merge must be detected")
+        let cleanedMerge = try await repos.repairInterruptedOperation(path: dir)
+        XCTAssertNotNil(cleanedMerge, "the leftover merge must be cleaned")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: dir + "/.git/MERGE_HEAD"))
+        let afterMergeRepair = try await repos.resolveHead(path: dir)
+        XCTAssertEqual(afterMergeRepair, mainHead)
+    }
+
+    func testRepairIsNoOpWhenNothingPending() async throws {
+        let dir = root + "/clean"
+        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        TestSupport.write("seed\n", to: dir + "/seed.md")
+        _ = try await repos.ensureRepo(at: dir)
+        let head = try await repos.resolveHead(path: dir)
+        let state = await repos.interruptedOperation(path: dir)
+        XCTAssertTrue(state.isEmpty)
+        let cleaned = try await repos.repairInterruptedOperation(path: dir)
+        XCTAssertNil(cleaned)
+        let headAfter = try await repos.resolveHead(path: dir)
+        XCTAssertEqual(headAfter, head)
     }
 }

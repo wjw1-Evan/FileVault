@@ -660,6 +660,21 @@ public final class RepoManager: @unchecked Sendable {
         /// Local commits replayed on top of the remote (0 for a fast-forward).
         public let replayedCommits: Int
         public let strategy: Strategy
+        /// Local files that blocked the checkout (ignored but tracked remotely);
+        /// they were preserved next to the original as "name (本地副本).ext".
+        public let movedLocalCopies: [String]
+
+        public init(output: String, headBefore: String?, headAfter: String,
+                    pulledCommits: Int, replayedCommits: Int, strategy: Strategy,
+                    movedLocalCopies: [String] = []) {
+            self.output = output
+            self.headBefore = headBefore
+            self.headAfter = headAfter
+            self.pulledCommits = pulledCommits
+            self.replayedCommits = replayedCommits
+            self.strategy = strategy
+            self.movedLocalCopies = movedLocalCopies
+        }
     }
 
     /// Pull: fast-forward when possible, auto-rebase when both sides moved
@@ -702,13 +717,32 @@ public final class RepoManager: @unchecked Sendable {
         }
         let before = try? await resolveHead(path: path)
 
+        // Protect ignored local files the incoming commits would overwrite: git
+        // overwrites them silently, which would lose the local content.
+        var movedLocalCopies = await protectIncomingIgnoredFiles(path: path, remote: target.remote,
+                                                                 branch: target.branch)
+
         // 1. Fast-forward: the common case, no local-only commits.
-        let ff = try await runNetwork(["pull", "--ff-only", target.remote, target.branch], cwd: path)
+        let ffArgs = ["pull", "--ff-only", target.remote, target.branch]
+        var ff = try await runNetwork(ffArgs, cwd: path)
+        if !ff.succeeded {
+            // Ignored local files (e.g. .DS_Store) that the remote also tracks
+            // block the checkout; keep them as "(本地副本)" and retry once.
+            let blocked = blockedUntrackedFiles(stderr: ff.stderr)
+            if !blocked.isEmpty {
+                let moved = await moveBlockedFilesAside(path: path, files: blocked)
+                if !moved.isEmpty {
+                    movedLocalCopies = moved
+                    ff = try await runNetwork(ffArgs, cwd: path)
+                }
+            }
+        }
         if ff.succeeded {
             let after = (try? await resolveHead(path: path)) ?? ""
             return PullResult(output: ff.stdout, headBefore: before, headAfter: after,
                               pulledCommits: await countCommits(path: path, from: before, to: after),
-                              replayedCommits: 0, strategy: .fastForward)
+                              replayedCommits: 0, strategy: .fastForward,
+                              movedLocalCopies: movedLocalCopies)
         }
         // Only divergence is reconciled automatically; auth/network/missing
         // branch/dirty-tree failures are reported as they are.
@@ -720,15 +754,26 @@ public final class RepoManager: @unchecked Sendable {
         guard await historySharesAncestor(path: path) else { throw PullError.unrelatedHistories }
 
         // 2. Replay local-only auto-commits on top of the remote tip.
-        let rebase = try await runNetwork(
-            ["-c", "rebase.autoStash=false", "pull", "--rebase", target.remote, target.branch], cwd: path)
+        let rebaseArgs = ["-c", "rebase.autoStash=false", "pull", "--rebase",
+                          target.remote, target.branch]
+        var rebase = try await runNetwork(rebaseArgs, cwd: path)
+        if !rebase.succeeded {
+            let blocked = blockedUntrackedFiles(stderr: rebase.stderr)
+            if !blocked.isEmpty {
+                let moved = await moveBlockedFilesAside(path: path, files: blocked)
+                if !moved.isEmpty {
+                    movedLocalCopies += moved
+                    rebase = try await runNetwork(rebaseArgs, cwd: path)
+                }
+            }
+        }
         if rebase.succeeded {
             let after = (try? await resolveHead(path: path)) ?? ""
             let remoteTip = await fetchHeadSHA(path: path) ?? after
             return PullResult(output: rebase.stdout, headBefore: before, headAfter: after,
                               pulledCommits: await countCommits(path: path, from: before, to: remoteTip),
                               replayedCommits: await countCommits(path: path, from: remoteTip, to: after),
-                              strategy: .rebased)
+                              strategy: .rebased, movedLocalCopies: movedLocalCopies)
         }
 
         // 3. Something stopped the rebase. Capture the conflicts, abort, and
@@ -756,6 +801,17 @@ public final class RepoManager: @unchecked Sendable {
         public let headAfter: String
         /// Local commits that are no longer on the branch (0 = plain catch-up).
         public let discardedCommits: Int
+        /// Blocked local files preserved as "name (本地副本).ext" before the reset.
+        public let movedLocalCopies: [String]
+
+        public init(backupRef: String?, replacedHead: String?, headAfter: String,
+                    discardedCommits: Int, movedLocalCopies: [String] = []) {
+            self.backupRef = backupRef
+            self.replacedHead = replacedHead
+            self.headAfter = headAfter
+            self.discardedCommits = discardedCommits
+            self.movedLocalCopies = movedLocalCopies
+        }
     }
 
     /// Make the local branch identical to the remote tip, discarding local
@@ -819,7 +875,21 @@ public final class RepoManager: @unchecked Sendable {
             backupRef = ref
         }
 
-        let reset = try await runner.run(["reset", "--hard", remoteTip], cwd: path)
+        // Keep ignored local files that the remote tree would silently replace.
+        var movedLocalCopies = await protectIncomingIgnoredFiles(path: path, remoteTip: remoteTip)
+        var reset = try await runner.run(["reset", "--hard", remoteTip], cwd: path)
+        if !reset.succeeded {
+            // Ignored local files can sit exactly where the remote tree adds a
+            // file; preserve them as "(本地副本)" and retry instead of failing.
+            let blocked = blockedUntrackedFiles(stderr: reset.stderr)
+            if !blocked.isEmpty {
+                let moved = await moveBlockedFilesAside(path: path, files: blocked)
+                if !moved.isEmpty {
+                    movedLocalCopies = moved
+                    reset = try await runner.run(["reset", "--hard", remoteTip], cwd: path)
+                }
+            }
+        }
         guard reset.succeeded else {
             throw GitCommandError(command: "reset --hard", exitCode: reset.exitCode, stderr: reset.stderr)
         }
@@ -832,7 +902,8 @@ public final class RepoManager: @unchecked Sendable {
             discarded = await countCommits(path: path, from: remoteTip, to: oldHead)
         }
         return ForcePullResult(backupRef: backupRef, replacedHead: oldHead,
-                              headAfter: after, discardedCommits: discarded)
+                              headAfter: after, discardedCommits: discarded,
+                              movedLocalCopies: movedLocalCopies)
     }
 
     /// Remote/branch a pull should fast-forward from: the configured upstream
@@ -924,6 +995,50 @@ public final class RepoManager: @unchecked Sendable {
         return await mergeInProgress(path: path)
     }
 
+
+    /// A leftover half-applied rebase/merge (crash or force-quit) that blocks
+    /// auto-commits and remote operations (v4.1.8).
+    public struct InterruptedOperation: Sendable, Equatable {
+        public let rebase: Bool
+        public let merge: Bool
+        public var isEmpty: Bool { !rebase && !merge }
+    }
+
+    /// Inspect leftover rebase/merge state without changing anything.
+    public func interruptedOperation(path: String) async -> InterruptedOperation {
+        InterruptedOperation(rebase: await rebaseInProgress(path: path),
+                             merge: await mergeInProgress(path: path))
+    }
+
+    /// Abort a leftover rebase/merge so commits and pulls work again. Committed
+    /// history and working-tree files are preserved; only the half-applied
+    /// operation's intermediate state is discarded. Returns what was cleaned
+    /// (nil when nothing was pending).
+    @discardableResult
+    public func repairInterruptedOperation(path: String) async throws -> String? {
+        try await acquireRemoteOp(path)
+        defer { releaseRemoteOp(path) }
+        let state = await interruptedOperation(path: path)
+        guard !state.isEmpty else { return nil }
+        var cleared: [String] = []
+        if state.rebase {
+            let r = try await runner.run(["rebase", "--abort"], cwd: path)
+            guard r.succeeded else {
+                throw GitCommandError(command: "rebase --abort", exitCode: r.exitCode, stderr: r.stderr)
+            }
+            cleared.append(NSLocalizedString("变基", comment: "repair interrupted operation"))
+        }
+        if await mergeInProgress(path: path) {
+            let m = try await runner.run(["merge", "--abort"], cwd: path)
+            guard m.succeeded else {
+                throw GitCommandError(command: "merge --abort", exitCode: m.exitCode, stderr: m.stderr)
+            }
+            cleared.append(NSLocalizedString("合并", comment: "repair interrupted operation"))
+        }
+        return cleared.isEmpty ? nil
+            : cleared.joined(separator: NSLocalizedString("、", comment: "repair list joiner"))
+    }
+
     /// Whether a path under .git (e.g. "MERGE_HEAD") exists, including in
     /// worktrees where `rev-parse --git-path` resolves outside the folder.
     private func gitPathExists(path: String, name: String) async -> Bool {
@@ -962,6 +1077,8 @@ public final class RepoManager: @unchecked Sendable {
         /// Commits on the local branch that the remote does not have yet, i.e.
         /// work still to be pushed after the sync (0 = nothing to push).
         public let aheadCommits: Int
+        /// Blocked local files preserved as "name (本地副本).ext" while merging.
+        public let movedLocalCopies: [String]
         /// Whether new commits were created (false when already in sync).
         public var didChange: Bool { headBefore != headAfter }
         /// Whether the sync has local work the remote is still missing.
@@ -972,6 +1089,19 @@ public final class RepoManager: @unchecked Sendable {
             public let path: String
             /// Where the remote version was saved, e.g. "note (远程副本).md".
             public let copyPath: String
+        }
+
+        public init(headBefore: String?, headAfter: String, addedFromRemote: Int,
+                    keptLocalOnly: Int, remoteCopies: [RemoteCopy], backupRef: String?,
+                    aheadCommits: Int, movedLocalCopies: [String] = []) {
+            self.headBefore = headBefore
+            self.headAfter = headAfter
+            self.addedFromRemote = addedFromRemote
+            self.keptLocalOnly = keptLocalOnly
+            self.remoteCopies = remoteCopies
+            self.backupRef = backupRef
+            self.aheadCommits = aheadCommits
+            self.movedLocalCopies = movedLocalCopies
         }
     }
 
@@ -1020,7 +1150,18 @@ public final class RepoManager: @unchecked Sendable {
 
         // No local commits yet: just take the remote tree.
         guard let oldHead else {
-            let reset = try await runner.run(["reset", "--hard", remoteTip], cwd: path)
+            var movedLocalCopies = await protectIncomingIgnoredFiles(path: path, remoteTip: remoteTip)
+            var reset = try await runner.run(["reset", "--hard", remoteTip], cwd: path)
+            if !reset.succeeded {
+                let blocked = blockedUntrackedFiles(stderr: reset.stderr)
+                if !blocked.isEmpty {
+                    let moved = await moveBlockedFilesAside(path: path, files: blocked)
+                    if !moved.isEmpty {
+                        movedLocalCopies = moved
+                        reset = try await runner.run(["reset", "--hard", remoteTip], cwd: path)
+                    }
+                }
+            }
             guard reset.succeeded else {
                 throw GitCommandError(command: "reset --hard", exitCode: reset.exitCode, stderr: reset.stderr)
             }
@@ -1032,7 +1173,8 @@ public final class RepoManager: @unchecked Sendable {
             let counts = await treeDiffCounts(path: path, old: nil, new: remoteTip)
             return MergeSyncResult(headBefore: nil, headAfter: after,
                                    addedFromRemote: counts.added, keptLocalOnly: 0,
-                                   remoteCopies: [], backupRef: nil, aheadCommits: 0)
+                                   remoteCopies: [], backupRef: nil, aheadCommits: 0,
+                                   movedLocalCopies: movedLocalCopies)
         }
         if oldHead == remoteTip {
             return MergeSyncResult(headBefore: oldHead, headAfter: oldHead,
@@ -1049,7 +1191,18 @@ public final class RepoManager: @unchecked Sendable {
         }
         if await isAncestor(oldHead, of: remoteTip, path: path) {
             // Local is behind: a fast-forward cannot lose local files.
-            let ff = try await runner.run(["merge", "--ff-only", remoteTip], cwd: path)
+            var movedLocalCopies = await protectIncomingIgnoredFiles(path: path, remoteTip: remoteTip)
+            var ff = try await runner.run(["merge", "--ff-only", remoteTip], cwd: path)
+            if !ff.succeeded {
+                let blocked = blockedUntrackedFiles(stderr: ff.stderr)
+                if !blocked.isEmpty {
+                    let moved = await moveBlockedFilesAside(path: path, files: blocked)
+                    if !moved.isEmpty {
+                        movedLocalCopies = moved
+                        ff = try await runner.run(["merge", "--ff-only", remoteTip], cwd: path)
+                    }
+                }
+            }
             guard ff.succeeded else {
                 throw GitCommandError(command: "merge --ff-only", exitCode: ff.exitCode, stderr: ff.stderr)
             }
@@ -1057,7 +1210,8 @@ public final class RepoManager: @unchecked Sendable {
             let counts = await treeDiffCounts(path: path, old: oldHead, new: remoteTip)
             return MergeSyncResult(headBefore: oldHead, headAfter: after,
                                    addedFromRemote: counts.added, keptLocalOnly: 0,
-                                   remoteCopies: [], backupRef: nil, aheadCommits: 0)
+                                   remoteCopies: [], backupRef: nil, aheadCommits: 0,
+                                   movedLocalCopies: movedLocalCopies)
         }
 
         // Keep the replaced HEAD recoverable before touching the working tree.
@@ -1073,7 +1227,21 @@ public final class RepoManager: @unchecked Sendable {
         var mergeArgs = ["merge", "--no-commit", "--no-ff"]
         if !related { mergeArgs.append("--allow-unrelated-histories") }
         mergeArgs.append(remoteTip)
-        let merge = try await runner.run(mergeArgs, cwd: path)
+        var movedLocalCopies = await protectIncomingIgnoredFiles(path: path, remoteTip: remoteTip)
+        var merge = try await runner.run(mergeArgs, cwd: path)
+        if !merge.succeeded {
+            let blocked = blockedUntrackedFiles(stderr: merge.stderr)
+            if !blocked.isEmpty {
+                let moved = await moveBlockedFilesAside(path: path, files: blocked)
+                if !moved.isEmpty {
+                    if await mergeInProgress(path: path) {
+                        _ = try? await runner.run(["merge", "--abort"], cwd: path)
+                    }
+                    movedLocalCopies = moved
+                    merge = try await runner.run(mergeArgs, cwd: path)
+                }
+            }
+        }
         let conflicts = await unmergedPaths(path: path)
         guard merge.succeeded || !conflicts.isEmpty else {
             // Not a conflict (e.g. an untracked file in the way): undo everything.
@@ -1130,7 +1298,111 @@ public final class RepoManager: @unchecked Sendable {
         return MergeSyncResult(headBefore: oldHead, headAfter: after,
                                addedFromRemote: counts.added, keptLocalOnly: counts.deleted,
                                remoteCopies: copies, backupRef: backupRef,
-                               aheadCommits: await countCommits(path: path, from: remoteTip, to: after))
+                               aheadCommits: await countCommits(path: path, from: remoteTip, to: after),
+                               movedLocalCopies: movedLocalCopies)
+    }
+
+    /// Files a checkout/merge refuses because the remote tree also adds them
+    /// while they are untracked locally (typically ignored files such as
+    /// .DS_Store). Moving them aside keeps them instead of telling the user to
+    /// delete their files (v4.1.8).
+    private func blockedUntrackedFiles(stderr: String) -> [String] {
+        let lines = stderr.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        guard let header = lines.firstIndex(where: {
+            $0.contains("untracked working tree files would be overwritten")
+        }) else { return [] }
+        var files: [String] = []
+        for line in lines[(header + 1)...] {
+            if line.hasPrefix("\t") || line.hasPrefix("    ") {
+                let file = line.trimmingCharacters(in: .whitespaces)
+                if !file.isEmpty { files.append(file) }
+            } else if !line.trimmingCharacters(in: .whitespaces).isEmpty {
+                break
+            }
+        }
+        if !files.isEmpty { return files }
+        // Singular form: "error: Untracked working tree file '.DS_Store' would be
+        // overwritten by merge."
+        if let start = stderr.range(of: "Untracked working tree file '"),
+           let end = stderr.range(of: "' would be overwritten", range: start.upperBound..<stderr.endIndex) {
+            let name = String(stderr[start.upperBound..<end.lowerBound])
+            if !name.isEmpty { return [name] }
+        }
+        return []
+    }
+
+    /// Ignored, untracked local files that the incoming remote commits add or
+    /// change. Git silently overwrites ignored files during checkout, so their
+    /// content must be preserved BEFORE the pull/reset/merge runs (v4.1.8).
+    private func protectIncomingIgnoredFiles(path: String, remoteTip: String) async -> [String] {
+        guard let diff = try? await runner.run(["diff", "--name-only", "-z", "HEAD", remoteTip], cwd: path),
+              diff.succeeded else { return [] }
+        let incoming = Set(diff.stdout.split(separator: "\0").map(String.init))
+        guard !incoming.isEmpty else { return [] }
+        guard let ignored = try? await runner.run(
+                ["ls-files", "--others", "--ignored", "--exclude-standard", "-z"], cwd: path),
+              ignored.succeeded else { return [] }
+        let blocked = ignored.stdout.split(separator: "\0").map(String.init)
+            .filter { incoming.contains($0) }
+        guard !blocked.isEmpty else { return [] }
+        return await moveBlockedFilesAside(path: path, files: blocked)
+    }
+
+    /// Fetch the incoming branch, then protect ignored files it would overwrite.
+    private func protectIncomingIgnoredFiles(path: String, remote: String,
+                                             branch: String) async -> [String] {
+        let fetch = try? await runNetwork(["fetch", remote, branch], cwd: path)
+        guard fetch?.succeeded == true,
+              let tip = await remoteTrackingSHA(path: path, remote: remote, branch: branch) else {
+            return []
+        }
+        return await protectIncomingIgnoredFiles(path: path, remoteTip: tip)
+    }
+
+    /// Move blocked local files aside, keeping their content. Returns the paths
+    /// where they were preserved (relative to the repo root).
+    private func moveBlockedFilesAside(path: String, files: [String]) async -> [String] {
+        let fm = FileManager.default
+        var moved: [String] = []
+        for file in files {
+            let src = (path as NSString).appendingPathComponent(file)
+            guard fm.fileExists(atPath: src) else { continue }
+            guard let copy = Self.localCopyPath(for: file, exists: { relative in
+                fm.fileExists(atPath: (path as NSString).appendingPathComponent(relative))
+            }) else { continue }
+            let dst = (path as NSString).appendingPathComponent(copy)
+            try? fm.createDirectory(atPath: (dst as NSString).deletingLastPathComponent,
+                                    withIntermediateDirectories: true)
+            do {
+                try fm.moveItem(atPath: src, toPath: dst)
+                moved.append(copy)
+            } catch {
+                continue
+            }
+        }
+        return moved
+    }
+
+    /// "name (本地副本).ext" — a unique sibling path for a blocked local file.
+    static func localCopyPath(for file: String, exists: (String) -> Bool) -> String? {
+        let ns = file as NSString
+        let dir = ns.deletingLastPathComponent
+        let base = ns.lastPathComponent as NSString
+        let ext = base.pathExtension
+        let stem = base.deletingPathExtension
+        func candidate(_ index: Int) -> String {
+            let suffix = index == 1
+                ? NSLocalizedString(" (本地副本)", comment: "blocked local file copy suffix")
+                : String(format: NSLocalizedString(" (本地副本 %d)", comment: "blocked local file copy suffix"), index)
+            let name = ext.isEmpty ? stem + suffix : stem + suffix + "." + ext
+            return dir.isEmpty ? name : dir + "/" + name
+        }
+        var index = 1
+        while exists(candidate(index)) {
+            index += 1
+            if index > 99 { return nil }
+        }
+        return candidate(index)
     }
 
     /// "name (远程副本).ext" - a unique sibling path for the remote version.
