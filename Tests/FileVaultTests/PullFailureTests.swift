@@ -1064,6 +1064,36 @@ final class PullScenarioTests: XCTestCase {
         let seedHead = try await repos.resolveHead(path: seed)
         XCTAssertEqual(result.headAfter, seedHead)
     }
+
+    /// Several remotes and no upstream: the in-app choice sets the upstream so
+    /// the automatic sync has a target (v4.2.1).
+    func testUpstreamRemoteSelectionResolvesAmbiguity() async throws {
+        let (remote, _) = try await seededRemote()
+        let machineB = try await cloneOf(remote, as: "machine-b-select")
+        // Make BOTH remotes non-origin, then drop the upstream the clone set.
+        await git(["remote", "rename", "origin", "alpha"], cwd: machineB)
+        let beta = try await makeBareRemote("beta.git")
+        await git(["remote", "add", "beta", beta], cwd: machineB)
+        await git(["config", "--unset", "branch.main.remote"], cwd: machineB)
+        await git(["config", "--unset", "branch.main.merge"], cwd: machineB)
+
+        let names = await repos.remoteNames(path: machineB)
+        XCTAssertEqual(names.sorted(), ["alpha", "beta"])
+        do {
+            _ = try await repos.pull(path: machineB)
+            XCTFail("ambiguous remotes should refuse")
+        } catch let error as PullError {
+            guard case .ambiguousRemote(let listed) = error else { return XCTFail("got \(error)") }
+            XCTAssertEqual(listed.sorted(), ["alpha", "beta"])
+        }
+
+        try await repos.setUpstreamRemote(path: machineB, remote: "alpha")
+        let upstream = try await repos.runner.run(
+            ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"], cwd: machineB)
+        XCTAssertEqual(upstream.stdout.trimmingCharacters(in: .whitespacesAndNewlines), "alpha/main")
+        let result = try await repos.pull(path: machineB)
+        XCTAssertEqual(result.pulledCommits, 0, "the pull now targets the chosen remote")
+    }
 }
 
 /// The auto-commit pipeline must stay out of the way while a pull's rebase or a

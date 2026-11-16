@@ -79,7 +79,17 @@ public final class GitRunner: Sendable {
         // escapes by default ("笔记/\346..." style), which shows up as garbled
         // filenames in the history window and breaks downstream path handling
         // (v2.6.2). `-c` before the subcommand applies to every invocation.
-        process.arguments = ["-c", "core.quotepath=false"] + args
+        //
+        // safe.directory (v4.1.10): folders on external disks or created by
+        // another macOS account are owned by a different user, and git refuses
+        // ALL commands with "dubious ownership". FileVault only ever operates on
+        // folders the user explicitly added, so trusting that folder for this
+        // process (command-line scope, NOT the user's global config) is right.
+        var execArgs = ["-c", "core.quotepath=false"]
+        if let cwd, !cwd.isEmpty {
+            execArgs += ["-c", "safe.directory=" + cwd]
+        }
+        process.arguments = execArgs + args
 
         var e = ProcessInfo.processInfo.environment
         // Self-contained payloads (bundled/downloaded git) keep their libexec,

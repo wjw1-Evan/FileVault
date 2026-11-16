@@ -1379,6 +1379,29 @@ public final class RepoManager: @unchecked Sendable {
         return await moveBlockedFilesAside(path: path, files: blocked)
     }
 
+    /// Names of the configured remotes (for choosing which one to sync with).
+    public func remoteNames(path: String) async -> [String] {
+        await allRemotes(path: path).map(\.name)
+    }
+
+    /// Point the current branch's upstream at `remote` (used when several
+    /// remotes exist and a pull needs an explicit choice). Works even when the
+    /// remote branch does not exist yet: the next push -u creates it.
+    public func setUpstreamRemote(path: String, remote: String) async throws {
+        let head = try await runner.run(["symbolic-ref", "--quiet", "--short", "HEAD"], cwd: path)
+        let branch = head.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard head.succeeded, !branch.isEmpty else { throw PullError.detachedHead }
+        let r1 = try await runner.run(["config", "branch." + branch + ".remote", remote], cwd: path)
+        guard r1.succeeded else {
+            throw GitCommandError(command: "config branch.remote", exitCode: r1.exitCode, stderr: r1.stderr)
+        }
+        let r2 = try await runner.run(["config", "branch." + branch + ".merge", "refs/heads/" + branch],
+                                      cwd: path)
+        guard r2.succeeded else {
+            throw GitCommandError(command: "config branch.merge", exitCode: r2.exitCode, stderr: r2.stderr)
+        }
+    }
+
     /// Fetch the incoming branch, then protect ignored files it would overwrite.
     private func protectIncomingIgnoredFiles(path: String, remote: String,
                                              branch: String) async -> [String] {

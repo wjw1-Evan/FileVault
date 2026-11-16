@@ -136,6 +136,10 @@
 "Git 拒绝访问这个文件夹（文件夹所有者与本机账户不一致）" = "Git refuses this folder because its owner differs from the current account";
 "在终端执行 git config --global --add safe.directory <这个文件夹的路径> 后重试。" = "Run git config --global --add safe.directory <this folder> in Terminal, then retry.";
 "过期的锁文件" = "stale lock file";
+"同步使用的远程" = "Sync remote";
+"正在把同步远程设为 %@…" = "Setting the sync remote to %@…";
+"✓ 已把同步远程设为 %@，之后的自动同步都走它" = "✓ Sync remote set to %@; automatic syncing will use it";
+"⚠️ 设置远程失败：%@" = "⚠️ Could not set the remote: %@";
 "上次的合并、变基或 Git 操作没有正常结束（可能是崩溃或强退）。清理会丢弃那一步的中间状态（包括过期的 .git/index.lock），已提交的历史和文件不会丢失。" = "The last merge, rebase or Git operation did not finish (a crash or force-quit). Cleaning up discards only that step's intermediate state (including a stale .git/index.lock); committed history and files are kept.";
 "远程仓库与本地历史互不相关，不能快进合并" = "The remote and local histories are unrelated — cannot fast-forward";
 "本地与远程改动了同一个文件，自动合并已中止（仓库已恢复原状）" = "Local and remote changed the same file — the automatic merge was aborted (the repository is back to its previous state)";

@@ -17,6 +17,28 @@ final class GitRunnerTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: dir + "/.git"))
     }
 
+
+    /// FileVault only touches folders the user added, so every command trusts
+    /// that folder (command-line safe.directory) instead of failing on external
+    /// disks or folders created by another account (v4.2.1).
+    func testManagedFolderIsTrustedForSafeDirectory() async throws {
+        let dir = TestSupport.makeTempDir("safe-dir")
+        defer { try? FileManager.default.removeItem(atPath: dir) }
+        let script = dir + "/fake-git"
+        let out = dir + "/args.txt"
+        TestSupport.write("#!/bin/sh\nprintf '%s\\n' \"$@\" > " + out + "\nexit 0\n", to: script)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script)
+        let runner = GitRunner(gitExecutable: script)
+
+        _ = try await runner.run(["status"], cwd: dir)
+        let withCwd = try String(contentsOfFile: out, encoding: .utf8)
+        XCTAssertTrue(withCwd.contains("safe.directory=" + dir), withCwd)
+
+        // Without a working directory there is nothing to trust.
+        _ = try await runner.run(["status"])
+        let withoutCwd = try String(contentsOfFile: out, encoding: .utf8)
+        XCTAssertFalse(withoutCwd.contains("safe.directory"), withoutCwd)
+    }
     func testTimeoutThrows() async {
         let runner = GitRunner(gitExecutable: TestSupport.gitPath(), defaultTimeout: 0.1)
         do {

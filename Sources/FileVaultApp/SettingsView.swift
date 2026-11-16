@@ -18,6 +18,8 @@ struct RepoSection: Identifiable, Equatable {
     var authTokenSaved: Bool = false
     /// Remote-derived single-file ceiling, e.g. "100 MB（GitHub 硬限制）".
     var remoteLimit: String = "…"
+    /// Configured remote names (several → the user picks which one to sync with).
+    var remoteNames: [String] = []
     var message: String = ""
     var messageIsError: Bool = false
 }
@@ -121,6 +123,7 @@ final class SettingsModel: ObservableObject {
             let healthInfo = await svc.repoManager.health(path: id)
             let st = await svc.sync.status(for: id)
             let mode = await svc.repoManager.authMode(path: id)
+            let remoteNames = await svc.repoManager.remoteNames(path: id)
             // The remote is the only authority on the single-file ceiling, so
             // the UI just mirrors it (v3.1.3: no local threshold setting).
             let limitText: String
@@ -147,6 +150,7 @@ final class SettingsModel: ObservableObject {
                 self.rootCards[idx].repo.statusColor = glyph.color
                 self.rootCards[idx].repo.authMode = mode
                 self.rootCards[idx].repo.remoteLimit = limitText
+                self.rootCards[idx].repo.remoteNames = remoteNames
                 if let stored {
                     self.rootCards[idx].repo.authUser = stored.username
                     self.rootCards[idx].repo.authTokenSaved = !stored.password.isEmpty
@@ -499,6 +503,27 @@ final class SettingsModel: ObservableObject {
             } catch {
                 await MainActor.run {
                     self?.setMessage(id, String(format: NSLocalizedString("⚠️ 检查失败：%@", comment: "settings status"),
+                                                error.localizedDescription), error: true)
+                }
+            }
+        }
+    }
+
+    /// v4.2.1: several remotes exist — pick which one the automatic sync uses.
+    func setUpstreamRemote(_ id: String, remote: String) {
+        guard let svc = service else { return }
+        setMessage(id, String(format: NSLocalizedString("正在把同步远程设为 %@…", comment: "settings status"), remote))
+        Task { [weak self] in
+            do {
+                try await svc.repoManager.setUpstreamRemote(path: id, remote: remote)
+                await MainActor.run {
+                    self?.setMessage(id, String(format: NSLocalizedString("✓ 已把同步远程设为 %@，之后的自动同步都走它",
+                                                                         comment: "settings status"), remote))
+                    self?.fillRepoDetails(id: id)
+                }
+            } catch {
+                await MainActor.run {
+                    self?.setMessage(id, String(format: NSLocalizedString("⚠️ 设置远程失败：%@", comment: "settings status"),
                                                 error.localizedDescription), error: true)
                 }
             }
@@ -952,6 +977,14 @@ struct SettingsView: View {
                     .lineLimit(1)
                 Spacer(minLength: 4)
                 Menu("更多") {
+                    if repo.remoteNames.count > 1 {
+                        Menu("同步使用的远程") {
+                            ForEach(repo.remoteNames, id: \.self) { name in
+                                Button(name) { model.setUpstreamRemote(repo.id, remote: name) }
+                            }
+                        }
+                        Divider()
+                    }
                     Button("编辑忽略规则…") { model.openGitignoreEditor(repo.id) }
                     Button("在 GitHub 建仓并绑定…") { model.createRepoTarget = repo.id }
                     Divider()
