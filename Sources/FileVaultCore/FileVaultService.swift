@@ -23,10 +23,20 @@ public final class FileVaultService: @unchecked Sendable {
     var debouncer: Debouncer!
     public private(set) var authMonitor: AuthMonitor?
     private let lock = NSLock()
+    /// Periodic safety sweep: guarantees changes are committed even when an
+    /// FSEvents notification is missed (sleep/wake, dropped events) (v4.2.4).
+    public let sweepInterval: TimeInterval
+    private var sweepTask: Task<Void, Never>?
 
-    public init(configDirectory: URL? = nil, locator: GitLocator = SystemGitLocator()) {
+    public init(configDirectory: URL? = nil, locator: GitLocator = SystemGitLocator(),
+                sweepInterval: TimeInterval = 120) {
         self.configStore = ConfigStore(directory: configDirectory)
         self.envGuard = GitEnvGuard(locator: locator)
+        self.sweepInterval = sweepInterval
+    }
+
+    deinit {
+        sweepTask?.cancel()
     }
 
     /// Detect git, build services, load roots, ensure repos, start watchers.
@@ -94,12 +104,36 @@ public final class FileVaultService: @unchecked Sendable {
         Task { [weak self] in
             await self?.authMonitor?.runLoop(rootsProvider: { [weak self] in self?.rootsSnapshot() ?? rootsForAuth })
         }
+        // v4.2.4: periodic safety sweep. FSEvents can miss changes (sleep/wake,
+        // event queue overflow, watcher restarts); without this the change would
+        // stay uncommitted until the next edit.
+        let interval = sweepInterval
+        sweepTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: UInt64(max(interval, 1) * 1_000_000_000))
+                if Task.isCancelled { return }
+                await self?.sweepOnce()
+            }
+        }
         // FR-19: weekly gc maintenance, deferred out of the cold-start path.
         let rootsForMaintenance = rootsSnapshot()
         Task {
             try? await Task.sleep(nanoseconds: 60_000_000_000)
             for root in rootsForMaintenance {
                 await repoManager.runMaintenanceIfNeeded(path: root)
+            }
+        }
+    }
+
+    /// One safety-sweep pass: commit any dirty (unpaused) root. Exposed so tests
+    /// and the UI can trigger it deterministically (v4.2.4).
+    public func sweepOnce() async {
+        guard let repoManager, let commitEngine else { return }
+        for root in rootsSnapshot() {
+            if pause.isPaused(root: root) { continue }
+            let entries = (try? await repoManager.status(path: root)) ?? []
+            if !entries.isEmpty {
+                await commitEngine.runCommitPipeline(repoPath: root)
             }
         }
     }
