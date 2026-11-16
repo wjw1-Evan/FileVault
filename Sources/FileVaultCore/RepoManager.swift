@@ -9,8 +9,37 @@ import Foundation
 public final class RepoManager: @unchecked Sendable {
     public let runner: GitRunner
 
+    /// Serializes remote operations (pull / sync / force-pull) per folder: two
+    /// rebases on the same repo would fight over the index. The wait is async
+    /// (no thread blocking) and bounded.
+    private let remoteOpLock = NSLock()
+    private var remoteOpsBusy: Set<String> = []
+
     public init(runner: GitRunner) {
         self.runner = runner
+    }
+
+    /// Wait for the folder's remote-operation slot (throws `busy` after 60 s,
+    /// which only happens if a previous operation is genuinely stuck).
+    private func acquireRemoteOp(_ path: String) async throws {
+        let deadline = Date().addingTimeInterval(60)
+        while true {
+            remoteOpLock.lock()
+            if !remoteOpsBusy.contains(path) {
+                remoteOpsBusy.insert(path)
+                remoteOpLock.unlock()
+                return
+            }
+            remoteOpLock.unlock()
+            if Date() > deadline { throw PullError.busy }
+            try? await Task.sleep(nanoseconds: 50_000_000)
+        }
+    }
+
+    private func releaseRemoteOp(_ path: String) {
+        remoteOpLock.lock()
+        remoteOpsBusy.remove(path)
+        remoteOpLock.unlock()
     }
 
     // MARK: - Prepare
@@ -493,6 +522,8 @@ public final class RepoManager: @unchecked Sendable {
         // "fatal: not a git repository" on stderr and the user would be told to
         // fix a detached HEAD that does not exist.
         guard isRepo(at: path) else { throw PullError.notARepository }
+        try await acquireRemoteOp(path)
+        defer { releaseRemoteOp(path) }
         let headRef = try await runner.run(["symbolic-ref", "--quiet", "--short", "HEAD"], cwd: path)
         let branch = headRef.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
         guard headRef.succeeded, !branch.isEmpty else { throw PullError.detachedHead }
@@ -576,6 +607,8 @@ public final class RepoManager: @unchecked Sendable {
     /// rollback, so they are part of the backup too.
     public func forcePull(path: String) async throws -> ForcePullResult {
         guard isRepo(at: path) else { throw PullError.notARepository }
+        try await acquireRemoteOp(path)
+        defer { releaseRemoteOp(path) }
         let headRef = try await runner.run(["symbolic-ref", "--quiet", "--short", "HEAD"], cwd: path)
         let branch = headRef.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
         guard headRef.succeeded, !branch.isEmpty else { throw PullError.detachedHead }
@@ -794,6 +827,8 @@ public final class RepoManager: @unchecked Sendable {
     /// still need pushing so the caller can finish the round trip.
     public func mergeSync(path: String) async throws -> MergeSyncResult {
         guard isRepo(at: path) else { throw PullError.notARepository }
+        try await acquireRemoteOp(path)
+        defer { releaseRemoteOp(path) }
         let headRef = try await runner.run(["symbolic-ref", "--quiet", "--short", "HEAD"], cwd: path)
         let branch = headRef.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
         guard headRef.succeeded, !branch.isEmpty else { throw PullError.detachedHead }

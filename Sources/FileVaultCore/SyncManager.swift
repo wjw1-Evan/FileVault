@@ -121,7 +121,10 @@ public actor SyncManager {
             }
             setState(repoPath, .pushing)
             do {
-                try await pushOnce(repoPath: repoPath)
+                // Another machine may have pushed first: reconcile (fast-forward
+                // / auto-rebase) and retry once instead of failing forever
+                // (v4.1.5).
+                try await pushWithReconcile(repoPath: repoPath)
                 setState(repoPath, .synced)
                 attempt = 0
                 if states[repoPath]?.needsPushAgain == true {
@@ -131,12 +134,13 @@ public actor SyncManager {
                 return
             } catch {
                 attempt += 1
-                let reason = (error as? GitCommandError)?.errorDescription ?? String(describing: error)
-                let message = AuthClassifier.isAuthRelated(reason)
-                    ? AuthClassifier.guidance() + "（" + reason + "）"
-                    : reason
-                onPushFailure(repoPath, message)
+                onPushFailure(repoPath, Self.pushFailureMessage(error))
                 setState(repoPath, .failed)
+                // A merge conflict / unrelated history needs a human decision;
+                // retrying on a timer cannot fix it.
+                if let pull = error as? PullError, Self.isDeterministic(pull) {
+                    return
+                }
                 if attempt >= maxAttempts {
                     return
                 }
@@ -170,14 +174,70 @@ public actor SyncManager {
         states[repoPath]?.task = nil
         setState(repoPath, .pushing)
         do {
-            try await pushOnce(repoPath: repoPath)
+            try await pushWithReconcile(repoPath: repoPath)
             setState(repoPath, .synced)
             return true
         } catch {
-            onPushFailure(repoPath, (error as? GitCommandError)?.errorDescription ?? String(describing: error))
+            onPushFailure(repoPath, Self.pushFailureMessage(error))
             setState(repoPath, .failed)
             return false
         }
+    }
+
+    /// Push once; when the rejection means "the remote moved on", reconcile with
+    /// the same rules as pull (fast-forward / auto-rebase; conflicts abort and
+    /// restore the repo) and retry once. Never force-pushes.
+    func pushWithReconcile(repoPath: String) async throws {
+        do {
+            try await pushOnce(repoPath: repoPath)
+        } catch {
+            guard Self.isRejectedPush(error) else { throw error }
+            // Never start a rebase while another operation owns the repository.
+            guard !(await repoManager.operationInProgress(path: repoPath)) else { throw error }
+            _ = try await repoManager.pull(path: repoPath)
+            try await pushOnce(repoPath: repoPath)
+        }
+    }
+
+    /// Whether a failed push was rejected because the remote has commits the
+    /// local branch does not have (reconciling can fix this).
+    static func isRejectedPush(_ error: Error) -> Bool {
+        guard let e = error as? GitCommandError else { return false }
+        let text = e.stderr.lowercased()
+        return text.contains("non-fast-forward")
+            || text.contains("fetch first")
+            || text.contains("failed to push some refs")
+            || text.contains("updates were rejected")
+            || text.contains("tip of your current branch is behind")
+    }
+
+    /// Failures only a human can resolve (conflict / unrelated histories / …):
+    /// the retry loop stops instead of hammering the remote.
+    static func isDeterministic(_ error: PullError) -> Bool {
+        switch error {
+        case .mergeConflict, .unrelatedHistories, .remoteBranchMissing, .ambiguousRemote,
+             .notARepository, .detachedHead:
+            return true
+        case .noRemote, .busy, .authenticationFailed, .networkFailed, .remoteUnavailable,
+             .localChanges, .failed:
+            return false
+        }
+    }
+
+    /// Notify text for a failed push (reuses pull wording where available).
+    static func pushFailureMessage(_ error: Error) -> String {
+        if let pull = error as? PullError {
+            let description = pull.errorDescription ?? String(describing: pull)
+            if let suggestion = pull.recoverySuggestion, !suggestion.isEmpty {
+                return description + "（" + suggestion + "）"
+            }
+            return description
+        }
+        let reason = (error as? GitCommandError)?.errorDescription ?? String(describing: error)
+        if AuthClassifier.isAuthRelated(reason) {
+            return AuthClassifier.guidance() + "（" + reason + "）"
+        }
+        return reason
     }
 
     private func setState(_ path: String, _ s: SyncStatus) {

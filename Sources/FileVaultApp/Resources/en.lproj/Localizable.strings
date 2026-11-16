@@ -117,6 +117,8 @@
 "网络连接失败，无法访问远程仓库" = "Network failure — the remote repository is unreachable";
 "无法访问远程仓库（地址有误或没有权限）" = "Cannot access the remote repository (wrong URL or no permission)";
 "本地未提交的改动阻碍了拉取" = "Uncommitted local changes are blocking the pull";
+"这个文件夹正在执行另一次同步操作" = "Another sync operation is already running for this folder";
+"等当前操作完成（通常几秒）后重试。" = "Wait for it to finish (usually a few seconds) and try again.";
 "仓库有多个远程，无法确定从哪个拉取" = "This repository has several remotes — cannot tell which one to pull from";
 "这个文件夹已经不是 Git 仓库（可能被移动、删除，或磁盘未挂载）" = "This folder is no longer a Git repository (it may have moved, been deleted, or its disk is unmounted)";
 "在终端执行 git branch --set-upstream-to=<远程>/<分支> 指定上游后再试。" = "Set an upstream in Terminal with git branch --set-upstream-to=<remote>/<branch> and try again.";

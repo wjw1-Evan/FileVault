@@ -33,6 +33,8 @@ public enum PullError: Error, LocalizedError, Equatable {
     case networkFailed(detail: String)
     case remoteUnavailable(detail: String)
     case localChanges(detail: String)
+    /// Another pull/sync on this folder is still running (waited 60 s).
+    case busy
     case failed(detail: String)
 
     public var errorDescription: String? {
@@ -65,6 +67,8 @@ public enum PullError: Error, LocalizedError, Equatable {
             return NSLocalizedString("无法访问远程仓库（地址有误或没有权限）", comment: "pull error")
         case .localChanges:
             return NSLocalizedString("本地未提交的改动阻碍了拉取", comment: "pull error")
+        case .busy:
+            return NSLocalizedString("这个文件夹正在执行另一次同步操作", comment: "pull error")
         case .failed(let detail):
             if detail.isEmpty {
                 return String(format: NSLocalizedString("拉取失败：%@", comment: "pull error"),
@@ -115,6 +119,8 @@ public enum PullError: Error, LocalizedError, Equatable {
                                      comment: "pull recovery")
         case .localChanges:
             return NSLocalizedString("等自动提交完成（通常 5 秒）后重试。", comment: "pull recovery")
+        case .busy:
+            return NSLocalizedString("等当前操作完成（通常几秒）后重试。", comment: "pull recovery")
         case .failed:
             return nil
         }
@@ -129,7 +135,7 @@ public enum PullError: Error, LocalizedError, Equatable {
         case .mergeConflict(let files, _):
             return files.isEmpty ? nil : files.joined(separator: ", ")
         case .noRemote, .ambiguousRemote, .notARepository, .detachedHead,
-             .remoteBranchMissing, .unrelatedHistories:
+             .remoteBranchMissing, .unrelatedHistories, .busy:
             return nil
         }
     }
