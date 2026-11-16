@@ -97,7 +97,8 @@ public final class FileVaultService: @unchecked Sendable {
             // root and keep the rest of the vault working. It stays in the
             // config so the user can reconnect it from Settings.
             do {
-                try await attachRoot(path: root.path, paused: root.paused)
+                try await attachRoot(path: root.path, paused: root.paused,
+                                     announceReinitialisation: true)
             } catch {
                 if ProcessInfo.processInfo.environment["FV_DEBUG"] != nil {
                     print("[FV_DEBUG] attachRoot skipped \(root.path): \(error)")
@@ -245,7 +246,8 @@ public final class FileVaultService: @unchecked Sendable {
     ///
     /// The root is only registered once preparation succeeded, so a missing or
     /// unwritable folder can never appear as "attached but unwatched".
-    private func attachRoot(path: String, paused: Bool) async throws {
+    private func attachRoot(path: String, paused: Bool,
+                            announceReinitialisation: Bool = false) async throws {
         let p = resolved(path)
         lock.lock()
         let alreadyAttached = watchers[p] != nil
@@ -258,7 +260,18 @@ public final class FileVaultService: @unchecked Sendable {
             throw FileVaultServiceError.rootMissing
         }
         // v4.0: the managed root itself is the one repo.
+        let hadRepo = FileManager.default.fileExists(
+            atPath: (p as NSString).appendingPathComponent(".git"))
+        let contentsBefore = (try? FileManager.default.contentsOfDirectory(atPath: p)) ?? []
         _ = try await repoManager.ensureRepo(at: p)
+        if announceReinitialisation, !hadRepo, !contentsBefore.isEmpty {
+            // A configured root silently losing its .git would otherwise come
+            // back as an EMPTY history with no explanation (v4.2.8).
+            onFailure(NSLocalizedString("受保护文件夹被重新初始化", comment: "notification title"),
+                      String(format: NSLocalizedString("%@：.git 不见了（可能被删除或移动），已重新初始化为空历史；如果之前推送过远程，请在设置里重新填写远程地址以恢复同步",
+                                                       comment: "repo reinitialised"),
+                             (p as NSString).lastPathComponent))
+        }
         // v4.2: syncing is the app's only remote mode — a repo that already has
         // a remote but still carries the old "auto-push off" flag is switched on
         // so an upgraded install keeps syncing without any user action.

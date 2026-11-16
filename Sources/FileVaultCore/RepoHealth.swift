@@ -8,16 +8,24 @@ public struct RepoHealth: Equatable, Sendable {
     /// Files that were auto-excluded because they exceed the remote's single
     /// file limit — they are NOT backed up, so the UI must surface them.
     public var excludedLargeFileCount: Int
+    /// False when the folder is gone (external disk unmounted, folder moved)
+    /// or is no longer a git repository: the card must say so instead of
+    /// showing a misleading "0 commits · 0KB" (v4.2.8).
+    public var available: Bool
 
     public init(commitCount: Int, sizeBytes: UInt64, lastCommitDate: Date?,
-                excludedLargeFileCount: Int = 0) {
+                excludedLargeFileCount: Int = 0, available: Bool = true) {
         self.commitCount = commitCount
         self.sizeBytes = sizeBytes
         self.lastCommitDate = lastCommitDate
         self.excludedLargeFileCount = excludedLargeFileCount
+        self.available = available
     }
 
     public var summary: String {
+        guard available else {
+            return NSLocalizedString("⚠️ 文件夹当前不可用（可能未挂载或被移动）", comment: "repo health")
+        }
         var t = commitCount == 1
             ? String(format: NSLocalizedString("1 次提交 · %@", comment: "repo health"), sizeText)
             : String(format: NSLocalizedString("%d 次提交 · %@", comment: "repo health"), commitCount, sizeText)
@@ -51,6 +59,9 @@ public struct RepoHealth: Equatable, Sendable {
 public extension RepoManager {
     /// Repo health: commit count, .git size, last commit date (FR-19).
     func health(path: String) async -> RepoHealth {
+        guard isRepo(at: path) else {
+            return RepoHealth(commitCount: 0, sizeBytes: 0, lastCommitDate: nil, available: false)
+        }
         let gitDir = (path as NSString).appendingPathComponent(".git")
         var size: UInt64 = 0
         if let e = FileManager.default.enumerator(atPath: gitDir) {

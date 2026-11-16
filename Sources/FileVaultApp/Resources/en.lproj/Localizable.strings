@@ -155,6 +155,9 @@
 " · ⚠️ %d 个大文件未同步" = " · ⚠️ %d large file(s) not synced";
 "大文件未纳入版本管理" = "A large file is not under version control";
 "%@：%@%@ 超过远程单文件上限，已自动排除、不会同步；需要备份请拆分文件或移出受保护文件夹" = "%@: %@%@ exceeds the remote single-file limit and was excluded, so it is not synced; split the file or move it out of the protected folder if you need a backup";
+"⚠️ 文件夹当前不可用（可能未挂载或被移动）" = "⚠️ This folder is currently unavailable (not mounted, or moved)";
+"受保护文件夹被重新初始化" = "A protected folder was re-initialised";
+"%@：.git 不见了（可能被删除或移动），已重新初始化为空历史；如果之前推送过远程，请在设置里重新填写远程地址以恢复同步" = "%@: its .git is gone (deleted or moved), so it was re-initialised with an empty history; if you pushed it to a remote before, enter the remote URL again in Settings to resume syncing";
 "上次的合并、变基或 Git 操作没有正常结束（可能是崩溃或强退）。清理会丢弃那一步的中间状态（包括过期的 .git/index.lock），已提交的历史和文件不会丢失。" = "The last merge, rebase or Git operation did not finish (a crash or force-quit). Cleaning up discards only that step's intermediate state (including a stale .git/index.lock); committed history and files are kept.";
 "远程仓库与本地历史互不相关，不能快进合并" = "The remote and local histories are unrelated — cannot fast-forward";
 "本地与远程改动了同一个文件，自动合并已中止（仓库已恢复原状）" = "Local and remote changed the same file — the automatic merge was aborted (the repository is back to its previous state)";

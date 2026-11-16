@@ -413,14 +413,15 @@ final class SyncManagerTests: XCTestCase {
             + "c=$(cat " + counter + " 2>/dev/null || echo 0)\n"
             + "c=$((c+1))\n"
             + "echo $c > " + counter + "\n"
-            + "if [ \"$c\" -eq 1 ]; then sleep 2; fi\n"
+            + "if [ \"$c\" -eq 1 ]; then sleep 5; fi\n"
             + "exit 0\n"
         TestSupport.write(content, to: script)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script)
         let fakeRepos = RepoManager(runner: GitRunner(gitExecutable: script))
-        // The first run must have enough time to record the call before the
-        // timeout kills it; the retry then finds the counter and exits fast.
-        let timeoutSync = SyncManager(repoManager: fakeRepos, pushTimeout: 1.0, longPushTimeout: 3)
+        // The first run must have PLENTY of time to record the call before the
+        // timeout kills it (a tight budget is flaky under full-suite load); the
+        // retry then finds the counter and exits fast.
+        let timeoutSync = SyncManager(repoManager: fakeRepos, pushTimeout: 3, longPushTimeout: 8)
         try await timeoutSync.pushOnce(repoPath: dir)
         let calls = (try? String(contentsOfFile: counter, encoding: .utf8))?
             .trimmingCharacters(in: .whitespacesAndNewlines)
