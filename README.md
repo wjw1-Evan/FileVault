@@ -65,7 +65,7 @@ FileVault **永久免费**：无试用期、无激活码、无账号、无订阅
 
 ## 下载安装
 
-**最新发布：[v4.2.25](https://github.com/wjw1-Evan/FileVault/releases/tag/v4.2.25)** — [FileVault-4.2.25.zip](https://github.com/wjw1-Evan/FileVault/releases/download/v4.2.25/FileVault-4.2.25.zip)（sha256 `89566b3c…4efdeda`，约 22 MB）
+**最新发布：[v4.2.27](https://github.com/wjw1-Evan/FileVault/releases/tag/v4.2.27)** — [FileVault-4.2.27.zip](https://github.com/wjw1-Evan/FileVault/releases/download/v4.2.27/FileVault-4.2.27.zip)（sha256 `c793977e…95c7ccbe`，约 21 MB）
 
 > v4.2.27 全量审计复审（18 个功能模块重新逐模块审计，见 [复审报告](docs/09-全量审计复审报告-v4.2.27.md)）：**忽略文件护栏补齐到目录恢复并修复大小写变体绕过**（macOS 默认大小写不敏感卷上 `Notes.txt` 与 `notes.txt` 是同一个文件，精确匹配曾让 `git reset --hard` 静默销毁内容）；自动提交/推送统一 `--no-verify`（用户 hooks 不再否决后台快照提交）；`git init` 未提交的嵌套仓库不再卡死整个文件夹的自动提交（自动排除并通知）；超过远程上限的已跟踪文件不再被提交进历史（推送不会被永久卡死）；凭证探测不再把提示语当凭证（「请填令牌」提示恢复正常）；git 未就绪时设置页操作不再崩溃；提交历史/健康度读取失败如实报错而不是假装「没有历史/0 次提交」；更新资产按版本唯一匹配、回滚版本门改语义比较、GitHub 限流独立提示；回滚后清理 `.failed` 残骸、成功路径 zip 清理修复；CI 增加编译门禁并钉住 action 版本；README/PRIVACY/AGENTS 文档锚点对齐实现。**同日设计评审轮**：⇧⌘D 打开主面板接线；暂停自动提交加确认弹窗（写明暂停期间新改动不生成版本）；时间线支持「加载更早的提交」（不再固定最近 100 条）；主面板对未绑远程的文件夹如实显示「仅本地」而不是误导的「云端已最新」；通知开关改名「问题提醒通知」（如实反映门控范围）；绑定了远程的文件夹回滚时提供「回退并暂停此文件夹的自动同步」选项；菜单常驻「添加文件夹…」入口；设置页文件夹卡片提前、补自动同步节奏说明；恢复窗口摘要口径统一。
 
