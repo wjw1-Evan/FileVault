@@ -117,6 +117,12 @@ public final class FileVaultService: @unchecked Sendable {
                 }
             }
         }
+        // Catch up changes made just before the last quit: the 5 s debounce may
+        // not have fired, and no FSEvents event will arrive for them now. Commit
+        // dirty roots once at startup (v4.2.15).
+        Task { [weak self] in
+            await self?.sweepOnce()
+        }
         // v2.2.3: periodic auth/connectivity probing with dedup notifications.
         authMonitor = AuthMonitor(repos: repos, sync: sync)
         authMonitor?.onAuthIssue.handler = { [weak self] repoPath, message in
