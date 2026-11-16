@@ -64,7 +64,7 @@ FileVault **永久免费**：无试用期、无激活码、无账号、无订阅
 
 ## 下载安装
 
-**最新发布：[v4.1.7](https://github.com/wjw1-Evan/FileVault/releases/tag/v4.1.7)** — [FileVault-4.1.7.zip](https://github.com/wjw1-Evan/FileVault/releases/download/v4.1.7/FileVault-4.1.7.zip)（sha256 `cebb182d…a9cc24`，约 22 MB）
+**最新发布：[v4.2.3](https://github.com/wjw1-Evan/FileVault/releases/tag/v4.2.3)** — [FileVault-4.2.3.zip](https://github.com/wjw1-Evan/FileVault/releases/download/v4.2.3/FileVault-4.2.3.zip)（sha256 `f9c18d17…6a2301`，约 22 MB）
 
 > v4.1.1 修复：设置里「拉取远程更新」失败时不再只显示「未能完成操作。（FileVaultCore.GitCommandError 错误 1.）」——现在直接说明原因（本地与远程分叉并给出双方提交数、历史互不相关、认证失败、网络不可达、远程缺分支、文件夹已不是仓库…）并给出下一步；同时修好「没有配置上游的仓库根本拉不动」（此前 `git pull --ff-only origin` 缺分支参数，git 在 fetch 前就以「未指定分支」退出），并纠正 SSH 连接失败被当成令牌过期、分支名含 401 被当成 HTTP 401 的误判。
 
