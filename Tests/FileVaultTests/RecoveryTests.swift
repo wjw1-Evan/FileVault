@@ -287,7 +287,46 @@ final class RecoveryTests: XCTestCase {
         XCTAssertEqual(versions.count, 2)
     }
 
+
+    /// Restoring a deleted file recreates its (also deleted) parent folders.
+    func testRestoreRecreatesDeletedParentFolders() async throws {
+        try write("deep", to: "notes/2026/idea.md")
+        _ = try await commitAll("v1")
+        let original = try await head()
+        try FileManager.default.removeItem(atPath: repo + "/notes")
+        _ = try await commitAll("delete folder")
+        XCTAssertNil(read("notes/2026/idea.md"))
+
+        let result = try await recovery.restore(repoPath: repo, file: "notes/2026/idea.md", to: original)
+        guard case .restored(_, let recreated) = result else { return XCTFail("got \(result)") }
+        XCTAssertTrue(recreated)
+        XCTAssertEqual(read("notes/2026/idea.md"), "deep")
+    }
+
+    /// A directory sitting at the target path must produce a readable error and
+    /// must never be replaced by the app (v4.2.14).
+    func testRestoreRefusesWhenTargetPathIsDirectory() async throws {
+        try write("file", to: "note.md")
+        _ = try await commitAll("v1")
+        let original = try await head()
+        try FileManager.default.removeItem(atPath: repo + "/note.md")
+        try FileManager.default.createDirectory(atPath: repo + "/note.md", withIntermediateDirectories: true)
+        try write("child", to: "note.md/child.txt")
+        _ = try await commitAll("v2 directory")
+
+        do {
+            _ = try await recovery.restore(repoPath: repo, file: "note.md", to: original)
+            XCTFail("restoring onto a directory must fail")
+        } catch let error as HistoryError {
+            guard case .restoreTargetIsDirectory(let file) = error else { return XCTFail("got \(error)") }
+            XCTAssertEqual(file, "note.md")
+            XCTAssertTrue((error.errorDescription ?? "").contains("文件夹"), error.errorDescription ?? "")
+        }
+        XCTAssertEqual(read("note.md/child.txt"), "child", "the directory must be left untouched")
+    }
+
     // MARK: - Restore a deleted file
+
 
     func testRestoreDeletedFileRecreatesItAndCommits() async throws {
         try write("precious", to: "gone.md")

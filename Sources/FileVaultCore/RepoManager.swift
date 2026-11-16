@@ -605,7 +605,19 @@ public final class RepoManager: @unchecked Sendable {
         guard exists.succeeded else {
             throw HistoryError.fileNotInCommit(file: file, hash: String(hash.prefix(7)))
         }
+        // The path may be a tree in that version (restoring a "file" that is a
+        // folder) or a directory may now sit where the file must go; both would
+        // otherwise fail with a raw checkout message (v4.2.14).
+        let type = try await runner.run(["cat-file", "-t", "\(hash):\(file)"], cwd: path)
+        if type.succeeded,
+           type.stdout.trimmingCharacters(in: .whitespacesAndNewlines) == "tree" {
+            throw HistoryError.fileNotInCommit(file: file, hash: String(hash.prefix(7)))
+        }
         let full = (path as NSString).appendingPathComponent(file)
+        var isDirectory: ObjCBool = false
+        if FileManager.default.fileExists(atPath: full, isDirectory: &isDirectory), isDirectory.boolValue {
+            throw HistoryError.restoreTargetIsDirectory(file: file)
+        }
         let wasMissing = !FileManager.default.fileExists(atPath: full)
         // Never lose data: snapshot pending changes before rewriting the file.
         let dirty = (try? await status(path: path)) ?? []

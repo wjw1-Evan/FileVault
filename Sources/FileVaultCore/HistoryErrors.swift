@@ -14,6 +14,8 @@ public enum HistoryError: Error, LocalizedError, Equatable {
     case invalidTagName(String)
     case directoryNotInCommit(directory: String, hash: String)
     case restoreFailed(stderr: String)
+    /// A directory sits at the path a file must be restored to (v4.2.14).
+    case restoreTargetIsDirectory(file: String)
 
     public var errorDescription: String? {
         switch self {
@@ -41,6 +43,9 @@ public enum HistoryError: Error, LocalizedError, Equatable {
             let reason = stderr.trimmingCharacters(in: .whitespacesAndNewlines)
             return String(format: NSLocalizedString("恢复失败：%@", comment: "history error"),
                           reason.isEmpty ? NSLocalizedString("未知错误", comment: "history error") : reason)
+        case .restoreTargetIsDirectory(let file):
+            return String(format: NSLocalizedString("恢复失败：%@ 现在是一个文件夹，请先把它改名或移走再恢复",
+                                                    comment: "history error"), file)
         }
     }
 }
