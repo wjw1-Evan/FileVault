@@ -140,6 +140,12 @@
 "正在把同步远程设为 %@…" = "Setting the sync remote to %@…";
 "✓ 已把同步远程设为 %@，之后的自动同步都走它" = "✓ Sync remote set to %@; automatic syncing will use it";
 "⚠️ 设置远程失败：%@" = "⚠️ Could not set the remote: %@";
+"重新定位（文件夹被移动/改名）…" = "Relocate (folder moved or renamed)…";
+"重新定位到这里" = "Relocate here";
+"选择这个受保护文件夹现在所在的位置（原来的 Git 历史会一起保留）" = "Choose where this protected folder now lives (its Git history comes with it)";
+"✓ 已重新定位，历史与远程绑定都保留" = "✓ Relocated; history and remote binding are preserved";
+"⚠️ 重新定位失败：%@" = "⚠️ Relocation failed: %@";
+"这个文件夹已经在受保护列表里了" = "This folder is already in the protected list";
 "（已自动重试 3 次仍未成功，下次文件改动时会再试）" = " (retried automatically 3 times without success; it will try again on the next file change)";
 "磁盘空间不足，无法写入这次自动版本" = "Not enough disk space to write this automatic version";
 "没有写入权限，无法提交这次改动（检查文件夹权限）" = "No write permission — cannot commit this change (check the folder permissions)";

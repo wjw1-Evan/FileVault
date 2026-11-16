@@ -509,6 +509,36 @@ final class SettingsModel: ObservableObject {
         }
     }
 
+    /// v4.2.5: re-point a managed folder after it was moved/renamed (or an
+    /// external disk mounted elsewhere) without losing history or config.
+    func relocateRoot(_ id: String) {
+        guard let svc = service else { return }
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.prompt = NSLocalizedString("重新定位到这里", comment: "settings dialog")
+        panel.message = NSLocalizedString("选择这个受保护文件夹现在所在的位置（原来的 Git 历史会一起保留）",
+                                          comment: "settings dialog")
+        guard panel.runModal() == .OK, let picked = panel.url?.path else { return }
+        let newPath = (picked as NSString).resolvingSymlinksInPath
+        Task { [weak self] in
+            do {
+                try await svc.relocateRoot(from: id, to: newPath)
+                await MainActor.run {
+                    self?.reload()
+                    self?.setMessage(newPath, NSLocalizedString("✓ 已重新定位，历史与远程绑定都保留",
+                                                               comment: "settings status"))
+                }
+            } catch {
+                await MainActor.run {
+                    self?.setMessage(id, String(format: NSLocalizedString("⚠️ 重新定位失败：%@", comment: "settings status"),
+                                                error.localizedDescription), error: true)
+                }
+            }
+        }
+    }
+
     /// v4.2.1: several remotes exist — pick which one the automatic sync uses.
     func setUpstreamRemote(_ id: String, remote: String) {
         guard let svc = service else { return }
@@ -986,6 +1016,7 @@ struct SettingsView: View {
                         Divider()
                     }
                     Button("编辑忽略规则…") { model.openGitignoreEditor(repo.id) }
+                    Button("重新定位（文件夹被移动/改名）…") { model.relocateRoot(repo.id) }
                     Button("在 GitHub 建仓并绑定…") { model.createRepoTarget = repo.id }
                     Divider()
                     Button("检查仓库完整性…") { model.checkIntegrity(repo.id) }

@@ -171,6 +171,56 @@ public final class FileVaultService: @unchecked Sendable {
         fireStateChange()
     }
 
+    /// Re-point a managed root at its new location (folder moved/renamed, or an
+    /// external disk that mounted under a different path) (v4.2.5).
+    ///
+    /// The repository lives inside the folder, so moving the folder keeps the
+    /// full history; only the watched path and the config entry change. Nothing
+    /// is re-initialised when a .git moved with the folder.
+    public func relocateRoot(from oldPath: String, to newPath: String) async throws {
+        let old = resolved(oldPath)
+        var new = newPath
+        if let r = try? URL(fileURLWithPath: newPath).resolvingSymlinksInPath() { new = r.path }
+        guard FileManager.default.fileExists(atPath: new) else {
+            throw FileVaultServiceError.rootMissing
+        }
+        guard new != old else { return }
+
+        var cfg = configStore.load()
+        guard let idx = cfg.roots.firstIndex(where: { resolved($0.path) == old }) else {
+            // The old entry is already gone (e.g. removed while the disk was
+            // away): just add the new location.
+            try await addRoot(path: new)
+            return
+        }
+        guard !cfg.roots.contains(where: { resolved($0.path) == new }) else {
+            throw FileVaultServiceError.rootAlreadyManaged
+        }
+        let paused = cfg.roots[idx].paused
+
+        // Stop watching the old path first: its watcher would otherwise fire on
+        // a folder that no longer exists.
+        lock.lock()
+        watchers[old]?.stop()
+        watchers.removeValue(forKey: old)
+        roots.removeAll { $0 == old }
+        lock.unlock()
+        commitEngine.unregisterRoot(old)
+        pause.setPaused(false, forRoot: old)
+
+        // Attach the new path (adopts the .git that moved with the folder).
+        try await attachRoot(path: new, paused: paused)
+
+        cfg = configStore.load()
+        if let i = cfg.roots.firstIndex(where: { resolved($0.path) == old }) {
+            cfg.roots[i].path = new
+        } else {
+            cfg.roots.append(ManagedRoot(path: new, paused: paused))
+        }
+        configStore.save(cfg)
+        fireStateChange()
+    }
+
     /// Attach an existing root: prepare its repo and start its watcher.
     ///
     /// The root is only registered once preparation succeeded, so a missing or
@@ -317,7 +367,13 @@ public final class FileVaultService: @unchecked Sendable {
 
 public enum FileVaultServiceError: LocalizedError {
     case rootMissing
+    case rootAlreadyManaged
     public var errorDescription: String? {
-        NSLocalizedString("文件夹不存在或不可访问", comment: "service error")
+        switch self {
+        case .rootMissing:
+            return NSLocalizedString("文件夹不存在或不可访问", comment: "service error")
+        case .rootAlreadyManaged:
+            return NSLocalizedString("这个文件夹已经在受保护列表里了", comment: "service error")
+        }
     }
 }
