@@ -451,22 +451,41 @@ public final class RepoManager: @unchecked Sendable {
 
     // MARK: - Pull (multi-machine sync)
 
-    /// Outcome of one successful pull: how many commits actually arrived.
+    /// Outcome of one successful pull.
     public struct PullResult: Sendable, Equatable {
+        public enum Strategy: String, Sendable, Equatable {
+            /// No local-only commits: HEAD simply moved to the remote tip.
+            case fastForward
+            /// Local auto-commits were replayed on top of the remote tip.
+            case rebased
+        }
         public let output: String
         public let headBefore: String?
         public let headAfter: String
-        /// Commits fast-forwarded in (0 = already up to date).
+        /// Remote commits brought in (0 = already up to date).
         public let pulledCommits: Int
+        /// Local commits replayed on top of the remote (0 for a fast-forward).
+        public let replayedCommits: Int
+        public let strategy: Strategy
     }
 
-    /// Pull with --ff-only: never auto-merges (PRD); conflicts surface as errors.
+    /// Pull: fast-forward when possible, auto-rebase when both sides moved
+    /// (v4.1.2).
+    ///
+    /// FileVault auto-commits every few seconds, so as soon as the remote also
+    /// advanced, `--ff-only` can never succeed. The local-only commits are
+    /// unpushed machine snapshots, so replaying them on top of the remote keeps
+    /// history linear and is the least surprising reconciliation. This is still
+    /// "never auto-merge a conflict": a conflicting rebase is aborted
+    /// immediately, the repository is restored to its pre-pull state and the
+    /// conflicting paths are reported — conflict markers must never reach the
+    /// auto-commit pipeline. Histories without a common ancestor are refused.
     ///
     /// v4.1.1: the branch is resolved explicitly. `git pull --ff-only origin` is
     /// only valid when origin is the branch's configured upstream; a repo whose
     /// first push never succeeded has no upstream, and git refuses with
     /// "You asked to pull from the remote 'origin', but did not specify a branch"
-    /// before fetching anything. Failures now become a classified `PullError`
+    /// before fetching anything. Failures become a classified `PullError`
     /// (real reason + recovery step) instead of an opaque git exit code.
     public func pull(path: String) async throws -> PullResult {
         // A protected folder can disappear (moved, deleted, external disk
@@ -480,15 +499,54 @@ public final class RepoManager: @unchecked Sendable {
 
         let target = try await pullTarget(path: path, currentBranch: branch)
 
-        let before = try? await resolveHead(path: path)
-        let r = try await runner.run(["pull", "--ff-only", target.remote, target.branch], cwd: path)
-        guard r.succeeded else {
-            throw await pullFailure(stderr: r.stderr, remote: target.remote,
-                                    branch: target.branch, path: path)
+        // Local-first: pending edits become a commit before the working tree is
+        // touched (same rule as rollback). Otherwise a pull can refuse on dirty
+        // files, or a rebase would start with an unstaged state.
+        if await isDirty(path: path) {
+            _ = try? await commitAll(path: path, message: "auto: 拉取前自动保存未提交改动")
         }
-        let after = (try? await resolveHead(path: path)) ?? ""
-        return PullResult(output: r.stdout, headBefore: before, headAfter: after,
-                          pulledCommits: await countCommits(path: path, from: before, to: after))
+        let before = try? await resolveHead(path: path)
+
+        // 1. Fast-forward: the common case, no local-only commits.
+        let ff = try await runner.run(["pull", "--ff-only", target.remote, target.branch], cwd: path)
+        if ff.succeeded {
+            let after = (try? await resolveHead(path: path)) ?? ""
+            return PullResult(output: ff.stdout, headBefore: before, headAfter: after,
+                              pulledCommits: await countCommits(path: path, from: before, to: after),
+                              replayedCommits: 0, strategy: .fastForward)
+        }
+        // Only divergence is reconciled automatically; auth/network/missing
+        // branch/dirty-tree failures are reported as they are.
+        guard PullError.isDivergence(ff.stderr) else {
+            throw PullError.classify(stderr: ff.stderr, remote: target.remote, branch: target.branch)
+        }
+        // The refused ff-only pull already fetched, so FETCH_HEAD tells us
+        // whether the two histories share an ancestor at all.
+        guard await historySharesAncestor(path: path) else { throw PullError.unrelatedHistories }
+
+        // 2. Replay local-only auto-commits on top of the remote tip.
+        let rebase = try await runner.run(
+            ["-c", "rebase.autoStash=false", "pull", "--rebase", target.remote, target.branch], cwd: path)
+        if rebase.succeeded {
+            let after = (try? await resolveHead(path: path)) ?? ""
+            let remoteTip = await fetchHeadSHA(path: path) ?? after
+            return PullResult(output: rebase.stdout, headBefore: before, headAfter: after,
+                              pulledCommits: await countCommits(path: path, from: before, to: remoteTip),
+                              replayedCommits: await countCommits(path: path, from: remoteTip, to: after),
+                              strategy: .rebased)
+        }
+
+        // 3. Something stopped the rebase. Capture the conflicts, abort, and
+        //    verify the repository is exactly where it was before the pull.
+        let unmerged = await unmergedPaths(path: path)
+        if await rebaseInProgress(path: path) {
+            _ = try? await runner.run(["rebase", "--abort"], cwd: path)
+        }
+        let stillInProgress = await rebaseInProgress(path: path)
+        if !unmerged.isEmpty || stillInProgress {
+            throw PullError.mergeConflict(files: unmerged, aborted: !stillInProgress)
+        }
+        throw PullError.classify(stderr: rebase.stderr, remote: target.remote, branch: target.branch)
     }
 
     /// Remote/branch a pull should fast-forward from: the configured upstream
@@ -523,43 +581,14 @@ public final class RepoManager: @unchecked Sendable {
         throw PullError.noRemote
     }
 
-    /// Turn git's stderr into a user-actionable `PullError`.
-    private func pullFailure(stderr: String, remote: String, branch: String, path: String) async -> PullError {
-        if PullError.isDivergence(stderr) {
-            let stats = await divergenceStats(path: path)
-            return stats.hasCommonAncestor
-                ? .diverged(local: stats.local, remote: stats.remote)
-                : .unrelatedHistories
-        }
-        return PullError.classify(stderr: stderr, remote: remote, branch: branch)
-    }
-
-    /// After a refused ff-only pull, FETCH_HEAD already points at the remote
-    /// branch: compare ancestry/counts to tell "diverged" from "unrelated".
-    private func divergenceStats(path: String) async -> (hasCommonAncestor: Bool, local: Int?, remote: Int?) {
-        guard let fetched = try? await runner.run(["rev-parse", "--verify", "--quiet", "FETCH_HEAD"], cwd: path),
-              fetched.succeeded,
-              !fetched.stdout.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            return (true, nil, nil)
-        }
-        let mergeBase = try? await runner.run(["merge-base", "HEAD", "FETCH_HEAD"], cwd: path)
-        let hasCommonAncestor = mergeBase?.succeeded == true
-            && !(mergeBase?.stdout.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
-        guard hasCommonAncestor else { return (false, nil, nil) }
-        var local: Int?
-        var remote: Int?
-        if let counts = try? await runner.run(["rev-list", "--left-right", "--count", "HEAD...FETCH_HEAD"],
-                                              cwd: path),
-           counts.succeeded {
-            // "1\t2\n": the newline must be a separator too, or Int("2\n") drops it.
-            let parts = counts.stdout.split(whereSeparator: { $0 == "\t" || $0 == " " || $0 == "\n" })
-                .compactMap { Int($0) }
-            if parts.count >= 2 {
-                local = parts[0]
-                remote = parts[1]
-            }
-        }
-        return (true, local, remote)
+    /// Whether HEAD and the freshly fetched remote tip share a commit. Pull only
+    /// auto-rebases related histories; two independent roots cannot be
+    /// reconciled automatically in any meaningful way.
+    private func historySharesAncestor(path: String) async -> Bool {
+        guard await fetchHeadSHA(path: path) != nil else { return false }
+        guard let r = try? await runner.run(["merge-base", "HEAD", "FETCH_HEAD"], cwd: path),
+              r.succeeded else { return false }
+        return !r.stdout.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     /// Commits between two heads (all of HEAD when the repo had no commit yet).
@@ -570,6 +599,38 @@ public final class RepoManager: @unchecked Sendable {
             return 0
         }
         return Int(r.stdout.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
+    }
+
+    /// Remote tip recorded by the last fetch/pull (nil when there is none).
+    private func fetchHeadSHA(path: String) async -> String? {
+        guard let r = try? await runner.run(["rev-parse", "--verify", "--quiet", "FETCH_HEAD"], cwd: path),
+              r.succeeded else { return nil }
+        let sha = r.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+        return sha.isEmpty ? nil : sha
+    }
+
+    /// Paths git could not merge while the aborted rebase was half-applied.
+    private func unmergedPaths(path: String) async -> [String] {
+        guard let r = try? await runner.run(["diff", "--name-only", "--diff-filter=U"], cwd: path),
+              r.succeeded else { return [] }
+        return r.stdout.split(separator: "\n")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+    }
+
+    /// Whether a rebase is half-applied — checked before and after aborting so
+    /// a conflict can never leave the repository in a merge state, and by the
+    /// commit pipeline so it never commits conflict markers (v4.1.2).
+    func rebaseInProgress(path: String) async -> Bool {
+        for name in ["rebase-merge", "rebase-apply"] {
+            guard let r = try? await runner.run(["rev-parse", "--git-path", name], cwd: path),
+                  r.succeeded else { continue }
+            let p = r.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !p.isEmpty else { continue }
+            let full = p.hasPrefix("/") ? p : (path as NSString).appendingPathComponent(p)
+            if FileManager.default.fileExists(atPath: full) { return true }
+        }
+        return false
     }
 
     // MARK: - Per-repo auth mode (v2.1.0)

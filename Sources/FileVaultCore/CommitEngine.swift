@@ -118,6 +118,10 @@ public final class CommitEngine: @unchecked Sendable {
         // v4.0: the repo IS the root, so the pause scope is the repo path itself.
         // While paused the pending paths stay queued for the resume commit.
         guard !pause.isPaused(root: repoPath) else { return }
+        // A pull's auto-rebase owns the repository for a moment (v4.1.2):
+        // committing mid-rebase would stage conflict markers or move a detached
+        // HEAD. The pull itself commits pending edits first, so nothing is lost.
+        guard !(await repoManager.rebaseInProgress(path: repoPath)) else { return }
         // Git cannot track empty directories: a folder created while we watch
         // would otherwise never appear in history. Give brand-new empty folders
         // a hidden marker file so their creation becomes a real version.

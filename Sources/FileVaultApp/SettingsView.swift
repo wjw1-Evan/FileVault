@@ -478,11 +478,25 @@ final class SettingsModel: ObservableObject {
         Task { [weak self] in
             do {
                 let result = try await svc.repoManager.pull(path: id)
-                let text = result.pulledCommits == 0
-                    ? NSLocalizedString("✓ 已是最新", comment: "settings status")
-                    : String(format: NSLocalizedString("✓ 已拉取 %d 个新版本（快进）", comment: "settings status"),
-                             result.pulledCommits)
+                let text: String
+                if result.pulledCommits == 0 {
+                    text = NSLocalizedString("✓ 已是最新", comment: "settings status")
+                } else if result.strategy == .rebased {
+                    // v4.1.2: local auto-commits were replayed on the remote tip.
+                    text = String(format: NSLocalizedString("✓ 已自动合并：拉取 %d 个新版本，本地 %d 个提交已变基",
+                                                             comment: "settings status"),
+                                  result.pulledCommits, result.replayedCommits)
+                } else {
+                    text = String(format: NSLocalizedString("✓ 已拉取 %d 个新版本（快进）", comment: "settings status"),
+                                  result.pulledCommits)
+                }
                 self?.setMessage(id, text)
+                if result.replayedCommits > 0 {
+                    // The rebase rewrote the local commit SHAs: push them right
+                    // away so both machines converge without waiting for the
+                    // next auto-commit (respects the auto-push toggle).
+                    await svc.sync.enqueuePush(repoPath: id)
+                }
                 self?.fillRepoDetails(id: id)   // remote/health/status may have changed
             } catch {
                 let description = error.localizedDescription

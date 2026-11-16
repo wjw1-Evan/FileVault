@@ -22,11 +22,13 @@ public enum PullError: Error, LocalizedError, Equatable {
     case detachedHead
     /// The remote has no branch with the local branch's name (never pushed yet).
     case remoteBranchMissing(remote: String, branch: String)
-    /// Both sides have new commits. `nil` counts mean git did not report them.
-    case diverged(local: Int?, remote: Int?)
     /// No common ancestor at all: a new local repo bound to a remote that
     /// already carries a different history.
     case unrelatedHistories
+    /// Both sides changed the same file while auto-rebasing. FileVault always
+    /// aborts the rebase (so no conflict markers can ever be auto-committed) and
+    /// reports the paths instead of leaving the repository half-merged.
+    case mergeConflict(files: [String], aborted: Bool)
     case authenticationFailed(detail: String)
     case networkFailed(detail: String)
     case remoteUnavailable(detail: String)
@@ -47,13 +49,14 @@ public enum PullError: Error, LocalizedError, Equatable {
         case .remoteBranchMissing(let remote, let branch):
             return String(format: NSLocalizedString("远程仓库 %@ 还没有 %@ 分支，无法拉取", comment: "pull error"),
                           remote, branch)
-        case .diverged(let local?, let remote?):
-            return String(format: NSLocalizedString("本地与远程都有新提交（本地 %d 个、远程 %d 个），不能快进合并",
-                                                    comment: "pull error"), local, remote)
-        case .diverged:
-            return NSLocalizedString("本地与远程都有新提交，不能快进合并", comment: "pull error")
         case .unrelatedHistories:
             return NSLocalizedString("远程仓库与本地历史互不相关，不能快进合并", comment: "pull error")
+        case .mergeConflict(_, let aborted):
+            return aborted
+                ? NSLocalizedString("本地与远程改动了同一个文件，自动合并已中止（仓库已恢复原状）",
+                                    comment: "pull error")
+                : NSLocalizedString("本地与远程改动了同一个文件，自动合并失败且未能自动恢复",
+                                    comment: "pull error")
         case .authenticationFailed:
             return NSLocalizedString("身份验证失败或已过期，无法拉取远程仓库", comment: "pull error")
         case .networkFailed:
@@ -93,12 +96,16 @@ public enum PullError: Error, LocalizedError, Equatable {
         case .remoteBranchMissing(let remote, let branch):
             return String(format: NSLocalizedString("先把本地分支推送上去：点「立即推送」，或在终端执行 git push -u %@ %@。",
                                                     comment: "pull recovery"), remote, branch)
-        case .diverged:
-            return NSLocalizedString("FileVault 不会自动合并。请在终端执行 git pull --rebase 解决分叉后再「立即推送」；若确认远程才是权威副本，先备份文件夹，再执行 git reset --hard 远程分支。",
-                                     comment: "pull recovery")
         case .unrelatedHistories:
             return NSLocalizedString("这个远程仓库已经有一套自己的历史。若以远程为准，先备份文件夹，再在终端执行 git fetch origin，然后 git reset --hard 远程分支；若以本地为准，需要强制推送（会覆盖远程历史）。",
                                      comment: "pull recovery")
+        case .mergeConflict(let files, let aborted):
+            let names = Self.fileList(files)
+            return aborted
+                ? String(format: NSLocalizedString("这次冲突涉及：%@。请在终端执行 git pull --rebase 手动解决冲突后再推送。",
+                                                   comment: "pull recovery"), names)
+                : String(format: NSLocalizedString("这次冲突涉及：%@。请先在终端执行 git rebase --abort 恢复仓库，再手动处理。",
+                                                   comment: "pull recovery"), names)
         case .authenticationFailed:
             return AuthClassifier.guidance()
         case .networkFailed:
@@ -119,17 +126,28 @@ public enum PullError: Error, LocalizedError, Equatable {
         case .authenticationFailed(let detail), .networkFailed(let detail),
              .remoteUnavailable(let detail), .localChanges(let detail), .failed(let detail):
             return detail
+        case .mergeConflict(let files, _):
+            return files.isEmpty ? nil : files.joined(separator: ", ")
         case .noRemote, .ambiguousRemote, .notARepository, .detachedHead,
-             .remoteBranchMissing, .diverged, .unrelatedHistories:
+             .remoteBranchMissing, .unrelatedHistories:
             return nil
         }
+    }
+
+    /// "a.md、b.md、c.md 等 5 个文件" — capped so an alert stays readable.
+    static func fileList(_ files: [String], limit: Int = 3) -> String {
+        guard !files.isEmpty else { return NSLocalizedString("未知文件", comment: "pull conflict files") }
+        let shown = files.prefix(limit).joined(separator: "、")
+        guard files.count > limit else { return shown }
+        return String(format: NSLocalizedString("%@ 等 %d 个文件", comment: "pull conflict files"),
+                      shown, files.count)
     }
 
     // MARK: - Classification
 
     /// Whether git refused because the two histories cannot be fast-forwarded.
-    /// The caller then checks for a common ancestor to tell "diverged" from
-    /// "unrelated", which needs git.
+    /// The caller then checks for a common ancestor: related histories are
+    /// auto-rebased, unrelated ones are refused.
     public static func isDivergence(_ stderr: String) -> Bool {
         let text = stderr.lowercased()
         return ["not possible to fast-forward",
@@ -181,6 +199,7 @@ public enum PullError: Error, LocalizedError, Equatable {
         }
         let localChangePatterns = [
             "would be overwritten", "commit your changes or stash", "your local changes",
+            "cannot pull with rebase", "unstaged changes", "uncommitted changes",
         ]
         if localChangePatterns.contains(where: { text.contains($0) }) {
             return .localChanges(detail: detail)

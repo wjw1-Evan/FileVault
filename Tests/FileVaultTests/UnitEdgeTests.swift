@@ -209,7 +209,9 @@ final class PullTests: XCTestCase {
         _ = try await repos.commitAll(path: root + "/repo")
         try await repos.runner.run(["push", "-u", "origin", "HEAD"], cwd: root + "/repo")
         let result = try await repos.pull(path: root + "/repo")
-        XCTAssertEqual(result.pulledCommits, 0, "ff-only pull on an up-to-date repo brings no new commits")
+        XCTAssertEqual(result.strategy, .fastForward)
+        XCTAssertEqual(result.pulledCommits, 0, "pull on an up-to-date repo brings no new commits")
+        XCTAssertEqual(result.replayedCommits, 0)
         XCTAssertEqual(result.headBefore, result.headAfter)
     }
 }

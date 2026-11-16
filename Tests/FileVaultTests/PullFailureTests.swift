@@ -89,17 +89,6 @@ final class PullFailureClassificationTests: XCTestCase {
         XCTAssertNil(error.recoverySuggestion)
     }
 
-    func testDivergedWithoutCountsStillReadable() {
-        let error = PullError.diverged(local: nil, remote: nil)
-        XCTAssertEqual(error.errorDescription, "本地与远程都有新提交，不能快进合并")
-        XCTAssertNotNil(error.recoverySuggestion)
-    }
-
-    func testDivergedMessageCarriesBothCounts() {
-        let error = PullError.diverged(local: 2, remote: 5)
-        XCTAssertEqual(error.errorDescription, "本地与远程都有新提交（本地 2 个、远程 5 个），不能快进合并")
-    }
-
     /// Condensed stderr keeps the reason, drops git's hint spam, caps the length.
     func testCondenseDropsHintsAndCapsLength() {
         let noisy = "hint: a\n\nhint: b\nfatal: real reason\n  "
@@ -232,7 +221,9 @@ final class PullScenarioTests: XCTestCase {
         let remoteHead = try await repos.resolveHead(path: seed)
 
         let result = try await repos.pull(path: machineB)
+        XCTAssertEqual(result.strategy, .fastForward)
         XCTAssertEqual(result.pulledCommits, 1)
+        XCTAssertEqual(result.replayedCommits, 0)
         XCTAssertEqual(result.headAfter, remoteHead)
         XCTAssertEqual(try String(contentsOfFile: machineB + "/seed.md", encoding: .utf8), "v2\n")
     }
@@ -241,31 +232,94 @@ final class PullScenarioTests: XCTestCase {
         let (remote, _) = try await seededRemote()
         let machineB = try await cloneOf(remote, as: "machine-b")
         let result = try await repos.pull(path: machineB)
+        XCTAssertEqual(result.strategy, .fastForward)
         XCTAssertEqual(result.pulledCommits, 0)
+        XCTAssertEqual(result.replayedCommits, 0)
         XCTAssertEqual(result.headBefore, result.headAfter)
     }
 
-    func testDivergedPullReportsBothSidesAndRecovery() async throws {
+    /// v4.1.2: two machines that both committed are reconciled automatically by
+    /// replaying the local-only auto-commit on top of the remote tip (rebase).
+    func testDivergedPullAutoRebasesLocalCommits() async throws {
         let (remote, seed) = try await seededRemote()
         let machineB = try await cloneOf(remote, as: "machine-b")
         // Both machines committed on their own.
         try await commit("b\n", file: "b.md", in: machineB)
+        let localBefore = try await repos.resolveHead(path: machineB)
         try await commit("a\n", file: "a.md", in: seed)
         await git(["push"], cwd: seed)
+        let remoteHead = try await repos.resolveHead(path: seed)
+
+        let result = try await repos.pull(path: machineB)
+        XCTAssertEqual(result.strategy, .rebased)
+        XCTAssertEqual(result.pulledCommits, 1, "one remote commit arrived")
+        XCTAssertEqual(result.replayedCommits, 1, "one local commit was replayed")
+        XCTAssertNotEqual(result.headAfter, localBefore, "rebase rewrote the local commit")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: machineB + "/a.md"))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: machineB + "/b.md"))
+        // Linear history: the remote commit is now an ancestor of HEAD, and the
+        // replayed local commit sits on top of it.
+        let ancestor = try await repos.runner.run(["merge-base", "--is-ancestor", remoteHead, "HEAD"],
+                                                  cwd: machineB)
+        XCTAssertTrue(ancestor.succeeded, "remote tip must be an ancestor after the rebase")
+        let subjects = try await repos.runner.run(["log", "--format=%s", "-2"], cwd: machineB)
+        XCTAssertTrue(subjects.stdout.contains("test: a.md"))
+        XCTAssertTrue(subjects.stdout.contains("test: b.md"))
+    }
+
+    /// Conflicting edits must never leave conflict markers in the repository:
+    /// the rebase is aborted, HEAD/content are restored and the files are named.
+    func testConflictingEditsAbortCleanlyAndReportFiles() async throws {
+        let (remote, seed) = try await seededRemote()
+        let machineB = try await cloneOf(remote, as: "machine-b")
+        // Both machines edit the SAME file differently.
+        TestSupport.write("machine B version\n", to: machineB + "/seed.md")
+        _ = try await repos.commitAll(path: machineB, message: "test: B edit")
+        try await commit("machine A version\n", file: "seed.md", in: seed)
+        await git(["push"], cwd: seed)
+        let before = try await repos.resolveHead(path: machineB)
+        let localContent = try String(contentsOfFile: machineB + "/seed.md", encoding: .utf8)
 
         do {
             _ = try await repos.pull(path: machineB)
-            XCTFail("diverged pull should throw")
+            XCTFail("conflicting pull should throw")
         } catch let error as PullError {
-            guard case .diverged(let local?, let remoteCount?) = error else {
-                return XCTFail("expected diverged, got \(error)")
+            guard case .mergeConflict(let files, let aborted) = error else {
+                return XCTFail("expected mergeConflict, got \(error)")
             }
-            XCTAssertEqual(local, 1)
-            XCTAssertGreaterThanOrEqual(remoteCount, 1)
-            XCTAssertTrue((error.errorDescription ?? "").contains("不能快进"), error.errorDescription ?? "")
+            XCTAssertEqual(files, ["seed.md"])
+            XCTAssertTrue(aborted, "the rebase must be aborted, not left half-applied")
             XCTAssertTrue((error.recoverySuggestion ?? "").contains("git pull --rebase"),
                           error.recoverySuggestion ?? "")
         }
+        // Restored exactly: same HEAD, same content, clean tree, no rebase state.
+        let headAfter = try await repos.resolveHead(path: machineB)
+        let contentAfter = try String(contentsOfFile: machineB + "/seed.md", encoding: .utf8)
+        let dirtyAfter = try await repos.status(path: machineB).count
+        XCTAssertEqual(headAfter, before)
+        XCTAssertEqual(contentAfter, localContent)
+        XCTAssertFalse(contentAfter.contains("<<<<<<<"), "no conflict markers may remain")
+        XCTAssertEqual(dirtyAfter, 0, "working tree must be clean again")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: machineB + "/.git/rebase-merge"))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: machineB + "/.git/rebase-apply"))
+    }
+
+    /// Pending edits become a commit before the auto-merge touches the tree.
+    func testDirtyWorkingTreeIsCommittedBeforeAutoMerge() async throws {
+        let (remote, seed) = try await seededRemote()
+        let machineB = try await cloneOf(remote, as: "machine-b")
+        try await commit("b\n", file: "b.md", in: machineB)
+        TestSupport.write("uncommitted draft\n", to: machineB + "/draft.md")
+        try await commit("a\n", file: "a.md", in: seed)
+        await git(["push"], cwd: seed)
+
+        let result = try await repos.pull(path: machineB)
+        XCTAssertEqual(result.strategy, .rebased)
+        let dirty = try await repos.status(path: machineB).count
+        XCTAssertEqual(dirty, 0, "pending edits were committed first")
+        let head = try await repos.runner.run(["log", "-1", "--format=%s"], cwd: machineB)
+        XCTAssertTrue(head.stdout.contains("拉取前自动保存"), head.stdout)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: machineB + "/draft.md"))
     }
 
     /// The reported situation: a freshly created FileVault repo bound to a
