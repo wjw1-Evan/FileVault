@@ -130,6 +130,14 @@ public final class WatcherEngine {
     private let source: ChangeSource
 
     public private(set) var realRoot: String = ""
+    private let stateLock = NSLock()
+    private var runningFlag = false
+    /// Whether the event stream is currently active. The safety sweep restarts
+    /// stopped watch streams (v4.2.7).
+    public var isRunning: Bool {
+        stateLock.lock(); defer { stateLock.unlock() }
+        return runningFlag
+    }
 
     public init(rootPath: String, source: ChangeSource) {
         self.rootPath = rootPath
@@ -151,6 +159,7 @@ public final class WatcherEngine {
     /// the watched root. The commit pipeline needs them to recognise brand-new
     /// empty folders (Git cannot track an empty directory by itself).
     public func start(onActivityPaths: @escaping @Sendable ([String]) -> Void) {
+        stateLock.lock(); runningFlag = true; stateLock.unlock()
         let root = realRoot
         source.start(paths: [root]) { eventPaths in
             var relative: [String] = []
@@ -171,6 +180,7 @@ public final class WatcherEngine {
     }
 
     public func stop() {
+        stateLock.lock(); runningFlag = false; stateLock.unlock()
         source.stop()
     }
 }

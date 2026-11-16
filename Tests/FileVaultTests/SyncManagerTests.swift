@@ -401,6 +401,31 @@ final class SyncManagerTests: XCTestCase {
                        "one failure + one give-up, not one per retry: " + seen.joined(separator: " || "))
         XCTAssertTrue(seen.last?.contains("已自动重试 4 次") == true, seen.last ?? "")
     }
+
+    /// v4.2.7: a large first push can exceed the normal budget; it must be
+    /// retried once with the much longer budget instead of failing the episode.
+    func testPushTimeoutRetriesWithLongerBudget() async throws {
+        let dir = root + "/fakePush"
+        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        let counter = dir + "/count"
+        let script = dir + "/fake-git"
+        let content = "#!/bin/sh\n"
+            + "c=$(cat " + counter + " 2>/dev/null || echo 0)\n"
+            + "c=$((c+1))\n"
+            + "echo $c > " + counter + "\n"
+            + "if [ \"$c\" -eq 1 ]; then sleep 2; fi\n"
+            + "exit 0\n"
+        TestSupport.write(content, to: script)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script)
+        let fakeRepos = RepoManager(runner: GitRunner(gitExecutable: script))
+        // The first run must have enough time to record the call before the
+        // timeout kills it; the retry then finds the counter and exits fast.
+        let timeoutSync = SyncManager(repoManager: fakeRepos, pushTimeout: 1.0, longPushTimeout: 3)
+        try await timeoutSync.pushOnce(repoPath: dir)
+        let calls = (try? String(contentsOfFile: counter, encoding: .utf8))?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        XCTAssertEqual(calls, "2", "the timed-out push must be retried once with the longer budget")
+    }
     // MARK: - Switching the remote repository (v4.1.6)
 
     /// Replacing the remote with an EMPTY repository re-points everything and

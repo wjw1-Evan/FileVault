@@ -23,10 +23,20 @@ public actor SyncManager {
         public var needsPushAgain: Bool
     }
 
-    public init(repoManager: RepoManager, backoffSchedule: [TimeInterval] = [1, 2, 4, 8, 16, 32, 64, 128, 256, 300], maxAttempts: Int = 6) {
+    /// Per-attempt push budget, and the longer budget used for ONE retry when
+    /// the first attempt times out (a large first push on a slow link, v4.2.7).
+    public let pushTimeout: TimeInterval
+    public let longPushTimeout: TimeInterval
+
+    public init(repoManager: RepoManager, backoffSchedule: [TimeInterval] = [1, 2, 4, 8, 16, 32, 64, 128, 256, 300],
+                maxAttempts: Int = 6,
+                pushTimeout: TimeInterval = RepoManager.networkTimeout,
+                longPushTimeout: TimeInterval = RepoManager.networkTimeout * 5) {
         self.repoManager = repoManager
         self.backoffSchedule = backoffSchedule
         self.maxAttempts = maxAttempts
+        self.pushTimeout = pushTimeout
+        self.longPushTimeout = longPushTimeout
     }
 
     // MARK: - Status
@@ -222,8 +232,19 @@ public actor SyncManager {
 
     /// Push once; throws on failure.
     func pushOnce(repoPath: String) async throws {
+        do {
+            try await push(repoPath: repoPath, timeout: pushTimeout)
+        } catch let error as GitCommandError where error.exitCode == -9 {
+            // A large first push on a slow link can exceed the normal budget.
+            // Retry ONCE with the long budget instead of failing the episode
+            // (the retry loop's backoff would restart the upload from scratch).
+            try await push(repoPath: repoPath, timeout: max(longPushTimeout, pushTimeout))
+        }
+    }
+
+    private func push(repoPath: String, timeout: TimeInterval) async throws {
         let r = try await repoManager.runner.run(["push", "-u", "origin", "HEAD"], cwd: repoPath,
-                                                 timeout: RepoManager.networkTimeout)
+                                                 timeout: timeout)
         guard r.succeeded else {
             throw GitCommandError(command: "push", exitCode: r.exitCode, stderr: r.stderr)
         }

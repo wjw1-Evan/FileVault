@@ -140,6 +140,16 @@ public final class FileVaultService: @unchecked Sendable {
     public func sweepOnce() async {
         guard let repoManager, let commitEngine else { return }
         for root in rootsSnapshot() {
+            // Self-heal watching: an external disk that disappears and comes
+            // back, or a watch stream that stopped, must start watching again
+            // without the user touching the folder (v4.2.7).
+            if FileManager.default.fileExists(atPath: root) {
+                if let watcher = watchers[root] {
+                    if !watcher.isRunning { startWatching(watcher, path: root) }
+                } else {
+                    try? await attachRoot(path: root, paused: pause.isPaused(root: root))
+                }
+            }
             if pause.isPaused(root: root) { continue }
             let entries = (try? await repoManager.status(path: root)) ?? []
             if !entries.isEmpty {
@@ -268,8 +278,13 @@ public final class FileVaultService: @unchecked Sendable {
         if !roots.contains(p) { roots.append(p) }
         lock.unlock()
         commitEngine.registerRoot(p)
-        w.start(onActivityPaths: { [weak self] paths in
-            self?.commitEngine.handleActivity(root: p, paths: paths)
+        startWatching(w, path: p)
+    }
+
+    /// Start (or restart) one watcher stream for a root.
+    private func startWatching(_ watcher: WatcherEngine, path: String) {
+        watcher.start(onActivityPaths: { [weak self] paths in
+            self?.commitEngine.handleActivity(root: path, paths: paths)
         })
     }
 

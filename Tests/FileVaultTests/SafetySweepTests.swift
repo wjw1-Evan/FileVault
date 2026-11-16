@@ -54,6 +54,18 @@ final class SafetySweepTests: XCTestCase {
         XCTAssertEqual(dirtyAfter, 0)
     }
 
+
+    func testSweepRestartsStoppedWatcher() async throws {
+        let repo = root + "/vault"
+        await waitUntilClean(repo)
+        let watcher = try XCTUnwrap(service.watchers[repo])
+        XCTAssertTrue(watcher.isRunning)
+        watcher.stop()
+        XCTAssertFalse(watcher.isRunning)
+
+        await service.sweepOnce()
+        XCTAssertTrue(watcher.isRunning, "the safety sweep must restart a stopped watcher")
+    }
     func testSweepRespectsPause() async throws {
         let repo = root + "/vault"
         await waitUntilClean(repo)
