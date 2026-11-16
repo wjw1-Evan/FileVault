@@ -252,8 +252,17 @@ final class SyncManagerTests: XCTestCase {
         var messages: [String] = []
         let lock = NSLock()
         sync.onPushFailure.handler = { _, reason in lock.lock(); messages.append(reason); lock.unlock() }
-        try await sync.configureRemote(repoPath: repo, url: remote, autoPush: true)
+        let change = try await sync.configureRemote(repoPath: repo, url: remote, autoPush: true)
+        XCTAssertTrue(change.needsDecision, "a remote that already has commits needs an explicit decision")
+        let pending = await repos.remoteSwitchPending(path: repo)
+        XCTAssertTrue(pending)
+        let statusWhilePending = await sync.status(for: repo)
+        XCTAssertEqual(statusWhilePending, .pendingPush, "nothing is auto-pushed while undecided")
 
+        // After the user explicitly opts to push, v4.1.5 reconciliation refuses
+        // the unrelated histories with a readable message instead of retrying.
+        await repos.clearRemoteSwitchPending(path: repo)
+        await sync.enqueuePush(repoPath: repo)
         await waitForStatus(.failed, repo: repo)
         try? await Task.sleep(nanoseconds: 400_000_000)
         lock.lock(); let seen = messages; lock.unlock()
@@ -264,5 +273,139 @@ final class SyncManagerTests: XCTestCase {
         XCTAssertEqual(dirty, 0)
         let finalStatus = await sync.status(for: repo)
         XCTAssertEqual(finalStatus, .failed)
+    }
+
+    // MARK: - Switching the remote repository (v4.1.6)
+
+    /// Replacing the remote with an EMPTY repository re-points everything and
+    /// pushes the local history there (no stale refs/upstream from the old one).
+    func testSwitchToEmptyRemoteRepointsStateAndPushes() async throws {
+        let repo = root + "/repoA"
+        _ = try await repos.ensureRepo(at: repo)
+        let oldRemote = makeBareRemote("old")
+        try await sync.configureRemote(repoPath: repo, url: oldRemote, autoPush: true)
+        await waitForStatus(.synced, repo: repo)
+        TestSupport.write("v2", to: repo + "/v2.md")
+        _ = try await repos.commitAll(path: repo)
+        let okOld = await sync.pushNow(repoPath: repo)
+        XCTAssertTrue(okOld)
+        let head = try await repos.resolveHead(path: repo)
+
+        let newRemote = makeBareRemote("new")
+        let change = try await sync.configureRemote(repoPath: repo, url: newRemote, autoPush: true)
+        XCTAssertTrue(change.changed)
+        XCTAssertFalse(change.needsDecision, "an empty remote needs no decision")
+        XCTAssertTrue(change.fetchSucceeded)
+        XCTAssertEqual(change.remoteCommitCount, 0)
+        await waitForStatus(.synced, repo: repo)
+
+        let urlNow = try await repos.runner.run(["remote", "get-url", "origin"], cwd: repo)
+        XCTAssertEqual(urlNow.stdout.trimmingCharacters(in: .whitespacesAndNewlines), newRemote)
+        let newLog = try await repos.runner.run(["--git-dir=" + newRemote, "log", "--oneline", "main"],
+                                                cwd: newRemote)
+        XCTAssertTrue(newLog.succeeded, newLog.stderr)
+        XCTAssertTrue(newLog.stdout.contains("auto:"), newLog.stdout)
+        let upstream = try await repos.runner.run(
+            ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"], cwd: repo)
+        XCTAssertTrue(upstream.succeeded, "upstream must be re-bound to the new remote")
+        let pending = await repos.remoteSwitchPending(path: repo)
+        XCTAssertFalse(pending)
+        let remoteMain = try await repos.runner.run(["rev-parse", "refs/remotes/origin/main"], cwd: repo)
+        XCTAssertEqual(remoteMain.stdout.trimmingCharacters(in: .whitespacesAndNewlines), head,
+                       "remote-tracking refs must describe the NEW remote")
+    }
+
+    /// A replaced remote that already has commits must not be merged or pushed
+    /// automatically: the user decides (sync / force pull / push) afterwards.
+    func testSwitchToRemoteWithContentWaitsForDecision() async throws {
+        let repo = root + "/repoA"
+        _ = try await repos.ensureRepo(at: repo)
+        let oldRemote = makeBareRemote("old2")
+        try await sync.configureRemote(repoPath: repo, url: oldRemote, autoPush: true)
+        await waitForStatus(.synced, repo: repo)
+        TestSupport.write("local", to: repo + "/local.md")
+        _ = try await repos.commitAll(path: repo)
+        let localHead = try await repos.resolveHead(path: repo)
+
+        // The new remote already carries its own commit.
+        let newRemote = makeBareRemote("content")
+        let seed = root + "/seedSwitch"
+        try FileManager.default.createDirectory(atPath: seed, withIntermediateDirectories: true)
+        TestSupport.write("seed", to: seed + "/seed.md")
+        _ = try await repos.ensureRepo(at: seed)
+        try await repos.setRemote(path: seed, url: newRemote)
+        _ = try await repos.runner.run(["push", "-u", "origin", "HEAD"], cwd: seed)
+
+        let change = try await sync.configureRemote(repoPath: repo, url: newRemote, autoPush: true)
+        XCTAssertTrue(change.changed)
+        XCTAssertTrue(change.needsDecision)
+        XCTAssertGreaterThan(change.remoteCommitCount, 0)
+        let pending = await repos.remoteSwitchPending(path: repo)
+        XCTAssertTrue(pending)
+        let statusNow = await sync.status(for: repo)
+        XCTAssertEqual(statusNow, .pendingPush)
+
+        // Nothing was pushed while the decision is pending.
+        let beforeCount = try await repos.runner.run(["--git-dir=" + newRemote, "rev-list", "--count", "main"],
+                                                     cwd: newRemote)
+        try? await Task.sleep(nanoseconds: 400_000_000)
+        let afterCount = try await repos.runner.run(["--git-dir=" + newRemote, "rev-list", "--count", "main"],
+                                                    cwd: newRemote)
+        XCTAssertEqual(beforeCount.stdout, afterCount.stdout, "auto-push must wait for the decision")
+        let headNow = try await repos.resolveHead(path: repo)
+        XCTAssertEqual(headNow, localHead)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: repo + "/.git/rebase-merge"))
+    }
+
+    /// An explicit push after the switch resolves the pending decision.
+    func testExplicitPushAfterRemoteSwitchClearsDecision() async throws {
+        let repo = root + "/repoA"
+        _ = try await repos.ensureRepo(at: repo)
+        let oldRemote = makeBareRemote("old3")
+        try await sync.configureRemote(repoPath: repo, url: oldRemote, autoPush: true)
+        await waitForStatus(.synced, repo: repo)
+
+        // The new remote starts with the SAME history (so an explicit push can
+        // fast-forward); it still counts as "remote already has commits".
+        let newRemote = makeBareRemote("related")
+        _ = try await repos.runner.run(["push", newRemote, "main:main"], cwd: repo)
+        let change = try await sync.configureRemote(repoPath: repo, url: newRemote, autoPush: true)
+        XCTAssertTrue(change.needsDecision)
+        let pendingBefore = await repos.remoteSwitchPending(path: repo)
+        XCTAssertTrue(pendingBefore)
+
+        TestSupport.write("after", to: repo + "/after.md")
+        _ = try await repos.commitAll(path: repo)
+        let ok = await sync.pushNow(repoPath: repo)
+        XCTAssertTrue(ok, "an explicit push must resolve the switch")
+        let pendingAfter = await repos.remoteSwitchPending(path: repo)
+        XCTAssertFalse(pendingAfter, "explicit push clears the pending decision")
+        let statusAfter = await sync.status(for: repo)
+        XCTAssertEqual(statusAfter, .synced)
+        let log = try await repos.runner.run(["--git-dir=" + newRemote, "log", "--oneline", "main"],
+                                             cwd: newRemote)
+        XCTAssertTrue(log.stdout.contains("after.md") || log.stdout.contains("auto:"), log.stdout)
+    }
+
+    /// Re-saving the same remote URL must not detach anything.
+    func testBindingTheSameRemoteIsNotAChange() async throws {
+        let repo = root + "/repoA"
+        _ = try await repos.ensureRepo(at: repo)
+        let remote = makeBareRemote("same")
+        let first = try await sync.configureRemote(repoPath: repo, url: remote, autoPush: true)
+        XCTAssertTrue(first.changed)
+        await waitForStatus(.synced, repo: repo)
+        let upstreamBefore = try await repos.runner.run(
+            ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"], cwd: repo)
+        XCTAssertTrue(upstreamBefore.succeeded)
+
+        let second = try await sync.configureRemote(repoPath: repo, url: remote, autoPush: true)
+        XCTAssertFalse(second.changed)
+        XCTAssertFalse(second.needsDecision)
+        let upstreamAfter = try await repos.runner.run(
+            ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"], cwd: repo)
+        XCTAssertTrue(upstreamAfter.succeeded, "saving the same URL must keep the upstream")
+        let pending = await repos.remoteSwitchPending(path: repo)
+        XCTAssertFalse(pending)
     }
 }

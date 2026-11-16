@@ -320,12 +320,108 @@ public final class RepoManager: @unchecked Sendable {
     // MARK: - Remote config (FR-06/07)
 
     /// Set remote origin URL (stored in the repo's own .git/config; terminal-compatible).
-    public func setRemote(path: String, url: String) async throws {
-        let has = try await runner.run(["remote", "get-url", "origin"], cwd: path)
-        if has.succeeded {
+    /// What the user got when they bound or REPLACED the remote (v4.1.6).
+    public struct RemoteChange: Sendable, Equatable {
+        /// True when origin pointed somewhere else before this call.
+        public let changed: Bool
+        /// True only when an EXISTING origin was replaced (not a first bind).
+        public let isReplacement: Bool
+        /// False when the new remote could not be read (bad URL / missing auth).
+        public let fetchSucceeded: Bool
+        /// Whether the new remote has the current branch.
+        public let remoteBranchExists: Bool
+        /// Commits on the remote's copy of the current branch (0 = empty/new).
+        public let remoteCommitCount: Int
+        /// The new remote already carries work: auto-pushing could merge two
+        /// histories, so the user must choose sync / force pull / push first.
+        public var needsDecision: Bool { changed && remoteCommitCount > 0 }
+    }
+
+    /// Bind origin to `url`. When the URL actually changes, everything that
+    /// belonged to the OLD remote is detached first — the branch upstream and
+    /// remote-tracking refs would otherwise make status/push keep comparing
+    /// against the previous repository (v4.1.6). Returns what was found on the
+    /// new remote so the UI can ask the user how to reconcile.
+    @discardableResult
+    public func setRemote(path: String, url: String) async throws -> RemoteChange {
+        let old = try? await runner.run(["remote", "get-url", "origin"], cwd: path)
+        let oldURL = old?.succeeded == true
+            ? old?.stdout.trimmingCharacters(in: .whitespacesAndNewlines) : nil
+        if let oldURL, oldURL == url {
+            // Same remote: report the current state without touching anything.
+            let info = await remoteBranchInfo(path: path)
+            return RemoteChange(changed: false, isReplacement: false, fetchSucceeded: true,
+                                remoteBranchExists: info.exists, remoteCommitCount: info.count)
+        }
+
+        if oldURL != nil {
             _ = try await runner.run(["remote", "set-url", "origin", url], cwd: path)
         } else {
             _ = try await runner.run(["remote", "add", "origin", url], cwd: path)
+        }
+
+        if oldURL != nil {
+            // The old remote's refs and upstream are meaningless for the new one.
+            _ = try? await runner.run(["branch", "--unset-upstream"], cwd: path)
+            await deleteRemoteTrackingRefs(path: path, remote: "origin")
+        }
+
+        // Read the new remote (an empty repo fetches fine and has no refs).
+        let fetch = try? await runner.run(["fetch", "--prune", "origin"], cwd: path)
+        let info = await remoteBranchInfo(path: path)
+        let change = RemoteChange(changed: true, isReplacement: oldURL != nil,
+                                  fetchSucceeded: fetch?.succeeded == true,
+                                  remoteBranchExists: info.exists,
+                                  remoteCommitCount: info.count)
+        await setRemoteSwitchPending(path: path, pending: change.needsDecision)
+        return change
+    }
+
+    /// Called once the user resolved a remote switch explicitly (successful
+    /// pull / sync / force pull / push).
+    public func clearRemoteSwitchPending(path: String) async {
+        await setRemoteSwitchPending(path: path, pending: false)
+    }
+
+    /// Whether a freshly REPLACED remote still waits for the user's choice.
+    public func remoteSwitchPending(path: String) async -> Bool {
+        let r = try? await runner.run(["config", "--local", "--get", Self.remoteSwitchPendingKey],
+                                      cwd: path)
+        guard let r, r.succeeded else { return false }
+        return r.stdout.trimmingCharacters(in: .whitespacesAndNewlines) == "true"
+    }
+
+    private static let remoteSwitchPendingKey = "filevault.remoteswitchpending"
+
+    private func setRemoteSwitchPending(path: String, pending: Bool) async {
+        if pending {
+            _ = try? await runner.run(["config", "--local", Self.remoteSwitchPendingKey, "true"], cwd: path)
+        } else {
+            _ = try? await runner.run(["config", "--local", "--unset", Self.remoteSwitchPendingKey],
+                                      cwd: path)
+        }
+    }
+
+    /// (branch exists on origin, commit count) for the checked-out branch.
+    private func remoteBranchInfo(path: String) async -> (exists: Bool, count: Int) {
+        let headRef = try? await runner.run(["symbolic-ref", "--quiet", "--short", "HEAD"], cwd: path)
+        let branch = headRef?.stdout.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !branch.isEmpty else { return (false, 0) }
+        let ref = "refs/remotes/origin/" + branch
+        guard let r = try? await runner.run(["rev-list", "--count", ref], cwd: path), r.succeeded else {
+            return (false, 0)
+        }
+        let count = Int(r.stdout.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
+        return (count > 0, count)
+    }
+
+    /// Delete refs/remotes/<remote>/* (they belong to the previous repository).
+    private func deleteRemoteTrackingRefs(path: String, remote: String) async {
+        guard let list = try? await runner.run(["for-each-ref", "--format=%(refname)",
+                                                "refs/remotes/" + remote + "/"], cwd: path),
+              list.succeeded else { return }
+        for ref in list.stdout.split(separator: "\n").map(String.init) where !ref.isEmpty {
+            _ = try? await runner.run(["update-ref", "-d", ref], cwd: path)
         }
     }
 

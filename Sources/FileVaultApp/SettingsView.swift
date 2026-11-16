@@ -440,7 +440,7 @@ final class SettingsModel: ObservableObject {
                 }
 
                 // The remote address is always saved, even when the token is missing.
-                try await svc.sync.configureRemote(repoPath: id, url: url, autoPush: auto)
+                let change = try await svc.sync.configureRemote(repoPath: id, url: url, autoPush: auto)
                 if needsToken {
                     await MainActor.run {
                         self.setMessage(id, NSLocalizedString("已保存地址，但「用户名 + 访问令牌」还需要填写访问令牌（令牌只写进本机凭证库，不写进 git 配置）",
@@ -452,8 +452,26 @@ final class SettingsModel: ObservableObject {
                 await MainActor.run { self.fillRepoDetails(id: id) }   // remote limit may have changed
                 let conn = await svc.sync.testConnectivity(repoPath: id)
                 self.editedPaths.remove(id)
+                let pending = await svc.repoManager.remoteSwitchPending(path: id)
                 let status: String
-                if conn.ok {
+                if pending {
+                    // A remote that already has commits (new bind or replacement)
+                    // must not be merged or pushed silently (v4.1.6): point at
+                    // the two explicit exits instead.
+                    let decision = change.isReplacement
+                        ? NSLocalizedString("✓ 已切换到新的远程，但它已有 %d 个提交。请选择：「更多 → 同步远程文件到本地（保留本地文件）」把两边合到一起，或「强制拉取（以远程为准）」；做出选择前不会自动推送",
+                                            comment: "settings status")
+                        : NSLocalizedString("✓ 已保存并连通；这个远程已有 %d 个提交。请选择：「更多 → 同步远程文件到本地（保留本地文件）」把两边合到一起，或「强制拉取（以远程为准）」；做出选择前不会自动推送",
+                                            comment: "settings status")
+                    status = String(format: decision, change.remoteCommitCount)
+                } else if change.changed && !change.fetchSucceeded {
+                    status = String(format: NSLocalizedString("⚠️ 已保存新远程地址，但暂时读不到这个远程（检查地址或认证）：%@",
+                                                             comment: "settings status"), conn.detail) + credentialNote
+                } else if change.changed && change.isReplacement {
+                    status = (auto
+                        ? NSLocalizedString("✓ 已切换到新的远程仓库（空仓库），本地版本会自动推送上去", comment: "settings status")
+                        : NSLocalizedString("✓ 已切换到新的远程仓库（空仓库），可点「立即推送」上传本地版本", comment: "settings status")) + credentialNote
+                } else if conn.ok {
                     let base = NSLocalizedString(auto ? "✓ 已保存并连通，提交后将自动推送" : "✓ 已保存并连通（自动推送未开启）",
                                                  comment: "settings status")
                     // Discoverability for the "remote already has files" case
@@ -466,7 +484,7 @@ final class SettingsModel: ObservableObject {
                     status = String(format: NSLocalizedString("⚠️ 已保存但连接失败：%@", comment: "settings status"),
                                     conn.detail) + credentialNote
                 }
-                await MainActor.run { self.setMessage(id, status, error: !conn.ok) }
+                await MainActor.run { self.setMessage(id, status, error: !conn.ok && !change.changed) }
             } catch {
                 await MainActor.run {
                     self.setMessage(id, String(format: NSLocalizedString("⚠️ 保存失败：%@", comment: "settings status"),
@@ -501,6 +519,7 @@ final class SettingsModel: ObservableObject {
             defer { self?.endRepoOp(id) }
             do {
                 let result = try await svc.repoManager.pull(path: id)
+                await svc.repoManager.clearRemoteSwitchPending(path: id)
                 let text: String
                 if result.pulledCommits == 0 {
                     text = NSLocalizedString("✓ 已是最新", comment: "settings status")
@@ -556,6 +575,7 @@ final class SettingsModel: ObservableObject {
             defer { self?.endRepoOp(id) }
             do {
                 let result = try await svc.repoManager.forcePull(path: id)
+                await svc.repoManager.clearRemoteSwitchPending(path: id)
                 let text: String
                 if result.discardedCommits > 0 {
                     text = String(format: NSLocalizedString("✓ 已强制拉取：丢弃 %d 个本地提交，旧版本已备份（可在历史窗口找回）",
@@ -600,6 +620,7 @@ final class SettingsModel: ObservableObject {
             defer { self?.endRepoOp(id) }
             do {
                 let result = try await svc.repoManager.mergeSync(path: id)
+                await svc.repoManager.clearRemoteSwitchPending(path: id)
                 var text: String
                 if !result.didChange && result.addedFromRemote == 0 && result.remoteCopies.isEmpty {
                     text = NSLocalizedString("✓ 已是最新，两边没有需要同步的文件", comment: "settings status")

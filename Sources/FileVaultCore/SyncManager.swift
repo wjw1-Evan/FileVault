@@ -46,16 +46,32 @@ public actor SyncManager {
 
     // MARK: - Remote configuration (FR-06)
 
-    /// Configure remote + auto-push for a repo.
-    public func configureRemote(repoPath: String, url: String, autoPush: Bool) async throws {
-        try await repoManager.setRemote(path: repoPath, url: url)
+    /// Configure remote + auto-push for a repo (v4.1.6: a REPLACED remote that
+    /// already has commits is left to the user instead of being auto-merged).
+    @discardableResult
+    public func configureRemote(repoPath: String, url: String,
+                                autoPush: Bool) async throws -> RepoManager.RemoteChange {
+        // A push loop for the OLD remote must not continue into the new URL.
+        states[repoPath]?.task?.cancel()
+        states[repoPath]?.task = nil
+        let change = try await repoManager.setRemote(path: repoPath, url: url)
         await repoManager.setAutoPush(path: repoPath, enabled: autoPush)
+        // Re-saving while a replaced remote is still undecided must not start
+        // pushing either (setRemote keeps the flag for the same URL).
+        let stillPending = await repoManager.remoteSwitchPending(path: repoPath)
+        if change.needsDecision || stillPending {
+            // The new remote already carries work: do not auto-push/merge two
+            // histories. Wait for the user to pick sync / force pull / push.
+            setState(repoPath, .pendingPush)
+            return change
+        }
         if autoPush {
             setState(repoPath, .pendingPush)
             await enqueuePush(repoPath: repoPath)
         } else {
             await refreshStatus(repoPath: repoPath)
         }
+        return change
     }
 
     /// Remove remote config.
@@ -85,6 +101,12 @@ public actor SyncManager {
         let hasRemote = await repoManager.remoteURL(path: repoPath) != nil
         guard hasRemote else {
             setState(repoPath, .noRemote)
+            return
+        }
+        // A replaced remote that already has history waits for an explicit user
+        // decision (sync / force pull / push) before anything is pushed (v4.1.6).
+        if await repoManager.remoteSwitchPending(path: repoPath) {
+            setState(repoPath, .pendingPush)
             return
         }
         let enabled = await repoManager.autoPushEnabled(path: repoPath)
@@ -175,6 +197,7 @@ public actor SyncManager {
         setState(repoPath, .pushing)
         do {
             try await pushWithReconcile(repoPath: repoPath)
+            await repoManager.clearRemoteSwitchPending(path: repoPath)
             setState(repoPath, .synced)
             return true
         } catch {

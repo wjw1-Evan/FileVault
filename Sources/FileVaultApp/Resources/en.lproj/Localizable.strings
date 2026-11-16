@@ -89,6 +89,11 @@
 "已保存，正在测试连接…" = "Saved, testing connection…";
 "✓ 已保存并连通，提交后将自动推送" = "✓ Saved and connected — commits will be pushed automatically";
 "✓ 已保存并连通（自动推送未开启）" = "✓ Saved and connected (auto-push off)";
+"✓ 已切换到新的远程，但它已有 %d 个提交。请选择：「更多 → 同步远程文件到本地（保留本地文件）」把两边合到一起，或「强制拉取（以远程为准）」；做出选择前不会自动推送" = "✓ Switched to the new remote, but it already has %d commit(s). Choose More → Sync remote files into the folder (keep local files) to combine both sides, or Force pull (remote wins); nothing is pushed until you decide";
+"⚠️ 已保存新远程地址，但暂时读不到这个远程（检查地址或认证）：%@" = "⚠️ New remote saved, but it cannot be read right now (check the URL or credentials): %@";
+"✓ 已切换到新的远程仓库（空仓库），本地版本会自动推送上去" = "✓ Switched to the new remote (an empty repository); local versions will be pushed automatically";
+"✓ 已切换到新的远程仓库（空仓库），可点「立即推送」上传本地版本" = "✓ Switched to the new remote (an empty repository); click Push now to upload the local versions";
+"✓ 已保存并连通；这个远程已有 %d 个提交。请选择：「更多 → 同步远程文件到本地（保留本地文件）」把两边合到一起，或「强制拉取（以远程为准）」；做出选择前不会自动推送" = "✓ Saved and connected; this remote already has %d commit(s). Choose More → Sync remote files into the folder (keep local files) to combine both sides, or Force pull (remote wins); nothing is pushed until you decide";
 "✓ 已拉取 %d 个新版本（快进）" = "✓ Pulled %d new versions (fast-forward)";
 "✓ 已自动合并：拉取 %d 个新版本，本地 %d 个提交已变基" = "✓ Merged automatically: pulled %d new version(s), rebased %d local commit(s)";
 "✓ 已是最新" = "✓ Already up to date";
