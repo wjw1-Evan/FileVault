@@ -166,6 +166,7 @@
 " · ☁️ %@ 目录（按需下载可能被误判为删除）" = " · ☁️ %@ folder (on-demand downloads may look like deletions)";
 "远程仓库不允许推送（只读、已归档或没有写权限）。请在托管平台取消只读/归档或授予写权限后再试。" = "The remote does not allow pushes (read-only, archived, or no write permission). Remove the read-only/archived state or grant write access on the hosting platform and retry.";
 "恢复失败：%@ 现在是一个文件夹，请先把它改名或移走再恢复" = "Restore failed: %@ is now a folder; rename or move it away before restoring";
+"回滚会删除文件夹 %@ 里未纳入版本管理的文件：%@%@；请先移走它们或把它们纳入版本管理后再回滚" = "Rolling back would delete files that are not under version control in folder %@: %@%@; move them away or add them to version control first";
 "%@：.git 不见了（可能被删除或移动），已重新初始化为空历史；如果之前推送过远程，请在设置里重新填写远程地址以恢复同步" = "%@: its .git is gone (deleted or moved), so it was re-initialised with an empty history; if you pushed it to a remote before, enter the remote URL again in Settings to resume syncing";
 "上次的合并、变基或 Git 操作没有正常结束（可能是崩溃或强退）。清理会丢弃那一步的中间状态（包括过期的 .git/index.lock），已提交的历史和文件不会丢失。" = "The last merge, rebase or Git operation did not finish (a crash or force-quit). Cleaning up discards only that step's intermediate state (including a stale .git/index.lock); committed history and files are kept.";
 "远程仓库与本地历史互不相关，不能快进合并" = "The remote and local histories are unrelated — cannot fast-forward";

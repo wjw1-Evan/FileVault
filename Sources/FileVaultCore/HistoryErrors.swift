@@ -16,6 +16,9 @@ public enum HistoryError: Error, LocalizedError, Equatable {
     case restoreFailed(stderr: String)
     /// A directory sits at the path a file must be restored to (v4.2.14).
     case restoreTargetIsDirectory(file: String)
+    /// Rolling back would delete files that are NOT under version control
+    /// (ignored/untracked), e.g. a .env inside a folder restored away (v4.2.16).
+    case rollbackWouldDeleteUntracked(directory: String, files: [String])
 
     public var errorDescription: String? {
         switch self {
@@ -46,6 +49,14 @@ public enum HistoryError: Error, LocalizedError, Equatable {
         case .restoreTargetIsDirectory(let file):
             return String(format: NSLocalizedString("恢复失败：%@ 现在是一个文件夹，请先把它改名或移走再恢复",
                                                     comment: "history error"), file)
+        case .rollbackWouldDeleteUntracked(let directory, let files):
+            let names = files.prefix(3).joined(separator: "、")
+            let more = files.count > 3
+                ? String(format: NSLocalizedString(" 等 %d 个文件", comment: "history error"), files.count)
+                : ""
+            return String(format: NSLocalizedString("回滚会删除文件夹 %@ 里未纳入版本管理的文件：%@%@；请先移走它们或把它们纳入版本管理后再回滚",
+                                                    comment: "history error"),
+                          directory, names, more)
         }
     }
 }

@@ -428,6 +428,19 @@ public extension HistoryService {
         return FsckReport(ok: r.exitCode == 0, issues: Array(issues.prefix(20)), danglingCount: dangling)
     }
 
+    /// Files under `dir` that are not in the index at all (untracked AND
+    /// ignored): a folder removal would delete them (v4.2.16).
+    private func untrackedFiles(under dir: String, repoPath: String) async throws -> [String] {
+        var paths: [String] = []
+        for extra in [[], ["--ignored", "--exclude-standard"]] {
+            let args = ["ls-files", "--others", "-z"] + extra + ["--", dir]
+            let r = try await repoManager.runner.run(args, cwd: repoPath)
+            guard r.succeeded else { continue }
+            paths += r.stdout.split(separator: "\0").map(String.init).filter { !$0.isEmpty }
+        }
+        return Array(Set(paths)).sorted()
+    }
+
     // MARK: - Folder restore
 
     /// Restore one folder (not just one file) to its state at a commit.
@@ -467,6 +480,12 @@ public extension HistoryService {
             }
         } else {
             // The folder did not exist at that version: remove it entirely.
+            // Removing it would also take files that are NOT backed up (ignored
+            // or never committed, e.g. a .env); refuse instead of losing them.
+            let untracked = try await untrackedFiles(under: dir, repoPath: repoPath)
+            if !untracked.isEmpty {
+                throw HistoryError.rollbackWouldDeleteUntracked(directory: dir, files: untracked)
+            }
             _ = try await repoManager.runner.run(["rm", "-r", "-f", "--ignore-unmatch", "--", dir], cwd: repoPath)
             let full = (repoPath as NSString).appendingPathComponent(dir)
             try? FileManager.default.removeItem(atPath: full)

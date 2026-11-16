@@ -27,7 +27,40 @@ final class HistoryRestoreTests: XCTestCase {
         try? FileManager.default.removeItem(atPath: root!)
     }
 
+
+    /// v4.2.16: rolling a folder back to a version where it did not exist must
+    /// not delete files that are not under version control (e.g. a .env).
+    func testFolderRollbackRefusesToDeleteUntrackedFiles() async throws {
+        try write(".env\n", to: ".gitignore")
+        try write("root", to: "root.md")
+        try await commitAll("v0 without proj")
+        let v0 = try await head()
+        try write("keep", to: "proj/keep.md")
+        try await commitAll("v1 with proj")
+        try FileManager.default.removeItem(atPath: repo + "/proj")
+        try await commitAll("v2 without proj")
+
+        // A new ignored file inside the recreated folder is NOT under git.
+        try write("SECRET=1", to: "proj/.env")
+        let dirty = try? await repos.status(path: repo)
+        XCTAssertEqual(dirty?.count, 0, "the .env must stay ignored")
+
+        do {
+            _ = try await history.restoreDirectory(repoPath: repo, directory: "proj", to: v0)
+            XCTFail("rollback must refuse to delete untracked files")
+        } catch let error as HistoryError {
+            guard case .rollbackWouldDeleteUntracked(let dir, let files) = error else {
+                return XCTFail("got \(error)")
+            }
+            XCTAssertEqual(dir, "proj")
+            XCTAssertTrue(files.contains("proj/.env"), "\(files)")
+            XCTAssertTrue((error.errorDescription ?? "").contains("未纳入版本管理"), error.errorDescription ?? "")
+        }
+        XCTAssertEqual(read("proj/.env"), "SECRET=1", "the untracked file must not be deleted")
+    }
+
     // MARK: - Helpers
+
 
     @discardableResult
     private func git(_ args: [String]) async throws -> GitResult {
