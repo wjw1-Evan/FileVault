@@ -119,19 +119,32 @@ public final class RepoManager: @unchecked Sendable {
     /// directory into ONE entry ("dir/"), which used to hide the files inside
     /// it from the commit message AND from the large-file exclusion check.
     public func status(path: String) async throws -> [StatusEntry] {
-        let r = try await runner.run(["status", "--porcelain", "--untracked-files=all"], cwd: path)
+        // -z (NUL separated) keeps unusual file names intact: without it git
+        // C-quotes names containing newlines/quotes, and a rename whose NEW name
+        // contains " -> " would be split at the wrong place (v4.2.10).
+        let r = try await runner.run(["status", "--porcelain", "-z", "--untracked-files=all"], cwd: path)
         guard r.succeeded else { return [] }
-        return r.stdout.split(separator: "\n").compactMap { line -> StatusEntry? in
-            let l = String(line)
-            guard l.count >= 3 else { return nil }
-            let xy = String(l.prefix(2))
-            let p = String(l.dropFirst(3))
-            guard let change = Self.change(fromXY: xy) else { return nil }
-            if change == .renamed, let range = p.range(of: " -> ") {
-                return StatusEntry(change: change, path: String(p[range.upperBound...]), originalPath: String(p[..<range.lowerBound]))
+        let records = r.stdout.split(separator: "\0", omittingEmptySubsequences: false).map(String.init)
+        var entries: [StatusEntry] = []
+        var i = 0
+        while i < records.count {
+            let record = records[i]
+            i += 1
+            guard record.count >= 4 else { continue }
+            let xy = String(record.prefix(2))
+            let p = String(record.dropFirst(3))
+            guard let change = Self.change(fromXY: xy) else { continue }
+            if xy.contains("R") || xy.contains("C") {
+                // With -z the ORIGINAL path follows as the next NUL record.
+                let original = i < records.count ? records[i] : ""
+                i += 1
+                entries.append(StatusEntry(change: change, path: p,
+                                           originalPath: original.isEmpty ? nil : original))
+            } else {
+                entries.append(StatusEntry(change: change, path: p, originalPath: nil))
             }
-            return StatusEntry(change: change, path: p, originalPath: nil)
         }
+        return entries
     }
 
     /// Map porcelain XY code to Change kind (X=staged, Y=worktree; check both).
@@ -971,11 +984,9 @@ public final class RepoManager: @unchecked Sendable {
 
     /// Paths git could not merge while the aborted rebase was half-applied.
     private func unmergedPaths(path: String) async -> [String] {
-        guard let r = try? await runner.run(["diff", "--name-only", "--diff-filter=U"], cwd: path),
+        guard let r = try? await runner.run(["diff", "--name-only", "-z", "--diff-filter=U"], cwd: path),
               r.succeeded else { return [] }
-        return r.stdout.split(separator: "\n")
-            .map { $0.trimmingCharacters(in: .whitespaces) }
-            .filter { !$0.isEmpty }
+        return r.stdout.split(separator: "\0").map(String.init).filter { !$0.isEmpty }
     }
 
     /// Whether a rebase is half-applied — checked before and after aborting so
@@ -1563,17 +1574,24 @@ public final class RepoManager: @unchecked Sendable {
         guard let old, let new else {
             let tip = old ?? new
             guard let tip else { return (0, 0) }
-            guard let r = try? await runner.run(["ls-tree", "-r", "--name-only", tip], cwd: path),
+            guard let r = try? await runner.run(["ls-tree", "-r", "--name-only", "-z", tip], cwd: path),
                   r.succeeded else { return (0, 0) }
-            let count = r.stdout.split(separator: "\n").filter { !$0.isEmpty }.count
+            let count = r.stdout.split(separator: "\0").filter { !$0.isEmpty }.count
             return old == nil ? (count, 0) : (0, count)
         }
-        guard let r = try? await runner.run(["diff", "--name-status", old, new], cwd: path),
+        guard let r = try? await runner.run(["diff", "--name-status", "-z", old, new], cwd: path),
               r.succeeded else { return (0, 0) }
+        let fields = r.stdout.split(separator: "\0", omittingEmptySubsequences: false).map(String.init)
         var added = 0
         var deleted = 0
-        for line in r.stdout.split(separator: "\n") {
-            switch line.first {
+        var i = 0
+        while i < fields.count {
+            let status = fields[i]
+            i += 1
+            guard let first = status.first else { continue }
+            // Renames/copies carry two path fields; a plain change carries one.
+            i += (first == "R" || first == "C") ? 2 : 1
+            switch first {
             case "A": added += 1
             case "D": deleted += 1
             default: break
@@ -1616,8 +1634,9 @@ public final class RepoManager: @unchecked Sendable {
 
     /// Tracked files of a repo (v2.2.0 file-centric restore).
     public func listFiles(path: String) async -> [String] {
-        guard let r = try? await runner.run(["ls-files"], cwd: path), r.succeeded else { return [] }
-        return r.stdout.split(separator: "\n").map(String.init).filter { !$0.isEmpty }.sorted()
+        // -z keeps unusual names (newlines/quotes) intact (v4.2.10).
+        guard let r = try? await runner.run(["ls-files", "-z"], cwd: path), r.succeeded else { return [] }
+        return r.stdout.split(separator: "\0").map(String.init).filter { !$0.isEmpty }.sorted()
     }
 
     // MARK: - Large file protection (FR-12)
