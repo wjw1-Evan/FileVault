@@ -230,8 +230,26 @@ public actor SyncManager {
             guard Self.isRejectedPush(error) else { throw error }
             // Never start a rebase while another operation owns the repository.
             guard !(await repoManager.operationInProgress(path: repoPath)) else { throw error }
-            _ = try await repoManager.pull(path: repoPath)
+            do {
+                _ = try await repoManager.pull(path: repoPath)
+            } catch let pullError as PullError where Self.isLosslesslyMergeable(pullError) {
+                // v4.2.2: in fully automatic mode a same-file conflict or an
+                // unrelated remote history must not become a dead end. Fall back
+                // to the keep-local union merge (remote versions are kept as
+                // "远程副本") and push the merged result — nothing is discarded.
+                _ = try await repoManager.mergeSync(path: repoPath)
+            }
             try await pushOnce(repoPath: repoPath)
+        }
+    }
+
+    /// Pull failures the lossless keep-local merge can resolve automatically.
+    static func isLosslesslyMergeable(_ error: PullError) -> Bool {
+        switch error {
+        case .mergeConflict, .unrelatedHistories:
+            return true
+        default:
+            return false
         }
     }
 

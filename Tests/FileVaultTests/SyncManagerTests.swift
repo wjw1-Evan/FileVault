@@ -134,7 +134,10 @@ final class SyncManagerTests: XCTestCase {
 
     /// Conflicting edits must stop with a readable reason: the local commit is
     /// kept, the rebase is aborted and no retry loop keeps hammering.
-    func testAutoPushConflictAbortsCleanlyAndNotifies() async throws {
+    /// v4.2.2: the automatic push loop resolves a same-file conflict with the
+    /// lossless keep-local merge (remote version saved as a copy) and converges
+    /// to "synced" — no failed state, no rebase leftovers left behind.
+    func testAutoPushConflictIsResolvedLosslessly() async throws {
         let repo = root + "/repoA"
         _ = try await repos.ensureRepo(at: repo)
         let remote = makeBareRemote("r4")
@@ -162,27 +165,36 @@ final class SyncManagerTests: XCTestCase {
             lock.lock(); messages.append(reason); lock.unlock()
         }
         // Local edits the same file; enabling auto-push starts the push loop,
-        // whose reconcile hits the conflict.
+        // whose reconcile hits the conflict and falls back to the lossless merge.
         TestSupport.write("local change", to: repo + "/seed.txt")
         _ = try await repos.commitAll(path: repo)
-        let localHead = try await repos.resolveHead(path: repo)
         await sync.setAutoPush(repoPath: repo, enabled: true)
-        await waitForStatus(.failed, repo: repo)
-        try? await Task.sleep(nanoseconds: 400_000_000)   // deterministic: no more retries
-        let headNow = try await repos.resolveHead(path: repo)
-        XCTAssertEqual(headNow, localHead, "the local commit must survive the failed reconcile")
+        // Wait for the NEW attempt to finish (a stale "synced" from the push
+        // above must not satisfy the wait): the copy is created only on success.
+        var waited = 0.0
+        while waited < 10 {
+            let st = await sync.status(for: repo)
+            if st == .synced,
+               FileManager.default.fileExists(atPath: repo + "/seed (远程副本).txt") { break }
+            try? await Task.sleep(nanoseconds: 100_000_000)
+            waited += 0.1
+        }
+
         let content = try String(contentsOfFile: repo + "/seed.txt", encoding: .utf8)
-        XCTAssertEqual(content, "local change")
+        XCTAssertEqual(content, "local change", "the local version keeps the original name")
+        let copy = repo + "/seed (远程副本).txt"
+        XCTAssertTrue(FileManager.default.fileExists(atPath: copy), "the remote version must be kept")
+        XCTAssertEqual(try String(contentsOfFile: copy, encoding: .utf8), "remote change")
         XCTAssertFalse(FileManager.default.fileExists(atPath: repo + "/.git/rebase-merge"))
         XCTAssertFalse(FileManager.default.fileExists(atPath: repo + "/.git/rebase-apply"))
         let dirty = try await repos.status(path: repo).count
-        XCTAssertEqual(dirty, 0, "the aborted rebase restores a clean tree")
+        XCTAssertEqual(dirty, 0, "the resolved merge leaves a clean tree")
         lock.lock(); let seen = messages; lock.unlock()
-        XCTAssertFalse(seen.isEmpty, "the user must be told")
-        XCTAssertTrue(seen.contains { $0.contains("自动合并已中止") }, seen.joined(separator: " || "))
+        XCTAssertTrue(seen.isEmpty, "a resolved conflict must not be reported as a failure: " + seen.joined(separator: " || "))
         let finalStatus = await sync.status(for: repo)
-        XCTAssertEqual(finalStatus, .failed)
+        XCTAssertEqual(finalStatus, .synced)
     }
+
 
     // MARK: - Push classification (v4.1.5)
 
@@ -300,6 +312,69 @@ final class SyncManagerTests: XCTestCase {
         XCTAssertTrue(remoteLog.succeeded, remoteLog.stderr)
         XCTAssertTrue(remoteLog.stdout.contains("own.md") || remoteLog.stdout.contains("auto:"), remoteLog.stdout)
         XCTAssertFalse(FileManager.default.fileExists(atPath: repo + "/.git/rebase-merge"))
+    }
+
+
+    /// v4.2.2: a same-file conflict during automatic reconciliation falls back
+    /// to the lossless keep-local merge (both contents survive) instead of
+    /// dead-ending in a notification the user cannot act on.
+    func testAutoPushConflictFallsBackToLosslessMerge() async throws {
+        let remote = makeBareRemote("conf")
+        let machineA = root + "/machineA"
+        try FileManager.default.createDirectory(atPath: machineA, withIntermediateDirectories: true)
+        TestSupport.write("base\n", to: machineA + "/note.md")
+        _ = try await repos.ensureRepo(at: machineA)
+        try await repos.setRemote(path: machineA, url: remote)
+        _ = try await repos.runner.run(["push", "-u", "origin", "HEAD"], cwd: machineA)
+        let machineB = root + "/machineB"
+        _ = try await repos.runner.run(["clone", remote, machineB], cwd: root)
+        try await sync.configureRemote(repoPath: machineB, url: remote, autoPush: true)
+        await waitForStatus(.synced, repo: machineB)
+
+        // Both machines change the same file.
+        TestSupport.write("remote edit\n", to: machineA + "/note.md")
+        _ = try await repos.commitAll(path: machineA)
+        _ = try await repos.runner.run(["push"], cwd: machineA)
+        TestSupport.write("local edit\n", to: machineB + "/note.md")
+        _ = try await repos.commitAll(path: machineB)
+
+        let ok = await sync.pushNow(repoPath: machineB)
+        XCTAssertTrue(ok, "the conflict must be resolved losslessly, not dead-end")
+        XCTAssertEqual(try String(contentsOfFile: machineB + "/note.md", encoding: .utf8), "local edit\n")
+        let copy = machineB + "/note (远程副本).md"
+        XCTAssertTrue(FileManager.default.fileExists(atPath: copy), "the remote version must be kept")
+        XCTAssertEqual(try String(contentsOfFile: copy, encoding: .utf8), "remote edit\n")
+        let status = await sync.status(for: machineB)
+        XCTAssertEqual(status, .synced)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: machineB + "/.git/rebase-merge"))
+        let log = try await repos.runner.run(["--git-dir=" + remote, "log", "--oneline", "main"], cwd: remote)
+        XCTAssertTrue(log.stdout.contains("sync: 同步远程文件到本地") || log.stdout.contains("auto:"), log.stdout)
+    }
+
+    /// v4.2.2: an unrelated remote history (e.g. the repository was recreated)
+    /// also falls back to the lossless union merge, then pushes.
+    func testAutoPushUnrelatedRemoteFallsBackToLosslessMerge() async throws {
+        let remote = makeBareRemote("replaced")
+        let repo = root + "/repoA"
+        _ = try await repos.ensureRepo(at: repo)
+        try await repos.setRemote(path: repo, url: remote)
+        _ = try await repos.runner.run(["push", "-u", "origin", "HEAD"], cwd: repo)
+
+        // A different project force-replaces the remote history.
+        let other = root + "/otherProject"
+        try FileManager.default.createDirectory(atPath: other, withIntermediateDirectories: true)
+        TestSupport.write("other\n", to: other + "/other.md")
+        _ = try await repos.ensureRepo(at: other)
+        _ = try await repos.runner.run(["push", "-f", remote, "HEAD:main"], cwd: other)
+
+        let ok = await sync.pushNow(repoPath: repo)
+        XCTAssertTrue(ok, "unrelated histories must be merged losslessly, not dead-end")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: repo + "/seed.txt"), "local file kept")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: repo + "/other.md"), "remote file merged in")
+        let status = await sync.status(for: repo)
+        XCTAssertEqual(status, .synced)
+        let log = try await repos.runner.run(["--git-dir=" + remote, "log", "--oneline", "main"], cwd: remote)
+        XCTAssertTrue(log.stdout.contains("sync: 同步远程文件到本地") || log.stdout.contains("auto:"), log.stdout)
     }
 
     // MARK: - Switching the remote repository (v4.1.6)

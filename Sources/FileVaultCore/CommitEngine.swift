@@ -27,6 +27,15 @@ public final class CommitEngine: @unchecked Sendable {
     private var busyKeys: Set<String> = []
     private var recheckKeys: Set<String> = []
 
+    /// Delay before retrying a failed auto-commit (seconds). A transient cause
+    /// (locked index, disk full, permissions) often clears without any new file
+    /// event, so the pipeline retries a few times on its own (v4.2.2).
+    var retryDelay: TimeInterval = 60
+    /// Consecutive automatic-commit failures per repo (reset on success or on
+    /// fresh file activity), so notifications stay quiet while retrying.
+    private var failureCounts: [String: Int] = [:]
+    private let failureLock = NSLock()
+
     private let pendingLock = NSLock()
     /// Changed paths (relative to the root) reported by the watcher since the
     /// last commit run — used to materialise brand-new empty folders.
@@ -54,6 +63,11 @@ public final class CommitEngine: @unchecked Sendable {
             pendingLock.lock()
             pendingPaths[root, default: []].formUnion(paths)
             pendingLock.unlock()
+            // Fresh edits start a new failure streak (so a persistent error is
+            // reported once per burst instead of on every retry).
+            failureLock.lock()
+            failureCounts.removeValue(forKey: root)
+            failureLock.unlock()
         }
         debouncer.touch(root)
     }
@@ -156,6 +170,9 @@ public final class CommitEngine: @unchecked Sendable {
             let subjectEntries = visibleEntries.isEmpty ? committable : visibleEntries
             let hash = try await repoManager.commitAll(path: repoPath, message: message,
                                                        knownEntries: subjectEntries)
+            failureLock.lock()
+            failureCounts.removeValue(forKey: repoPath)
+            failureLock.unlock()
             if !hash.isEmpty {
                 onCommit?(repoPath, hash, Self.describe(entries: entries, excluded: excluded))
             }
@@ -163,8 +180,55 @@ public final class CommitEngine: @unchecked Sendable {
             if ProcessInfo.processInfo.environment["FV_DEBUG"] != nil {
                 print("[FV_DEBUG] commit error: \(error)")
             }
-            onCommitFailure?(repoPath, (error as? GitCommandError)?.errorDescription ?? String(describing: error))
+            failureLock.lock()
+            let count = (failureCounts[repoPath] ?? 0) + 1
+            failureCounts[repoPath] = count
+            failureLock.unlock()
+            let reason = Self.failureDescription(error)
+            if count == 1 {
+                // Report once; the retries below stay silent unless they give up.
+                onCommitFailure?(repoPath, reason)
+            } else if count > 3 {
+                onCommitFailure?(repoPath, reason + NSLocalizedString("（已自动重试 3 次仍未成功，下次文件改动时会再试）",
+                                                                      comment: "commit failure retries exhausted"))
+                return
+            }
+            scheduleRetry(repoPath: repoPath)
         }
+    }
+
+    /// Retry a failed auto-commit after a delay: the cause (locked index, disk
+    /// space, permissions) often clears without any new file event (v4.2.2).
+    private func scheduleRetry(repoPath: String) {
+        let delay = retryDelay
+        Task.detached { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(max(delay, 0.05) * 1_000_000_000))
+            guard let self else { return }
+            self.failureLock.lock()
+            let count = self.failureCounts[repoPath] ?? 0
+            self.failureLock.unlock()
+            guard count > 0 else { return }
+            self.commit(forKey: repoPath)
+        }
+    }
+
+    /// Readable one-liner for a failed auto-commit, naming the common causes so
+    /// the notification is actionable (v4.2.2).
+    static func failureDescription(_ error: Error) -> String {
+        let detail = ((error as? GitCommandError)?.stderr ?? "").lowercased()
+        if detail.contains("no space left") {
+            return NSLocalizedString("磁盘空间不足，无法写入这次自动版本", comment: "commit failure")
+        }
+        if detail.contains("permission denied") || detail.contains("operation not permitted") {
+            return NSLocalizedString("没有写入权限，无法提交这次改动（检查文件夹权限）", comment: "commit failure")
+        }
+        if detail.contains("index.lock") || detail.contains("another git process") {
+            return NSLocalizedString("仓库正被另一个 Git 操作占用（锁文件），稍后会自动重试", comment: "commit failure")
+        }
+        if detail.contains("dubious ownership") || detail.contains("safe.directory") {
+            return NSLocalizedString("Git 拒绝访问这个文件夹（所有者与本机账户不一致）", comment: "commit failure")
+        }
+        return (error as? GitCommandError)?.errorDescription ?? String(describing: error)
     }
 
     /// Full check: commit the root repo if it is dirty (used on resume / manual flush).

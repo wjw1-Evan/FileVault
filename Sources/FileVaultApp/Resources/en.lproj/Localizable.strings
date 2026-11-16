@@ -140,6 +140,11 @@
 "正在把同步远程设为 %@…" = "Setting the sync remote to %@…";
 "✓ 已把同步远程设为 %@，之后的自动同步都走它" = "✓ Sync remote set to %@; automatic syncing will use it";
 "⚠️ 设置远程失败：%@" = "⚠️ Could not set the remote: %@";
+"（已自动重试 3 次仍未成功，下次文件改动时会再试）" = " (retried automatically 3 times without success; it will try again on the next file change)";
+"磁盘空间不足，无法写入这次自动版本" = "Not enough disk space to write this automatic version";
+"没有写入权限，无法提交这次改动（检查文件夹权限）" = "No write permission — cannot commit this change (check the folder permissions)";
+"仓库正被另一个 Git 操作占用（锁文件），稍后会自动重试" = "The repository is locked by another Git operation (lock file); it will retry automatically";
+"Git 拒绝访问这个文件夹（所有者与本机账户不一致）" = "Git refuses this folder because its owner differs from the current account";
 "上次的合并、变基或 Git 操作没有正常结束（可能是崩溃或强退）。清理会丢弃那一步的中间状态（包括过期的 .git/index.lock），已提交的历史和文件不会丢失。" = "The last merge, rebase or Git operation did not finish (a crash or force-quit). Cleaning up discards only that step's intermediate state (including a stale .git/index.lock); committed history and files are kept.";
 "远程仓库与本地历史互不相关，不能快进合并" = "The remote and local histories are unrelated — cannot fast-forward";
 "本地与远程改动了同一个文件，自动合并已中止（仓库已恢复原状）" = "Local and remote changed the same file — the automatic merge was aborted (the repository is back to its previous state)";
