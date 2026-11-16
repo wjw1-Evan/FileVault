@@ -64,9 +64,9 @@ FileVault **永久免费**：无试用期、无激活码、无账号、无订阅
 
 ## 下载安装
 
-**最新发布：[v4.1.0](https://github.com/wjw1-Evan/FileVault/releases/tag/v4.1.0)** — [FileVault-4.1.0.zip](https://github.com/wjw1-Evan/FileVault/releases/download/v4.1.0/FileVault-4.1.0.zip)（sha256 `e34b44ef…098c8a2`）
+**最新发布：[v4.1.1](https://github.com/wjw1-Evan/FileVault/releases/tag/v4.1.1)** — [FileVault-4.1.1.zip](https://github.com/wjw1-Evan/FileVault/releases/download/v4.1.1/FileVault-4.1.1.zip)（sha256 `8f78b01f…78b404c`）
 
-> v4.1.0 新增：**文件恢复重新设计**——「恢复」只做两件事：**找回被删除的文件**、**把改过的文件还原到以前的版本**。菜单「恢复文件…」打开独立窗口，按文件组织（**已删除 / 最近修改 / 全部**）：选中文件即可看它自己的版本时间线、预览内容、**与当前对比**，一键**恢复到此版本**；恢复只影响这一个文件，恢复前自动保存未提交改动，恢复本身也记成新版本（`restore: 找回/还原 …`），之后仍可再回退。历史窗口同步增强：单文件版本时间线、任意两版本对比、逐行差异 / 逐行归属（blame）、整个子目录恢复、把某个版本导出为 zip、命名版本（标签），以及「找回被回滚的版本」（`refs/filevault/backup` 快照）；设置里可做仓库完整性检查（`git fsck`）。Git LFS 指针与子模块会被识别并说明，不会假装能恢复。
+> v4.1.1 修复：设置里「拉取远程更新」失败时不再只显示「未能完成操作。（FileVaultCore.GitCommandError 错误 1.）」——现在直接说明原因（本地与远程分叉并给出双方提交数、历史互不相关、认证失败、网络不可达、远程缺分支、文件夹已不是仓库…）并给出下一步；同时修好「没有配置上游的仓库根本拉不动」（此前 `git pull --ff-only origin` 缺分支参数，git 在 fetch 前就以「未指定分支」退出），并纠正 SSH 连接失败被当成令牌过期、分支名含 401 被当成 HTTP 401 的误判。
 
 
 > 安装包**已内嵌 git 2.56.1**：不需要预装 Xcode / Command Line Tools / Homebrew，首次启动也不联网下载。若使用精简包，则会按 5 个镜像地址自动下载并做 sha256 校验（见 [docs/07](docs/07-Git自动安装与镜像源.md)）。
