@@ -42,6 +42,21 @@ public final class RepoManager: @unchecked Sendable {
         remoteOpLock.unlock()
     }
 
+    /// Network git commands (fetch/pull/push) get a much longer budget than
+    /// local ones: a big folder on a slow link routinely exceeds the 30 s
+    /// default, and a timeout would be reported as a failure (v4.1.7).
+    public static let networkTimeout: TimeInterval = 120
+
+    /// Run a network git command; a timeout becomes a readable network error.
+    private func runNetwork(_ args: [String], cwd: String) async throws -> GitResult {
+        do {
+            return try await runner.run(args, cwd: cwd, timeout: Self.networkTimeout)
+        } catch let error as GitCommandError where error.exitCode == -9 {
+            throw PullError.networkFailed(
+                detail: NSLocalizedString("操作超时（网络较慢或仓库较大，已等待 120 秒）", comment: "pull error"))
+        }
+    }
+
     // MARK: - Prepare
 
     /// Whether the path already is a Git repository (a .git entry exists).
@@ -332,9 +347,10 @@ public final class RepoManager: @unchecked Sendable {
         public let remoteBranchExists: Bool
         /// Commits on the remote's copy of the current branch (0 = empty/new).
         public let remoteCommitCount: Int
-        /// The new remote already carries work: auto-pushing could merge two
-        /// histories, so the user must choose sync / force pull / push first.
-        public var needsDecision: Bool { changed && remoteCommitCount > 0 }
+        /// The new remote carries DIFFERENT history (not fast-forwardable in
+        /// either direction): automating push/merge could mix two histories, so
+        /// the user must choose sync / force pull / push first (v4.1.7).
+        public let needsDecision: Bool
     }
 
     /// Bind origin to `url`. When the URL actually changes, everything that
@@ -351,7 +367,8 @@ public final class RepoManager: @unchecked Sendable {
             // Same remote: report the current state without touching anything.
             let info = await remoteBranchInfo(path: path)
             return RemoteChange(changed: false, isReplacement: false, fetchSucceeded: true,
-                                remoteBranchExists: info.exists, remoteCommitCount: info.count)
+                                remoteBranchExists: info.exists, remoteCommitCount: info.count,
+                                needsDecision: false)
         }
 
         if oldURL != nil {
@@ -359,6 +376,10 @@ public final class RepoManager: @unchecked Sendable {
         } else {
             _ = try await runner.run(["remote", "add", "origin", url], cwd: path)
         }
+        // Guarantee the default fetch refspec: a hand-edited/imported remote may
+        // lack it, which would keep remote-tracking refs empty and make pulls
+        // look like "branch missing" forever (v4.1.7).
+        await ensureOriginFetchRefspec(path: path)
 
         if oldURL != nil {
             // The old remote's refs and upstream are meaningless for the new one.
@@ -367,12 +388,23 @@ public final class RepoManager: @unchecked Sendable {
         }
 
         // Read the new remote (an empty repo fetches fine and has no refs).
-        let fetch = try? await runner.run(["fetch", "--prune", "origin"], cwd: path)
+        let fetch = try? await runner.run(["fetch", "--prune", "origin"], cwd: path,
+                                          timeout: Self.networkTimeout)
         let info = await remoteBranchInfo(path: path)
+        var needsDecision = false
+        if info.exists {
+            let remoteRef = "refs/remotes/origin/" + info.branch
+            // A fast-forward in either direction is safe to automate; only
+            // diverged/unrelated histories need the user's choice.
+            let remoteIsAncestor = await isAncestor(remoteRef, of: "HEAD", path: path)
+            let localIsAncestor = await isAncestor("HEAD", of: remoteRef, path: path)
+            needsDecision = !(remoteIsAncestor || localIsAncestor)
+        }
         let change = RemoteChange(changed: true, isReplacement: oldURL != nil,
                                   fetchSucceeded: fetch?.succeeded == true,
                                   remoteBranchExists: info.exists,
-                                  remoteCommitCount: info.count)
+                                  remoteCommitCount: info.count,
+                                  needsDecision: needsDecision)
         await setRemoteSwitchPending(path: path, pending: change.needsDecision)
         return change
     }
@@ -402,17 +434,53 @@ public final class RepoManager: @unchecked Sendable {
         }
     }
 
-    /// (branch exists on origin, commit count) for the checked-out branch.
-    private func remoteBranchInfo(path: String) async -> (exists: Bool, count: Int) {
+    /// (exists on origin, commit count, branch) for the checked-out branch.
+    private func remoteBranchInfo(path: String) async -> (exists: Bool, count: Int, branch: String) {
         let headRef = try? await runner.run(["symbolic-ref", "--quiet", "--short", "HEAD"], cwd: path)
         let branch = headRef?.stdout.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        guard !branch.isEmpty else { return (false, 0) }
+        guard !branch.isEmpty else { return (false, 0, "") }
         let ref = "refs/remotes/origin/" + branch
         guard let r = try? await runner.run(["rev-list", "--count", ref], cwd: path), r.succeeded else {
-            return (false, 0)
+            return (false, 0, branch)
         }
         let count = Int(r.stdout.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
-        return (count > 0, count)
+        return (count > 0, count, branch)
+    }
+
+    /// Make sure origin has the standard fetch refspec (hand-edited remotes or
+    /// imported configs may lack it).
+    private func ensureOriginFetchRefspec(path: String) async {
+        let current = try? await runner.run(["config", "--local", "--get-all", "remote.origin.fetch"],
+                                            cwd: path)
+        if current?.succeeded == true,
+           !(current?.stdout.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true) {
+            return
+        }
+        _ = try? await runner.run(["config", "--local", "--add", "remote.origin.fetch",
+                                   "+refs/heads/*:refs/remotes/origin/*"], cwd: path)
+    }
+
+    /// Branch names available on a remote (fetches first, best effort).
+    private func remoteBranchNames(path: String, remote: String) async -> [String] {
+        _ = try? await runner.run(["fetch", "--prune", remote], cwd: path, timeout: Self.networkTimeout)
+        guard let r = try? await runner.run(["for-each-ref", "--format=%(refname:short)",
+                                             "refs/remotes/" + remote + "/"], cwd: path),
+              r.succeeded else { return [] }
+        let prefix = remote + "/"
+        return r.stdout.split(separator: "\n").map(String.init)
+            .filter { $0.hasPrefix(prefix) && !$0.hasSuffix("/HEAD") }
+            .map { String($0.dropFirst(prefix.count)) }
+            .filter { !$0.isEmpty }
+            .sorted()
+    }
+
+    /// Add the remote's branch names to a "branch missing" error so a simple
+    /// branch-name mismatch (main vs master) is explained, not guessed (v4.1.7).
+    private func enrichBranchMissing(_ error: PullError, path: String) async -> PullError {
+        guard case .remoteBranchMissing(let remote, let branch, let available) = error,
+              available.isEmpty else { return error }
+        let names = await remoteBranchNames(path: path, remote: remote)
+        return .remoteBranchMissing(remote: remote, branch: branch, available: names)
     }
 
     /// Delete refs/remotes/<remote>/* (they belong to the previous repository).
@@ -635,7 +703,7 @@ public final class RepoManager: @unchecked Sendable {
         let before = try? await resolveHead(path: path)
 
         // 1. Fast-forward: the common case, no local-only commits.
-        let ff = try await runner.run(["pull", "--ff-only", target.remote, target.branch], cwd: path)
+        let ff = try await runNetwork(["pull", "--ff-only", target.remote, target.branch], cwd: path)
         if ff.succeeded {
             let after = (try? await resolveHead(path: path)) ?? ""
             return PullResult(output: ff.stdout, headBefore: before, headAfter: after,
@@ -645,14 +713,14 @@ public final class RepoManager: @unchecked Sendable {
         // Only divergence is reconciled automatically; auth/network/missing
         // branch/dirty-tree failures are reported as they are.
         guard PullError.isDivergence(ff.stderr) else {
-            throw PullError.classify(stderr: ff.stderr, remote: target.remote, branch: target.branch)
+            throw await enrichBranchMissing(PullError.classify(stderr: ff.stderr, remote: target.remote, branch: target.branch), path: path)
         }
         // The refused ff-only pull already fetched, so FETCH_HEAD tells us
         // whether the two histories share an ancestor at all.
         guard await historySharesAncestor(path: path) else { throw PullError.unrelatedHistories }
 
         // 2. Replay local-only auto-commits on top of the remote tip.
-        let rebase = try await runner.run(
+        let rebase = try await runNetwork(
             ["-c", "rebase.autoStash=false", "pull", "--rebase", target.remote, target.branch], cwd: path)
         if rebase.succeeded {
             let after = (try? await resolveHead(path: path)) ?? ""
@@ -673,7 +741,7 @@ public final class RepoManager: @unchecked Sendable {
         if !unmerged.isEmpty || stillInProgress {
             throw PullError.mergeConflict(files: unmerged, aborted: !stillInProgress)
         }
-        throw PullError.classify(stderr: rebase.stderr, remote: target.remote, branch: target.branch)
+        throw await enrichBranchMissing(PullError.classify(stderr: rebase.stderr, remote: target.remote, branch: target.branch), path: path)
     }
 
 
@@ -724,18 +792,18 @@ public final class RepoManager: @unchecked Sendable {
 
         // Fetch first: a force pull must never touch the working tree when the
         // remote is unreachable or the branch is missing.
-        let fetch = try await runner.run(["fetch", target.remote], cwd: path)
+        let fetch = try await runNetwork(["fetch", target.remote], cwd: path)
         guard fetch.succeeded else {
-            throw PullError.classify(stderr: fetch.stderr, remote: target.remote, branch: target.branch)
+            throw await enrichBranchMissing(PullError.classify(stderr: fetch.stderr, remote: target.remote, branch: target.branch), path: path)
         }
         let remoteRef = "refs/remotes/\(target.remote)/\(target.branch)"
         guard let tip = try? await runner.run(["rev-parse", "--verify", "--quiet", remoteRef], cwd: path),
               tip.succeeded else {
-            throw PullError.remoteBranchMissing(remote: target.remote, branch: target.branch)
+            throw await enrichBranchMissing(.remoteBranchMissing(remote: target.remote, branch: target.branch), path: path)
         }
         let remoteTip = tip.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !remoteTip.isEmpty else {
-            throw PullError.remoteBranchMissing(remote: target.remote, branch: target.branch)
+            throw await enrichBranchMissing(.remoteBranchMissing(remote: target.remote, branch: target.branch), path: path)
         }
 
         // Fail closed: never discard history unless it is safely reachable from
@@ -937,13 +1005,13 @@ public final class RepoManager: @unchecked Sendable {
         }
         guard !(await isDirty(path: path)) else { throw PullError.localChanges(detail: "") }
 
-        let fetch = try await runner.run(["fetch", target.remote], cwd: path)
+        let fetch = try await runNetwork(["fetch", target.remote], cwd: path)
         guard fetch.succeeded else {
-            throw PullError.classify(stderr: fetch.stderr, remote: target.remote, branch: target.branch)
+            throw await enrichBranchMissing(PullError.classify(stderr: fetch.stderr, remote: target.remote, branch: target.branch), path: path)
         }
         guard let remoteTip = await remoteTrackingSHA(path: path, remote: target.remote,
                                                       branch: target.branch) else {
-            throw PullError.remoteBranchMissing(remote: target.remote, branch: target.branch)
+            throw await enrichBranchMissing(.remoteBranchMissing(remote: target.remote, branch: target.branch), path: path)
         }
         // Bind the branch so later pulls/pushes need no setup.
         _ = try? await runner.run(["branch", "--set-upstream-to=" + target.remote + "/" + target.branch, branch],
@@ -1012,7 +1080,7 @@ public final class RepoManager: @unchecked Sendable {
             if await mergeInProgress(path: path) {
                 _ = try? await runner.run(["merge", "--abort"], cwd: path)
             }
-            throw PullError.classify(stderr: merge.stderr, remote: target.remote, branch: target.branch)
+            throw await enrichBranchMissing(PullError.classify(stderr: merge.stderr, remote: target.remote, branch: target.branch), path: path)
         }
 
         // Resolve conflicts without losing either side. This mode keeps local

@@ -20,8 +20,10 @@ public enum PullError: Error, LocalizedError, Equatable {
     case notARepository
     /// HEAD is detached, so there is no branch to fast-forward.
     case detachedHead
-    /// The remote has no branch with the local branch's name (never pushed yet).
-    case remoteBranchMissing(remote: String, branch: String)
+    /// The remote has no branch with the local branch's name. `available` lists
+    /// the branches it does have (empty when it has none yet), so a simple
+    /// branch-name mismatch can be explained instead of guessed at.
+    case remoteBranchMissing(remote: String, branch: String, available: [String] = [])
     /// No common ancestor at all: a new local repo bound to a remote that
     /// already carries a different history.
     case unrelatedHistories
@@ -35,6 +37,8 @@ public enum PullError: Error, LocalizedError, Equatable {
     case localChanges(detail: String)
     /// Another pull/sync on this folder is still running (waited 60 s).
     case busy
+    /// The repository is locked by another git process (index.lock / stale lock).
+    case repositoryLocked(detail: String)
     case failed(detail: String)
 
     public var errorDescription: String? {
@@ -48,9 +52,14 @@ public enum PullError: Error, LocalizedError, Equatable {
                                      comment: "pull error")
         case .detachedHead:
             return NSLocalizedString("仓库当前不在任何分支上，无法拉取", comment: "pull error")
-        case .remoteBranchMissing(let remote, let branch):
-            return String(format: NSLocalizedString("远程仓库 %@ 还没有 %@ 分支，无法拉取", comment: "pull error"),
-                          remote, branch)
+        case .remoteBranchMissing(let remote, let branch, let available):
+            if available.isEmpty {
+                return String(format: NSLocalizedString("远程仓库 %@ 还没有 %@ 分支，无法拉取", comment: "pull error"),
+                              remote, branch)
+            }
+            return String(format: NSLocalizedString("远程仓库 %@ 没有 %@ 分支（现有：%@），无法拉取",
+                                                    comment: "pull error"),
+                          remote, branch, available.joined(separator: "、"))
         case .unrelatedHistories:
             return NSLocalizedString("远程仓库与本地历史互不相关，不能快进合并", comment: "pull error")
         case .mergeConflict(_, let aborted):
@@ -69,6 +78,8 @@ public enum PullError: Error, LocalizedError, Equatable {
             return NSLocalizedString("本地未提交的改动阻碍了拉取", comment: "pull error")
         case .busy:
             return NSLocalizedString("这个文件夹正在执行另一次同步操作", comment: "pull error")
+        case .repositoryLocked:
+            return NSLocalizedString("仓库正被另一个 Git 操作占用（锁文件）", comment: "pull error")
         case .failed(let detail):
             if detail.isEmpty {
                 return String(format: NSLocalizedString("拉取失败：%@", comment: "pull error"),
@@ -97,9 +108,14 @@ public enum PullError: Error, LocalizedError, Equatable {
         case .detachedHead:
             return NSLocalizedString("在终端执行 git switch main 回到主分支后再试。",
                                      comment: "pull recovery")
-        case .remoteBranchMissing(let remote, let branch):
-            return String(format: NSLocalizedString("先把本地分支推送上去：点「立即推送」，或在终端执行 git push -u %@ %@。",
-                                                    comment: "pull recovery"), remote, branch)
+        case .remoteBranchMissing(let remote, let branch, let available):
+            if available.isEmpty {
+                return String(format: NSLocalizedString("先把本地分支推送上去：点「立即推送」，或在终端执行 git push -u %@ %@。",
+                                                        comment: "pull recovery"), remote, branch)
+            }
+            return String(format: NSLocalizedString("如果远程用的是别的分支名（现有：%@），可在终端执行 git branch --set-upstream-to=%@/<分支>；否则点「立即推送」把本地分支推上去，或在终端执行 git push -u %@ %@。",
+                                                    comment: "pull recovery"),
+                          available.joined(separator: "、"), remote, remote, branch)
         case .unrelatedHistories:
             return NSLocalizedString("这个远程仓库已经有一套自己的历史。若以远程为准，先备份文件夹，再在终端执行 git fetch origin，然后 git reset --hard 远程分支；若以本地为准，需要强制推送（会覆盖远程历史）。",
                                      comment: "pull recovery")
@@ -121,6 +137,9 @@ public enum PullError: Error, LocalizedError, Equatable {
             return NSLocalizedString("等自动提交完成（通常 5 秒）后重试。", comment: "pull recovery")
         case .busy:
             return NSLocalizedString("等当前操作完成（通常几秒）后重试。", comment: "pull recovery")
+        case .repositoryLocked:
+            return NSLocalizedString("等几秒后重试；若一直失败，确认没有其他 Git 工具在操作这个文件夹后，可在终端删除 .git/index.lock 再重试。",
+                                     comment: "pull recovery")
         case .failed:
             return nil
         }
@@ -130,7 +149,8 @@ public enum PullError: Error, LocalizedError, Equatable {
     public var technicalDetail: String? {
         switch self {
         case .authenticationFailed(let detail), .networkFailed(let detail),
-             .remoteUnavailable(let detail), .localChanges(let detail), .failed(let detail):
+             .remoteUnavailable(let detail), .localChanges(let detail),
+             .repositoryLocked(let detail), .failed(let detail):
             return detail
         case .mergeConflict(let files, _):
             return files.isEmpty ? nil : files.joined(separator: ", ")
@@ -181,6 +201,12 @@ public enum PullError: Error, LocalizedError, Equatable {
         let text = stderr.lowercased()
         let detail = condense(stderr)
 
+        // A stale/held git lock is neither auth nor network: name it so the user
+        // knows to close the other tool (or remove index.lock).
+        if text.contains("index.lock") || text.contains("another git process")
+            || text.contains("lock file") {
+            return .repositoryLocked(detail: detail)
+        }
         if explicitNetworkMarkers.contains(where: { text.contains($0) }) {
             return .networkFailed(detail: detail)
         }

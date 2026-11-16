@@ -109,7 +109,7 @@ final class PullFailureClassificationTests: XCTestCase {
             .mergeConflict(files: ["a.md"], aborted: false),
             .authenticationFailed(detail: "x"), .networkFailed(detail: "x"),
             .remoteUnavailable(detail: "x"), .localChanges(detail: "x"),
-            .busy, .failed(detail: "x"),
+            .busy, .repositoryLocked(detail: "x"), .failed(detail: "x"),
         ]
         for error in cases {
             XCTAssertFalse((error.errorDescription ?? "").isEmpty, "no description for \(error)")
@@ -162,6 +162,34 @@ final class PullFailureClassificationTests: XCTestCase {
         XCTAssertTrue((PullError.busy.recoverySuggestion ?? "").contains("重试"))
         XCTAssertTrue((PullError.notARepository.errorDescription ?? "").contains("Git 仓库"))
     }
+    /// A stale/held git lock must be named with a fix, not reported as auth or
+    /// network trouble (v4.1.7).
+    func testRepositoryLockIsExplained() {
+        let stderr = "fatal: Unable to create '/x/repo/.git/index.lock': File exists.\n\nAnother git process seems to be running in this repository"
+        let error = PullError.classify(stderr: stderr, remote: "origin", branch: "main")
+        guard case .repositoryLocked = error else { return XCTFail("got \(error)") }
+        XCTAssertTrue((error.errorDescription ?? "").contains("占用"))
+        XCTAssertTrue((error.recoverySuggestion ?? "").contains("index.lock"))
+        XCTAssertTrue(error.technicalDetail?.contains("index.lock") == true)
+    }
+
+    /// main-vs-master mismatches are common; the error must list the remote's
+    /// actual branches and show the set-upstream command.
+    func testBranchMismatchListsAvailableBranches() {
+        let error = PullError.remoteBranchMissing(remote: "origin", branch: "main",
+                                                  available: ["develop", "master"])
+        let description = error.errorDescription ?? ""
+        let suggestion = error.recoverySuggestion ?? ""
+        XCTAssertTrue(description.contains("main"), description)
+        XCTAssertTrue(description.contains("master"), description)
+        XCTAssertTrue(description.contains("develop"), description)
+        XCTAssertTrue(suggestion.contains("现有：develop、master"), suggestion)
+        XCTAssertTrue(suggestion.contains("--set-upstream-to=origin/<分支>"), suggestion)
+        // No available branches keeps the old "push first" guidance.
+        let empty = PullError.remoteBranchMissing(remote: "origin", branch: "main", available: [])
+        XCTAssertTrue((empty.recoverySuggestion ?? "").contains("git push -u origin main"))
+    }
+
 }
 
 /// The generic-NSError regression itself: localizedDescription must carry git's
@@ -920,6 +948,41 @@ final class PullScenarioTests: XCTestCase {
         let subject = try await repos.runner.run(["log", "-1", "--format=%s"], cwd: local)
         XCTAssertEqual(subject.stdout.trimmingCharacters(in: .whitespacesAndNewlines),
                        "sync: 同步远程文件到本地（保留本地文件）")
+    }
+
+    /// A local main branch against a remote whose branch is master must explain
+    /// the mismatch with the remote's real branch names (v4.1.7).
+    func testPullExplainsBranchNameMismatch() async throws {
+        let remote = root + "/master.git"
+        await git(["init", "--bare", remote], cwd: root)
+        let seed = root + "/masterSeed"
+        try FileManager.default.createDirectory(atPath: seed, withIntermediateDirectories: true)
+        await git(["init", "-b", "master"], cwd: seed)
+        _ = try await repos.runner.run(["config", "user.name", "Seed"], cwd: seed)
+        _ = try await repos.runner.run(["config", "user.email", "seed@x"], cwd: seed)
+        TestSupport.write("seed\n", to: seed + "/seed.md")
+        _ = try await repos.runner.run(["add", "-A"], cwd: seed)
+        _ = try await repos.runner.run(["commit", "-m", "seed"], cwd: seed)
+        _ = try await repos.runner.run(["remote", "add", "origin", remote], cwd: seed)
+        await git(["push", "-u", "origin", "master"], cwd: seed)
+
+        let local = try await makeRepo("branch-mismatch")
+        try await repos.setRemote(path: local, url: remote)
+        do {
+            _ = try await repos.pull(path: local)
+            XCTFail("pull should explain the branch mismatch")
+        } catch let error as PullError {
+            guard case .remoteBranchMissing(let reportedRemote, let branch, let available) = error else {
+                return XCTFail("got \(error)")
+            }
+            XCTAssertEqual(reportedRemote, "origin")
+            XCTAssertEqual(branch, "main")
+            XCTAssertEqual(available, ["master"], "the remote's real branches must be listed")
+            XCTAssertTrue((error.errorDescription ?? "").contains("master"))
+            XCTAssertTrue((error.recoverySuggestion ?? "").contains("现有：master"), error.recoverySuggestion ?? "")
+            XCTAssertTrue((error.recoverySuggestion ?? "").contains("--set-upstream-to=origin/<分支>"),
+                          error.recoverySuggestion ?? "")
+        }
     }
 }
 

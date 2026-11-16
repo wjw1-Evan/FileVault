@@ -111,6 +111,14 @@
 "这个文件夹还没有绑定远程仓库，无法拉取" = "This folder has no remote repository — nothing to pull";
 "仓库当前不在任何分支上，无法拉取" = "The repository is not on any branch — cannot pull";
 "远程仓库 %@ 还没有 %@ 分支，无法拉取" = "Remote %@ has no branch %@ yet — cannot pull";
+"远程仓库 %@ 没有 %@ 分支（现有：%@），无法拉取" = "Remote %@ has no branch %@ (it has: %@) — cannot pull";
+"如果远程用的是别的分支名（现有：%@），可在终端执行 git branch --set-upstream-to=%@/<分支>；否则点「立即推送」把本地分支推上去，或在终端执行 git push -u %@ %@。" = "If the remote uses a different branch name (it has: %@), run git branch --set-upstream-to=%@/<branch> in Terminal; otherwise click Push now to push the local branch, or run git push -u %@ %@.";
+"仓库正被另一个 Git 操作占用（锁文件）" = "The repository is locked by another Git operation (lock file)";
+"等几秒后重试；若一直失败，确认没有其他 Git 工具在操作这个文件夹后，可在终端删除 .git/index.lock 再重试。" = "Try again in a few seconds; if it keeps failing, make sure no other Git tool is using this folder, then delete .git/index.lock in Terminal and retry.";
+"操作超时（网络较慢或仓库较大，已等待 120 秒）" = "The operation timed out (slow network or a large repository; waited 120 seconds)";
+"远程仓库拒绝了这次推送（分支保护或仓库规则）。请在托管平台调整分支保护/权限后再试。" = "The remote refused this push (branch protection or repository rules). Adjust the branch protection/permissions on the hosting platform and try again.";
+"远程仓库因为文件过大拒绝了这次推送。请检查大文件排除规则，或把大文件移出受保护文件夹后再试。" = "The remote refused this push because a file is too large. Check the large-file exclusion rules, or move the large file out of the protected folder and try again.";
+"推送超时（网络较慢或仓库较大），稍后会自动重试" = "Push timed out (slow network or a large repository); it will retry automatically";
 "远程仓库与本地历史互不相关，不能快进合并" = "The remote and local histories are unrelated — cannot fast-forward";
 "本地与远程改动了同一个文件，自动合并已中止（仓库已恢复原状）" = "Local and remote changed the same file — the automatic merge was aborted (the repository is back to its previous state)";
 "本地与远程改动了同一个文件，自动合并失败且未能自动恢复" = "Local and remote changed the same file — the automatic merge failed and could not be undone";

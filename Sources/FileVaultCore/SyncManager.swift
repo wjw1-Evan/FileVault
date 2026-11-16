@@ -156,6 +156,13 @@ public actor SyncManager {
                 return
             } catch {
                 attempt += 1
+                // Branch protection / hooks / size limits cannot be fixed by
+                // retrying: report once with guidance and stop (v4.1.7).
+                if let rejection = Self.deterministicPushRejection(error) {
+                    onPushFailure(repoPath, rejection)
+                    setState(repoPath, .failed)
+                    return
+                }
                 onPushFailure(repoPath, Self.pushFailureMessage(error))
                 setState(repoPath, .failed)
                 // A merge conflict / unrelated history needs a human decision;
@@ -176,7 +183,8 @@ public actor SyncManager {
 
     /// Push once; throws on failure.
     func pushOnce(repoPath: String) async throws {
-        let r = try await repoManager.runner.run(["push", "-u", "origin", "HEAD"], cwd: repoPath)
+        let r = try await repoManager.runner.run(["push", "-u", "origin", "HEAD"], cwd: repoPath,
+                                                 timeout: RepoManager.networkTimeout)
         guard r.succeeded else {
             throw GitCommandError(command: "push", exitCode: r.exitCode, stderr: r.stderr)
         }
@@ -201,7 +209,8 @@ public actor SyncManager {
             setState(repoPath, .synced)
             return true
         } catch {
-            onPushFailure(repoPath, Self.pushFailureMessage(error))
+            let message = Self.deterministicPushRejection(error) ?? Self.pushFailureMessage(error)
+            onPushFailure(repoPath, message)
             setState(repoPath, .failed)
             return false
         }
@@ -241,14 +250,36 @@ public actor SyncManager {
         case .mergeConflict, .unrelatedHistories, .remoteBranchMissing, .ambiguousRemote,
              .notARepository, .detachedHead:
             return true
-        case .noRemote, .busy, .authenticationFailed, .networkFailed, .remoteUnavailable,
-             .localChanges, .failed:
+        case .noRemote, .busy, .repositoryLocked, .authenticationFailed, .networkFailed,
+             .remoteUnavailable, .localChanges, .failed:
             return false
         }
     }
 
+    /// Remote-side refusals that retrying cannot fix: branch protection,
+    /// repository rules, hooks and file-size limits (v4.1.7).
+    static func deterministicPushRejection(_ error: Error) -> String? {
+        guard let e = error as? GitCommandError else { return nil }
+        let text = e.stderr.lowercased()
+        if text.contains("protected branch") || text.contains("gh006") || text.contains("gh013")
+            || text.contains("branch protection") || text.contains("pre-receive hook declined")
+            || text.contains("remote rejected") || text.contains("refusing to allow") {
+            return NSLocalizedString("远程仓库拒绝了这次推送（分支保护或仓库规则）。请在托管平台调整分支保护/权限后再试。",
+                                     comment: "push rejected")
+        }
+        if text.contains("file is too large") || text.contains("exceeds github's file size limit")
+            || (text.contains("push was rejected") && (text.contains("mb") || text.contains("limit"))) {
+            return NSLocalizedString("远程仓库因为文件过大拒绝了这次推送。请检查大文件排除规则，或把大文件移出受保护文件夹后再试。",
+                                     comment: "push rejected")
+        }
+        return nil
+    }
+
     /// Notify text for a failed push (reuses pull wording where available).
     static func pushFailureMessage(_ error: Error) -> String {
+        if let e = error as? GitCommandError, e.exitCode == -9 {
+            return NSLocalizedString("推送超时（网络较慢或仓库较大），稍后会自动重试", comment: "push timeout")
+        }
         if let pull = error as? PullError {
             let description = pull.errorDescription ?? String(describing: pull)
             if let suggestion = pull.recoverySuggestion, !suggestion.isEmpty {

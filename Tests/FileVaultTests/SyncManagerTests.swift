@@ -215,6 +215,7 @@ final class SyncManagerTests: XCTestCase {
         XCTAssertFalse(SyncManager.isDeterministic(.authenticationFailed(detail: "x")))
         XCTAssertFalse(SyncManager.isDeterministic(.networkFailed(detail: "x")))
         XCTAssertFalse(SyncManager.isDeterministic(.busy))
+        XCTAssertFalse(SyncManager.isDeterministic(.repositoryLocked(detail: "index.lock")))
         XCTAssertFalse(SyncManager.isDeterministic(.localChanges(detail: "x")))
     }
 
@@ -231,6 +232,31 @@ final class SyncManagerTests: XCTestCase {
         XCTAssertEqual(unknown, "拉取失败：boom")
     }
 
+
+    func testDeterministicPushRejectionCoverage() {
+        let protected = SyncManager.deterministicPushRejection(
+            GitCommandError(command: "push", exitCode: 1,
+                            stderr: "remote: error: GH006: Protected branch update failed for refs/heads/main."))
+        XCTAssertNotNil(protected)
+        XCTAssertTrue(protected?.contains("分支保护") == true)
+        let hook = SyncManager.deterministicPushRejection(
+            GitCommandError(command: "push", exitCode: 1,
+                            stderr: "remote: error: pre-receive hook declined"))
+        XCTAssertTrue(hook?.contains("分支保护") == true)
+        let tooLarge = SyncManager.deterministicPushRejection(
+            GitCommandError(command: "push", exitCode: 1,
+                            stderr: "remote: error: File big.bin is 150.00 MB; this exceeds GitHub's file size limit of 100.00 MB"))
+        XCTAssertTrue(tooLarge?.contains("文件过大") == true)
+        XCTAssertNil(SyncManager.deterministicPushRejection(
+            GitCommandError(command: "push", exitCode: 1,
+                            stderr: "fatal: unable to access 'https://x': Could not resolve host")))
+    }
+
+    func testPushTimeoutHasItsOwnMessage() {
+        let message = SyncManager.pushFailureMessage(
+            GitCommandError(command: "push", exitCode: -9, stderr: "git command timed out after 120s"))
+        XCTAssertTrue(message.contains("推送超时"), message)
+    }
     /// Unrelated histories cannot be reconciled automatically: the auto-push
     /// loop must report once and stop rather than retrying on a timer.
     func testAutoPushStopsOnUnrelatedHistories() async throws {
@@ -365,17 +391,26 @@ final class SyncManagerTests: XCTestCase {
         try await sync.configureRemote(repoPath: repo, url: oldRemote, autoPush: true)
         await waitForStatus(.synced, repo: repo)
 
-        // The new remote starts with the SAME history (so an explicit push can
-        // fast-forward); it still counts as "remote already has commits".
+        // The new remote starts with the same history, then BOTH sides move on:
+        // the histories diverge, so an explicit push must reconcile (rebase).
         let newRemote = makeBareRemote("related")
         _ = try await repos.runner.run(["push", newRemote, "main:main"], cwd: repo)
+        TestSupport.write("after", to: repo + "/after.md")
+        _ = try await repos.commitAll(path: repo)
+        let sibling = root + "/newRemoteSibling"
+        let clone = try await repos.runner.run(["clone", "-b", "main", newRemote, sibling], cwd: root)
+        XCTAssertTrue(clone.succeeded, "clone: " + clone.stderr)
+        TestSupport.write("sibling", to: sibling + "/sibling.md")
+        _ = try await repos.runner.run(["add", "-A"], cwd: sibling)
+        _ = try await repos.runner.run(["-c", "user.name=Other", "-c", "user.email=o@x",
+                                        "commit", "-m", "sibling"], cwd: sibling)
+        let pushSibling = try await repos.runner.run(["push", "origin", "HEAD:main"], cwd: sibling)
+        XCTAssertTrue(pushSibling.succeeded, "sibling push: " + pushSibling.stderr)
         let change = try await sync.configureRemote(repoPath: repo, url: newRemote, autoPush: true)
         XCTAssertTrue(change.needsDecision)
         let pendingBefore = await repos.remoteSwitchPending(path: repo)
         XCTAssertTrue(pendingBefore)
 
-        TestSupport.write("after", to: repo + "/after.md")
-        _ = try await repos.commitAll(path: repo)
         let ok = await sync.pushNow(repoPath: repo)
         XCTAssertTrue(ok, "an explicit push must resolve the switch")
         let pendingAfter = await repos.remoteSwitchPending(path: repo)
@@ -387,6 +422,53 @@ final class SyncManagerTests: XCTestCase {
         XCTAssertTrue(log.stdout.contains("after.md") || log.stdout.contains("auto:"), log.stdout)
     }
 
+
+    /// Switching to a remote that already has the SAME (fast-forwardable)
+    /// history is safe to automate: no decision needed, upstream re-bound.
+    func testSwitchToRelatedRemoteWithFastForwardableHistoryContinuesAutomatically() async throws {
+        let repo = root + "/repoA"
+        _ = try await repos.ensureRepo(at: repo)
+        let oldRemote = makeBareRemote("ffOld")
+        try await sync.configureRemote(repoPath: repo, url: oldRemote, autoPush: true)
+        await waitForStatus(.synced, repo: repo)
+        TestSupport.write("v2", to: repo + "/v2.md")
+        _ = try await repos.commitAll(path: repo)
+
+        // The new remote already contains exactly this history (an https→ssh or
+        // re-clone switch): pushing is a fast-forward, so no user decision.
+        let newRemote = makeBareRemote("ffNew")
+        _ = try await repos.runner.run(["push", newRemote, "main:main"], cwd: repo)
+        let change = try await sync.configureRemote(repoPath: repo, url: newRemote, autoPush: true)
+        XCTAssertTrue(change.changed)
+        XCTAssertFalse(change.needsDecision, "fast-forwardable history needs no decision")
+        let pending = await repos.remoteSwitchPending(path: repo)
+        XCTAssertFalse(pending)
+        await waitForStatus(.synced, repo: repo)
+        let upstream = try await repos.runner.run(
+            ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"], cwd: repo)
+        XCTAssertTrue(upstream.succeeded, "upstream re-bound to the new remote")
+        let newHead = try await repos.runner.run(["--git-dir=" + newRemote, "rev-parse", "main"],
+                                                 cwd: newRemote)
+        let localHead = try await repos.resolveHead(path: repo)
+        XCTAssertEqual(newHead.stdout.trimmingCharacters(in: .whitespacesAndNewlines), localHead)
+    }
+
+    /// Hand-edited/imported remotes may lack the fetch refspec; binding must add it.
+    func testSetRemoteAddsDefaultFetchRefspec() async throws {
+        let repo = root + "/repoA"
+        _ = try await repos.ensureRepo(at: repo)
+        let first = makeBareRemote("refspecA")
+        let second = makeBareRemote("refspecB")
+        _ = try await repos.runner.run(["remote", "add", "origin", first], cwd: repo)
+        _ = try await repos.runner.run(["config", "--unset-all", "remote.origin.fetch"], cwd: repo)
+
+        let change = try await repos.setRemote(path: repo, url: second)
+        XCTAssertTrue(change.changed)
+        let refspec = try await repos.runner.run(["config", "--local", "--get-all", "remote.origin.fetch"],
+                                                 cwd: repo)
+        XCTAssertTrue(refspec.succeeded, refspec.stderr)
+        XCTAssertTrue(refspec.stdout.contains("refs/remotes/origin/*"), refspec.stdout)
+    }
     /// Re-saving the same remote URL must not detach anything.
     func testBindingTheSameRemoteIsNotAChange() async throws {
         let repo = root + "/repoA"
