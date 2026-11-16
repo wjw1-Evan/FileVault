@@ -79,11 +79,21 @@ public struct AppConfig: Codable, Equatable, Sendable {
     }
 }
 
+/// Why the on-disk configuration could not be used as-is (v4.2.12).
+public enum ConfigLoadIssue: String, Sendable, Equatable {
+    /// config.json was corrupt; the last good backup was used instead.
+    case recoveredFromBackup
+    /// Neither config.json nor its backup could be read.
+    case unreadable
+}
+
 /// JSON config persistence at <dir>/config.json (FR-02 / NFR privacy).
 public final class ConfigStore: @unchecked Sendable {
     public let directory: URL
     private let lock = NSLock()
     private var cache: AppConfig?
+    /// Set when the first disk read had to recover from a bad primary file.
+    public private(set) var lastLoadIssue: ConfigLoadIssue?
 
     /// Default on-disk location (`~/Library/Application Support/FileVault`).
     ///
@@ -105,15 +115,31 @@ public final class ConfigStore: @unchecked Sendable {
     public func load() -> AppConfig {
         lock.lock(); defer { lock.unlock() }
         if let cache { return cache }
-        let file = directory.appendingPathComponent("config.json")
-        if let data = try? Data(contentsOf: file),
-           let cfg = try? JSONDecoder().decode(AppConfig.self, from: data) {
+        let primary = directory.appendingPathComponent("config.json")
+        let backup = directory.appendingPathComponent(Self.backupFileName)
+        let decoder = JSONDecoder()
+        if let data = try? Data(contentsOf: primary),
+           let cfg = try? decoder.decode(AppConfig.self, from: data) {
             cache = cfg
+            lastLoadIssue = nil
             return cfg
         }
-        // Missing/corrupt file: return the default WITHOUT caching it — a
-        // poisoned cache would make the NEXT save() wipe the user's real roots
-        // (the silent-root-loss class of bug, v1.3.0). Retry the disk next time.
+        let primaryExists = FileManager.default.fileExists(atPath: primary.path)
+        if let data = try? Data(contentsOf: backup),
+           let cfg = try? decoder.decode(AppConfig.self, from: data) {
+            // Recover the last good state instead of silently starting empty;
+            // the next save() rewrites config.json from this cache.
+            cache = cfg
+            lastLoadIssue = .recoveredFromBackup
+            return cfg
+        }
+        if primaryExists {
+            // Deliberately do NOT cache: a poisoned cache would make the next
+            // save() wipe the user's real roots (v1.3.0).
+            lastLoadIssue = .unreadable
+            return AppConfig()
+        }
+        lastLoadIssue = nil
         return AppConfig()
     }
 
@@ -121,8 +147,30 @@ public final class ConfigStore: @unchecked Sendable {
         lock.lock(); defer { lock.unlock() }
         cache = config
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        let file = directory.appendingPathComponent("config.json")
+        let primary = directory.appendingPathComponent("config.json")
+        let backup = directory.appendingPathComponent(Self.backupFileName)
+        // Keep the previous good config as a backup before replacing it. A
+        // corrupt primary is kept aside for forensics instead of overwritten.
+        if FileManager.default.fileExists(atPath: primary.path) {
+            if let old = try? Data(contentsOf: primary),
+               (try? JSONDecoder().decode(AppConfig.self, from: old)) != nil {
+                try? old.write(to: backup, options: .atomic)
+            } else {
+                let stamp = Self.stamp()
+                try? FileManager.default.moveItem(
+                    atPath: primary.path,
+                    toPath: directory.appendingPathComponent("config.corrupt-\(stamp).json").path)
+            }
+        }
         guard let data = try? JSONEncoder().encode(config) else { return }
-        try? data.write(to: file, options: .atomic)
+        try? data.write(to: primary, options: .atomic)
+    }
+
+    static let backupFileName = "config.backup.json"
+
+    private static func stamp() -> String {
+        let f = DateFormatter()
+        f.dateFormat = "yyyyMMdd-HHmmss"
+        return f.string(from: Date())
     }
 }

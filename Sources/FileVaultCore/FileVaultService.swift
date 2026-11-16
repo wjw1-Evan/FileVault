@@ -91,6 +91,18 @@ public final class FileVaultService: @unchecked Sendable {
         }
         // Load configured roots, ensure repos, start watchers.
         let cfg = configStore.load()
+        switch configStore.lastLoadIssue {
+        case .recoveredFromBackup:
+            onFailure(NSLocalizedString("配置文件损坏，已从备份恢复", comment: "notification title"),
+                      NSLocalizedString("受保护文件夹列表已从 config.backup.json 恢复；请确认列表是否完整。",
+                                        comment: "config recovery"))
+        case .unreadable:
+            onFailure(NSLocalizedString("配置文件无法读取", comment: "notification title"),
+                      NSLocalizedString("配置文件与备份都无法读取，本次以空列表启动（磁盘上的仓库没有被删除）；如列表为空，请重新添加文件夹。",
+                                        comment: "config recovery"))
+        case nil:
+            break
+        }
         applyGeneral(cfg.general)
         for root in cfg.roots {
             // One moved/deleted folder must not brick startup: skip the bad
