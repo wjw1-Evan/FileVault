@@ -9,6 +9,8 @@ struct RepoSection: Identifiable, Equatable {
     let name: String
     var statusGlyph: String = "circle.dashed"
     var statusColor: Color = Color(nsColor: .systemGray)
+    /// Word shown in the expanded block ("已同步"…); the glyph stays in the header.
+    var statusLabel: String = ""
     var health: String = "…"
     var urlText: String = ""
     var authMode: RepoManager.AuthMode = .auto
@@ -159,6 +161,7 @@ final class SettingsModel: ObservableObject {
                 let glyph = Self.repoGlyph(st)
                 self.rootCards[idx].repo.statusGlyph = glyph.symbol
                 self.rootCards[idx].repo.statusColor = glyph.color
+                self.rootCards[idx].repo.statusLabel = FVStatusMeta.forSync(st).label
                 self.rootCards[idx].repo.authMode = mode
                 self.rootCards[idx].repo.remoteLimit = limitText
                 self.rootCards[idx].repo.remoteNames = remoteNames
@@ -981,8 +984,10 @@ struct SettingsView: View {
     private func repoBlock(_ repo: RepoSection) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .center, spacing: 7) {
-                Image(systemName: repo.statusGlyph)
-                    .font(.system(size: 12, weight: .semibold))
+                // The status glyph already sits in the folder header; here the
+                // same state is spelled out once (v4.2.21).
+                Text(repo.statusLabel.isEmpty ? "…" : repo.statusLabel)
+                    .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(repo.statusColor)
                 Spacer(minLength: 8)
                 Text(repo.health)
