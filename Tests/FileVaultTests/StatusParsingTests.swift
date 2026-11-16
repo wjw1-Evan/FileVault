@@ -29,6 +29,18 @@ final class StatusParsingTests: XCTestCase {
         }
     }
 
+
+    func testCommitSubjectFlattensUnusualNames() {
+        let entries = [StatusEntry(change: .added, path: "new\nline.txt", originalPath: nil),
+                       StatusEntry(change: .modified,
+                                   path: String(repeating: "x", count: 120) + ".md", originalPath: nil)]
+        let message = RepoManager.buildCommitMessage(entries: entries, additions: 1, deletions: 0)
+        XCTAssertFalse(message.contains("\n"), "the subject must stay one line: \(message)")
+        XCTAssertTrue(message.contains("new line.txt"), message)
+        XCTAssertTrue(message.count < 200, "very long names must be shortened: \(message)")
+        XCTAssertEqual(RepoManager.subjectLabel("a\tb\nc"), "a b c")
+        XCTAssertEqual(RepoManager.subjectLabel(String(repeating: "y", count: 80)).count, 61)
+    }
     func testStatusRenameKeepsNameWithArrow() async throws {
         let dir = TestSupport.makeTempDir("weirdrename")
         defer { try? FileManager.default.removeItem(atPath: dir) }

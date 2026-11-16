@@ -173,7 +173,7 @@ public final class CommitEngine: @unchecked Sendable {
             let visibleEntries = committable.filter { !markerPaths.contains($0.path) }
             let folderOnly = visibleEntries.isEmpty && !markerFolders.isEmpty
             let message = folderOnly
-                ? "auto: 新建文件夹 " + markerFolders.joined(separator: "、")
+                ? "auto: 新建文件夹 " + markerFolders.map { RepoManager.subjectLabel($0) }.joined(separator: "、")
                 : nil
             let subjectEntries = visibleEntries.isEmpty ? committable : visibleEntries
             let hash = try await repoManager.commitAll(path: repoPath, message: message,

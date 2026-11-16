@@ -311,7 +311,8 @@ public final class RepoManager: @unchecked Sendable {
         var deleted: [String] = []
         let nameCounts = Dictionary(grouping: entries, by: \.displayName).mapValues(\.count)
         func label(_ entry: StatusEntry) -> String {
-            (nameCounts[entry.displayName] ?? 0) > 1 ? entry.path : entry.displayName
+            let raw = (nameCounts[entry.displayName] ?? 0) > 1 ? entry.path : entry.displayName
+            return Self.subjectLabel(raw)
         }
         for e in entries {
             switch e.change {
@@ -346,6 +347,17 @@ public final class RepoManager: @unchecked Sendable {
             return "auto: \(total) 处变更\(statPart)"
         }
         return "auto: \(total) 处变更\(statPart)，" + parts.joined(separator: "，")
+    }
+
+    /// A file/folder name as shown in a commit subject: single line, no control
+    /// characters, bounded length (a name with a newline must not split the
+    /// subject; an extremely long name must not flood the history) (v4.2.11).
+    static func subjectLabel(_ raw: String, limit: Int = 60) -> String {
+        let flattened = raw.unicodeScalars
+            .map { CharacterSet.controlCharacters.contains($0) ? " " : String($0) }
+            .joined()
+        guard flattened.count > limit else { return flattened }
+        return String(flattened.prefix(limit)) + "…"
     }
 
     // MARK: - Remote config (FR-06/07)
