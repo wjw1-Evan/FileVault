@@ -418,11 +418,6 @@ struct DashboardView: View {
             } label: {
                 Label("设置", systemImage: "gearshape")
             }
-            Button {
-                openWindow(id: "history")
-            } label: {
-                Label("查看历史版本", systemImage: "clock.arrow.circlepath")
-            }
             Spacer()
             Text(app.paused ? "自动提交已暂停" : "自动提交已开启")
                 .font(.system(size: 10))

@@ -421,6 +421,8 @@
 "选择文件夹" = "Choose folder";
 "文件夹已添加，但远程绑定失败：" = "The folder was added, but binding the remote failed: ";
 "添加文件夹" = "Add folder";
+"认证：%@" = "Authentication: %@";
+"自动" = "Automatic";
 "移除文件夹？" = "Remove folder?";
 "文件夹操作" = "Folder actions";
 "展开文件夹" = "Expand folder";

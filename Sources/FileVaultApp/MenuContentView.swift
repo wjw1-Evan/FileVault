@@ -160,10 +160,6 @@ struct MenuContentView: View {
 
     private var primaryActions: some View {
         VStack(spacing: 0) {
-            MenuActionRow(symbol: "macwindow",
-                          title: "打开主面板",
-                          key: "d", modifiers: [.command, .shift],
-                          hint: "⇧⌘D") { app.open("dashboard") }
             MenuActionRow(symbol: "arrow.uturn.backward.circle",
                           title: "恢复文件…") { app.open("recovery") }
             MenuActionRow(symbol: "clock.arrow.circlepath",
@@ -178,7 +174,6 @@ struct MenuContentView: View {
 
     private var tilesRow: some View {
         HStack(spacing: 7) {
-            MenuTile(symbol: "arrow.up.doc", title: "立即提交") { app.commitAllNow() }
             MenuTile(symbol: "arrow.triangle.2.circlepath",
                      title: app.isUpdating ? "检查中…" : "检查更新") {
                 Task { await app.checkForUpdate(silent: false) }

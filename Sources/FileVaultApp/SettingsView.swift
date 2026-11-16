@@ -1004,14 +1004,13 @@ struct SettingsView: View {
             }
 
             HStack(spacing: 12) {
-                Picker("", selection: model.authModeBinding(repo.id)) {
-                    Text("自动（gh 凭证助手）").tag(RepoManager.AuthMode.auto)
-                    Text("用户名 + 访问令牌").tag(RepoManager.AuthMode.pat)
-                    Text("SSH 密钥").tag(RepoManager.AuthMode.ssh)
-                }
-                .labelsHidden()
-                .controlSize(.small)
-                .frame(width: 168)
+                // Authentication is "auto" for almost everyone; keep the
+                // controls folded so a folder card reads as a URL + status.
+                RepoAuthSection(repo: repo,
+                                mode: model.authModeBinding(repo.id),
+                                user: model.authUserBinding(repo.id),
+                                token: model.authTokenBinding(repo.id),
+                                save: { model.saveRepo(repo.id) })
                 Text(repo.remoteLimit)
                     .font(.system(size: 10))
                     .foregroundStyle(.tertiary)
@@ -1037,13 +1036,6 @@ struct SettingsView: View {
                 .menuStyle(.borderlessButton)
                 .fixedSize()
             }
-
-            // Auth mode details (FR-06): PAT needs two inputs; SSH gets a hint.
-            RepoAuthFields(mode: repo.authMode,
-                           user: model.authUserBinding(repo.id),
-                           token: model.authTokenBinding(repo.id),
-                           tokenSaved: repo.authTokenSaved,
-                           save: { model.saveRepo(repo.id) })
 
             if let msg = model.message(repo.id) {
                 HStack(spacing: 5) {
@@ -1159,6 +1151,70 @@ struct GitignoreSheet: View {
 ///
 /// Split out of repoBlock so it can be snapshotted offscreen in tests: PAT mode
 /// must show real inputs — before v4.0.2 the picker had no fields to type into.
+/// One folded row for authentication: nearly every folder uses "auto", so the
+/// picker and PAT/SSH fields stay collapsed until someone actually needs them
+/// (v4.2.19).
+struct RepoAuthSection: View {
+    let repo: RepoSection
+    @Binding var mode: RepoManager.AuthMode
+    @Binding var user: String
+    @Binding var token: String
+    let save: () -> Void
+    @State private var expanded: Bool
+
+    init(repo: RepoSection,
+         mode: Binding<RepoManager.AuthMode>,
+         user: Binding<String>,
+         token: Binding<String>,
+         save: @escaping () -> Void) {
+        self.repo = repo
+        _mode = mode
+        _user = user
+        _token = token
+        self.save = save
+        _expanded = State(initialValue: mode.wrappedValue != .auto)
+    }
+
+    var body: some View {
+        DisclosureGroup(isExpanded: $expanded) {
+            VStack(alignment: .leading, spacing: 8) {
+                Picker("", selection: $mode) {
+                    Text("自动（gh 凭证助手）").tag(RepoManager.AuthMode.auto)
+                    Text("用户名 + 访问令牌").tag(RepoManager.AuthMode.pat)
+                    Text("SSH 密钥").tag(RepoManager.AuthMode.ssh)
+                }
+                .labelsHidden()
+                .controlSize(.small)
+                .frame(width: 168)
+                RepoAuthFields(mode: mode,
+                               user: $user,
+                               token: $token,
+                               tokenSaved: repo.authTokenSaved,
+                               save: save)
+            }
+            .padding(.top, 6)
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "key.horizontal")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.tertiary)
+                Text(String(format: NSLocalizedString("认证：%@", comment: "auth summary"),
+                            authName(mode)))
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private func authName(_ mode: RepoManager.AuthMode) -> String {
+        switch mode {
+        case .auto: return NSLocalizedString("自动", comment: "auth mode")
+        case .pat: return NSLocalizedString("用户名 + 访问令牌", comment: "auth mode")
+        case .ssh: return NSLocalizedString("SSH 密钥", comment: "auth mode")
+        }
+    }
+}
+
 struct RepoAuthFields: View {
     let mode: RepoManager.AuthMode
     @Binding var user: String
