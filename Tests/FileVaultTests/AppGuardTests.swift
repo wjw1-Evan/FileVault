@@ -39,17 +39,15 @@ final class AppGuardTests: XCTestCase {
 /// Menu bar icon state mapping (FR-08, v1.1.3 — fixes invisible glyph).
 final class StatusSymbolTests: XCTestCase {
     func testSymbolMapping() {
-        let all: [SyncStatus] = [.noRemote, .synced, .pendingPush, .pushing, .failed]
-        XCTAssertEqual(AppState.statusSymbol(paused: false, envReady: true, statuses: []), "clock.arrow.circlepath")
-        XCTAssertEqual(AppState.statusSymbol(paused: false, envReady: true, statuses: [.noRemote]), "clock.arrow.circlepath")
-        XCTAssertEqual(AppState.statusSymbol(paused: false, envReady: true, statuses: [.synced]), "clock.arrow.circlepath")
+        XCTAssertEqual(AppState.statusSymbol(envReady: true, statuses: []), "clock.arrow.circlepath")
+        XCTAssertEqual(AppState.statusSymbol(envReady: true, statuses: [.noRemote]), "clock.arrow.circlepath")
+        XCTAssertEqual(AppState.statusSymbol(envReady: true, statuses: [.synced]), "clock.arrow.circlepath")
         // Pending / pushing.
-        XCTAssertEqual(AppState.statusSymbol(paused: false, envReady: true, statuses: [.pendingPush]), "arrow.up.arrow.down.circle")
-        XCTAssertEqual(AppState.statusSymbol(paused: false, envReady: true, statuses: [.pushing]), "arrow.up.arrow.down.circle")
-        // Paused / env failure / push failure.
-        XCTAssertEqual(AppState.statusSymbol(paused: true, envReady: true, statuses: all), "pause.circle")
-        XCTAssertEqual(AppState.statusSymbol(paused: false, envReady: false, statuses: []), "exclamationmark.triangle")
-        XCTAssertEqual(AppState.statusSymbol(paused: false, envReady: true, statuses: [.failed]), "exclamationmark.triangle")
+        XCTAssertEqual(AppState.statusSymbol(envReady: true, statuses: [.pendingPush]), "arrow.up.arrow.down.circle")
+        XCTAssertEqual(AppState.statusSymbol(envReady: true, statuses: [.pushing]), "arrow.up.arrow.down.circle")
+        // Env failure / push failure (v4.2.22: there is no paused state any more).
+        XCTAssertEqual(AppState.statusSymbol(envReady: false, statuses: []), "exclamationmark.triangle")
+        XCTAssertEqual(AppState.statusSymbol(envReady: true, statuses: [.failed]), "exclamationmark.triangle")
     }
 
     func testSymbolsExistInSystem() {

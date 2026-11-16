@@ -40,13 +40,6 @@ final class MenuDataTests: XCTestCase {
             XCTAssertEqual(entry.status, .noRemote, "no remote configured -> 仅本地")
         }
 
-        // Action data state.
-        XCTAssertFalse(state.paused)
-        state.toggleGlobalPause()
-        await state.refresh()   // paused flag lands via the async refresh
-        XCTAssertTrue(state.paused, "pause toggles")
-        state.toggleGlobalPause()
-        await state.refresh()
-        XCTAssertFalse(state.paused)
+        // v4.2.22: auto-commit is always on — there is no pause state to expose.
     }
 }

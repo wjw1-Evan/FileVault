@@ -47,13 +47,5 @@ final class MenuLabelTests: XCTestCase {
         await state.refresh()
         XCTAssertEqual(state.statusLine, "1 个文件夹 · 正常", "folder count, not sub-repo count")
         XCTAssertLessThanOrEqual(state.statusLine.count, 20)
-
-        state.toggleGlobalPause()
-        await state.refresh()
-        XCTAssertEqual(state.statusLine, "1 个文件夹 · 已暂停")
-
-        state.toggleGlobalPause()
-        await state.refresh()
-        XCTAssertEqual(state.statusLine, "1 个文件夹 · 正常")
     }
 }

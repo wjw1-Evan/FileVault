@@ -36,7 +36,6 @@ struct MenuContentView: View {
             primaryActions
             tilesRow
             panelDivider
-            automationRow
             quitRow
         }
         .frame(width: 320)
@@ -181,27 +180,6 @@ struct MenuContentView: View {
         }
         .padding(.horizontal, 12)
         .padding(.bottom, 8)
-    }
-
-    private var automationRow: some View {
-        HStack(spacing: 9) {
-            Image(systemName: app.paused ? "pause.circle.fill" : "bolt.circle.fill")
-                .font(.system(size: 11))
-                .foregroundStyle(app.paused ? Color.orange : Color.green)
-                .frame(width: 16)
-            Text(app.paused ? "自动提交已暂停" : "自动提交已开启")
-                .font(.system(size: 12))
-            Spacer()
-            Toggle("", isOn: Binding(
-                get: { !app.paused },
-                set: { _ in app.toggleGlobalPause() }))
-                .labelsHidden()
-                .toggleStyle(.switch)
-                .controlSize(.mini)
-                .help(app.paused ? "恢复自动提交" : "暂停自动提交")
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 7)
     }
 
     private var quitRow: some View {

@@ -17,12 +17,11 @@ struct RootRow: Identifiable, Equatable {
 }
 
 enum DashboardOverall {
-    case ok, paused, attention, setup
+    case ok, attention, setup
 
     var label: LocalizedStringKey {
         switch self {
         case .ok: return "全部正常"
-        case .paused: return "已暂停"
         case .attention: return "需要处理"
         case .setup: return "Git 未就绪"
         }
@@ -31,7 +30,6 @@ enum DashboardOverall {
     var tint: Color {
         switch self {
         case .ok: return .green
-        case .paused: return .orange
         case .attention: return .red
         case .setup: return .gray
         }
@@ -40,7 +38,6 @@ enum DashboardOverall {
     var symbol: String {
         switch self {
         case .ok: return "checkmark.circle.fill"
-        case .paused: return "pause.fill"
         case .attention: return "exclamationmark.triangle.fill"
         case .setup: return "wrench.and.screwdriver.fill"
         }
@@ -118,10 +115,7 @@ final class DashboardModel: ObservableObject {
         lastActivity = items.first?.date
         lastRootName = items.first?.rootName ?? ""
 
-        if svc.pause.isGloballyPaused {
-            overall = .paused
-            stateLine = NSLocalizedString("已暂停自动提交", comment: "dashboard state")
-        } else if failed > 0 {
+        if failed > 0 {
             overall = .attention
             stateLine = String(format: NSLocalizedString("%d 个文件夹推送失败，点击菜单查看",
                                                          comment: "dashboard state"), failed)
@@ -419,9 +413,6 @@ struct DashboardView: View {
                 Label("设置", systemImage: "gearshape")
             }
             Spacer()
-            Text(app.paused ? "自动提交已暂停" : "自动提交已开启")
-                .font(.system(size: 10))
-                .foregroundStyle(app.paused ? Color.orange : Color.secondary)
         }
         .controlSize(.regular)
         .padding(.top, 2)

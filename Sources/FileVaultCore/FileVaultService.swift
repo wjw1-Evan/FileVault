@@ -361,15 +361,6 @@ public final class FileVaultService: @unchecked Sendable {
 
     // MARK: - Runtime controls & UI snapshots
 
-    public func setGlobalPaused(_ p: Bool) async {
-        pause.setGlobalPaused(p)
-        fireStateChange()
-        // FR-13: resuming triggers a full check so paused changes get committed.
-        if !p {
-            await commitAllNow()
-        }
-    }
-
     public func setRootPaused(_ p: Bool, root: String) async {
         pause.setPaused(p, forRoot: resolved(root))
         var cfg = configStore.load()

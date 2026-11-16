@@ -70,13 +70,14 @@ final class CommitEngineTests: XCTestCase {
 
     func testPauseSuppressesAndResumeCommits() async throws {
         let repo = root + "/vault"
-        await service.setGlobalPaused(true)
+        // v4.2.22: global pause is gone; a single folder can still be paused.
+        await service.setRootPaused(true, root: repo)
         TestSupport.write("p1", to: repo + "/work/c.md")
         // Pause: no commit within a window that would otherwise commit.
         try? await Task.sleep(nanoseconds: 7_000_000_000)
         let n0 = (try? await service.repoManager.log(path: repo, max: 10)) ?? []
         XCTAssertEqual(n0.count, 1)  // only the initial commit
-        await service.setGlobalPaused(false)
+        await service.setRootPaused(false, root: repo)
         // Resume triggers full check -> commits the paused change.
         let n1 = await waitForCommits(2, repo: repo)
         XCTAssertGreaterThanOrEqual(n1, 2)

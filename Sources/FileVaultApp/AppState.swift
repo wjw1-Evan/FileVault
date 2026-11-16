@@ -27,7 +27,6 @@ final class AppState: ObservableObject {
 
     @Published var rootCount = 0
     @Published var roots: [RootMenuEntry] = []
-    @Published var paused = false
     @Published var envReady = false
     /// FR-01: why the automatic git setup failed (mirror ladder exhausted, offline …).
     /// Kept so the dashboard/settings can show a concrete reason instead of a dead end.
@@ -242,12 +241,9 @@ final class AppState: ObservableObject {
         roots = newRoots
         rootCount = rootPaths.count
         envReady = svc.detection != nil
-        paused = svc.pause.isGloballyPaused
         let failed = statusCache.values.contains(.failed)
         let state: String
-        if paused {
-            state = NSLocalizedString("已暂停", comment: "menu state")
-        } else if failed {
+        if failed {
             state = NSLocalizedString("推送失败", comment: "menu state")
         } else if !envReady {
             state = NSLocalizedString("Git 未就绪", comment: "menu state")
@@ -261,21 +257,19 @@ final class AppState: ObservableObject {
     }
 
     /// SF Symbol for the overall state (FR-08). Always a visible glyph.
-    nonisolated static func statusSymbol(paused: Bool, envReady: Bool, statuses: [SyncStatus]) -> String {
-        if paused { return "pause.circle" }
+    nonisolated static func statusSymbol(envReady: Bool, statuses: [SyncStatus]) -> String {
         if !envReady || statuses.contains(.failed) { return "exclamationmark.triangle" }
         if statuses.contains(.pendingPush) || statuses.contains(.pushing) { return "arrow.up.arrow.down.circle" }
         return "clock.arrow.circlepath"
     }
 
     var menuIcon: String {
-        Self.statusSymbol(paused: paused, envReady: envReady, statuses: Array(statusCache.values))
+        Self.statusSymbol(envReady: envReady, statuses: Array(statusCache.values))
     }
 
     /// Menu identity data (replaces the former AppDelegate.menuSignature).
     nonisolated static func menuSignature(service: FileVaultService, statuses: [String: SyncStatus]) -> String {
         var parts: [String] = []
-        parts.append(service.pause.isGloballyPaused ? "P" : "R")
         parts.append(service.detection == nil ? "noenv" : "env")
         parts.append(String(service.rootsSnapshot().count))
         for root in service.rootsSnapshot() {
@@ -285,16 +279,6 @@ final class AppState: ObservableObject {
     }
 
     // MARK: - Menu actions
-
-    func toggleGlobalPause() {
-        guard let svc = service else { return }
-        let now = !svc.pause.isGloballyPaused
-        svc.pause.setGlobalPaused(now)
-        if !now {
-            Task { await svc.commitAllNow() }
-        }
-        Task { await refresh() }
-    }
 
     func commitAllNow() {
         Task { [weak self] in

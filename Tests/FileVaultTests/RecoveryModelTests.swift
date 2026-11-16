@@ -90,7 +90,7 @@ final class RecoveryModelTests: XCTestCase {
         defer { try? FileManager.default.removeItem(atPath: base) }
         let repo = base + "/vault"
         await waitFor("initial scan") { model.snapshot != nil }
-        await service.setGlobalPaused(true)
+        await service.setRootPaused(true, root: repo)
 
         try FileManager.default.removeItem(atPath: repo + "/笔记/会议记录.md")
         TestSupport.write("改坏的内容", to: repo + "/笔记/草稿.md")
@@ -110,7 +110,7 @@ final class RecoveryModelTests: XCTestCase {
         model.setScope(.all)
         XCTAssertTrue(model.visibleFiles.contains { $0.path == "笔记/会议记录.md" })
         XCTAssertTrue(model.visibleFiles.contains { $0.path == "笔记/草稿.md" })
-        await service.setGlobalPaused(false)
+        await service.setRootPaused(false, root: repo)
     }
 
     @MainActor
