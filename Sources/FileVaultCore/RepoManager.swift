@@ -449,13 +449,127 @@ public final class RepoManager: @unchecked Sendable {
         return f.string(from: date)
     }
 
+    // MARK: - Pull (multi-machine sync)
+
+    /// Outcome of one successful pull: how many commits actually arrived.
+    public struct PullResult: Sendable, Equatable {
+        public let output: String
+        public let headBefore: String?
+        public let headAfter: String
+        /// Commits fast-forwarded in (0 = already up to date).
+        public let pulledCommits: Int
+    }
+
     /// Pull with --ff-only: never auto-merges (PRD); conflicts surface as errors.
-    public func pull(path: String) async throws -> String {
-        let r = try await runner.run(["pull", "--ff-only", "origin"], cwd: path)
+    ///
+    /// v4.1.1: the branch is resolved explicitly. `git pull --ff-only origin` is
+    /// only valid when origin is the branch's configured upstream; a repo whose
+    /// first push never succeeded has no upstream, and git refuses with
+    /// "You asked to pull from the remote 'origin', but did not specify a branch"
+    /// before fetching anything. Failures now become a classified `PullError`
+    /// (real reason + recovery step) instead of an opaque git exit code.
+    public func pull(path: String) async throws -> PullResult {
+        // A protected folder can disappear (moved, deleted, external disk
+        // unmounted). Without this, `symbolic-ref --quiet` still prints
+        // "fatal: not a git repository" on stderr and the user would be told to
+        // fix a detached HEAD that does not exist.
+        guard isRepo(at: path) else { throw PullError.notARepository }
+        let headRef = try await runner.run(["symbolic-ref", "--quiet", "--short", "HEAD"], cwd: path)
+        let branch = headRef.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard headRef.succeeded, !branch.isEmpty else { throw PullError.detachedHead }
+
+        let target = try await pullTarget(path: path, currentBranch: branch)
+
+        let before = try? await resolveHead(path: path)
+        let r = try await runner.run(["pull", "--ff-only", target.remote, target.branch], cwd: path)
         guard r.succeeded else {
-            throw GitCommandError(command: "pull --ff-only origin", exitCode: r.exitCode, stderr: r.stderr)
+            throw await pullFailure(stderr: r.stderr, remote: target.remote,
+                                    branch: target.branch, path: path)
         }
-        return r.stdout
+        let after = (try? await resolveHead(path: path)) ?? ""
+        return PullResult(output: r.stdout, headBefore: before, headAfter: after,
+                          pulledCommits: await countCommits(path: path, from: before, to: after))
+    }
+
+    /// Remote/branch a pull should fast-forward from: the configured upstream
+    /// when there is one, otherwise the current branch on origin (the same pair
+    /// `push -u origin HEAD` would establish).
+    private func pullTarget(path: String, currentBranch: String) async throws -> (remote: String, branch: String) {
+        if let upstream = try? await runner.run(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"],
+                                                cwd: path),
+           upstream.succeeded {
+            let full = upstream.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+            if let slash = full.firstIndex(of: "/") {
+                let remote = String(full[..<slash])
+                let branch = String(full[full.index(after: slash)...])
+                if !remote.isEmpty, !branch.isEmpty, branch != "HEAD" {
+                    return (remote, branch)
+                }
+            }
+        }
+        if let origin = try? await runner.run(["remote", "get-url", "origin"], cwd: path),
+           origin.succeeded,
+           !origin.stdout.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return ("origin", currentBranch)
+        }
+        // A repo whose only remote has another name still works. With several
+        // remotes there is no safe guess: pulling a fast-forward from the wrong
+        // one would change the working tree, so ask the user to set an upstream.
+        let remotes = (await allRemotes(path: path)).filter { !$0.url.isEmpty }
+        if remotes.count == 1 {
+            return (remotes[0].name, currentBranch)
+        }
+        if remotes.count > 1 { throw PullError.ambiguousRemote }
+        throw PullError.noRemote
+    }
+
+    /// Turn git's stderr into a user-actionable `PullError`.
+    private func pullFailure(stderr: String, remote: String, branch: String, path: String) async -> PullError {
+        if PullError.isDivergence(stderr) {
+            let stats = await divergenceStats(path: path)
+            return stats.hasCommonAncestor
+                ? .diverged(local: stats.local, remote: stats.remote)
+                : .unrelatedHistories
+        }
+        return PullError.classify(stderr: stderr, remote: remote, branch: branch)
+    }
+
+    /// After a refused ff-only pull, FETCH_HEAD already points at the remote
+    /// branch: compare ancestry/counts to tell "diverged" from "unrelated".
+    private func divergenceStats(path: String) async -> (hasCommonAncestor: Bool, local: Int?, remote: Int?) {
+        guard let fetched = try? await runner.run(["rev-parse", "--verify", "--quiet", "FETCH_HEAD"], cwd: path),
+              fetched.succeeded,
+              !fetched.stdout.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return (true, nil, nil)
+        }
+        let mergeBase = try? await runner.run(["merge-base", "HEAD", "FETCH_HEAD"], cwd: path)
+        let hasCommonAncestor = mergeBase?.succeeded == true
+            && !(mergeBase?.stdout.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
+        guard hasCommonAncestor else { return (false, nil, nil) }
+        var local: Int?
+        var remote: Int?
+        if let counts = try? await runner.run(["rev-list", "--left-right", "--count", "HEAD...FETCH_HEAD"],
+                                              cwd: path),
+           counts.succeeded {
+            // "1\t2\n": the newline must be a separator too, or Int("2\n") drops it.
+            let parts = counts.stdout.split(whereSeparator: { $0 == "\t" || $0 == " " || $0 == "\n" })
+                .compactMap { Int($0) }
+            if parts.count >= 2 {
+                local = parts[0]
+                remote = parts[1]
+            }
+        }
+        return (true, local, remote)
+    }
+
+    /// Commits between two heads (all of HEAD when the repo had no commit yet).
+    private func countCommits(path: String, from: String?, to: String) async -> Int {
+        guard !to.isEmpty else { return 0 }
+        let range = from.map { "\($0)..\(to)" } ?? to
+        guard let r = try? await runner.run(["rev-list", "--count", range], cwd: path), r.succeeded else {
+            return 0
+        }
+        return Int(r.stdout.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
     }
 
     // MARK: - Per-repo auth mode (v2.1.0)

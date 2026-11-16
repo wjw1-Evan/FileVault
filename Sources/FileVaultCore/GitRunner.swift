@@ -10,13 +10,24 @@ public struct GitResult: Sendable {
 }
 
 /// Error thrown when a git command fails.
-public struct GitCommandError: Error, Sendable {
+///
+/// Conforms to `LocalizedError` (v4.1.1). It used to expose `errorDescription`
+/// without the protocol, so every UI path that renders
+/// `error.localizedDescription` fell back to Foundation's generic text
+/// ("The operation couldn't be completed. (FileVaultCore.GitCommandError error 1.)").
+public struct GitCommandError: Error, LocalizedError, Sendable, Equatable {
     public let command: String
     public let exitCode: Int32
     public let stderr: String
 
-    public var errorDescription: String {
-        "git \(command) failed (exit \(exitCode)): \(stderr)"
+    public var errorDescription: String? {
+        let detail = PullError.condense(stderr)
+        guard !detail.isEmpty else {
+            return String(format: NSLocalizedString("git %@ 执行失败（退出码 %d）", comment: "git error"),
+                          command, exitCode)
+        }
+        return String(format: NSLocalizedString("git %@ 执行失败（退出码 %d）：%@", comment: "git error"),
+                      command, exitCode, detail)
     }
 }
 

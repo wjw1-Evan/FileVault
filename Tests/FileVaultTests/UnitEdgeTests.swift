@@ -194,8 +194,9 @@ final class PullTests: XCTestCase {
         do {
             _ = try await repos.pull(path: root + "/repo")
             XCTFail("pull without remote should throw")
-        } catch {
-            // expected
+        } catch let error as PullError {
+            // v4.1.1: a classified, readable error instead of a bare exit code.
+            XCTAssertEqual(error, .noRemote)
         }
     }
 
@@ -207,9 +208,9 @@ final class PullTests: XCTestCase {
         TestSupport.write("v1", to: root + "/repo/s.md")
         _ = try await repos.commitAll(path: root + "/repo")
         try await repos.runner.run(["push", "-u", "origin", "HEAD"], cwd: root + "/repo")
-        let out = try await repos.pull(path: root + "/repo")
-        _ = out
-        XCTAssertTrue(true, "ff-only pull on up-to-date repo succeeds")
+        let result = try await repos.pull(path: root + "/repo")
+        XCTAssertEqual(result.pulledCommits, 0, "ff-only pull on an up-to-date repo brings no new commits")
+        XCTAssertEqual(result.headBefore, result.headAfter)
     }
 }
 

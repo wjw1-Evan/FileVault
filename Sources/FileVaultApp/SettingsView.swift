@@ -477,15 +477,22 @@ final class SettingsModel: ObservableObject {
         setMessage(id, NSLocalizedString("正在拉取…", comment: "settings status"))
         Task { [weak self] in
             do {
-                let out = try await svc.repoManager.pull(path: id)
-                let text = out.contains("Already up to date")
+                let result = try await svc.repoManager.pull(path: id)
+                let text = result.pulledCommits == 0
                     ? NSLocalizedString("✓ 已是最新", comment: "settings status")
-                    : NSLocalizedString("✓ 已拉取远程更新（ff-only）", comment: "settings status")
-                await MainActor.run { self?.setMessage(id, text) }
+                    : String(format: NSLocalizedString("✓ 已拉取 %d 个新版本（快进）", comment: "settings status"),
+                             result.pulledCommits)
+                self?.setMessage(id, text)
+                self?.fillRepoDetails(id: id)   // remote/health/status may have changed
             } catch {
-                await MainActor.run {
-                    self?.setMessage(id, String(format: NSLocalizedString("⚠️ 拉取失败：%@", comment: "settings status"),
-                                                error.localizedDescription), error: true)
+                let description = error.localizedDescription
+                self?.setMessage(id, String(format: NSLocalizedString("⚠️ 拉取失败：%@", comment: "settings status"),
+                                            description), error: true)
+                // The inline label truncates at two lines; the alert carries the
+                // full reason plus a concrete recovery step (v4.1.1).
+                if let suggestion = (error as? LocalizedError)?.recoverySuggestion, !suggestion.isEmpty {
+                    await self?.alert(NSLocalizedString("拉取失败", comment: "settings alert"),
+                                      description + "\n\n" + suggestion)
                 }
             }
         }

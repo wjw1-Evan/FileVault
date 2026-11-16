@@ -4,8 +4,7 @@ import Foundation
 public enum AuthClassifier {
     private static let patterns: [String] = [
         "authentication failed",
-        "403",
-        "401",
+        "authentication required",
         "could not read username",
         "could not read password",
         "terminal prompts disabled",
@@ -14,6 +13,12 @@ public enum AuthClassifier {
         "unauthorized",
         "credential",
         "fatal: could not read from remote repository",
+        // Status codes only in their HTTP context (v4.1.1): a bare "401" also
+        // matches branch names and URL segments, which mislabelled network
+        // failures and missing branches as bad credentials.
+        "http 401", "http 403",
+        "error: 401", "error: 403",
+        "returned error: 401", "returned error: 403",
     ]
 
     /// Whether a git failure looks like an auth/credential problem.
