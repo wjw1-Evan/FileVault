@@ -375,6 +375,7 @@
 "Git 未就绪" = "Git not ready";
 "检查中…" = "Checking…";
 "正在检查更新…" = "Checking for updates…";
+"关于 FileVault" = "About FileVault";
 "没有文件变更" = "No file changes";
 "还没有提交历史" = "No commit history yet";
 "FileVault 菜单" = "FileVault menu";

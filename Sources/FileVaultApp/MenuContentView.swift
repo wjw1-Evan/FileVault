@@ -34,7 +34,7 @@ struct MenuContentView: View {
             rootsSection
             panelDivider
             primaryActions
-            tilesRow
+            secondaryActions
             panelDivider
             quitRow
         }
@@ -169,17 +169,22 @@ struct MenuContentView: View {
         .padding(.vertical, 5)
     }
 
-    private var tilesRow: some View {
-        HStack(spacing: 7) {
-            MenuTile(symbol: "arrow.triangle.2.circlepath",
-                     title: app.isUpdating ? "检查中…" : "检查更新") {
+    /// Utility actions live at the bottom as compact rows, matching the rest
+    /// of the panel instead of two oversized tiles (v4.2.24).
+    private var secondaryActions: some View {
+        VStack(spacing: 0) {
+            MenuActionRow(symbol: "arrow.triangle.2.circlepath",
+                          title: app.isUpdating ? "正在检查更新…" : "检查更新",
+                          compact: true) {
                 Task { await app.checkForUpdate(silent: false) }
             }
             .disabled(app.isUpdating)
-            MenuTile(symbol: "info.circle", title: "关于") { app.showAbout() }
+            MenuActionRow(symbol: "info.circle",
+                          title: "关于 FileVault",
+                          hint: app.version.isEmpty ? nil : "v\(app.version)",
+                          compact: true) { app.showAbout() }
         }
-        .padding(.horizontal, 12)
-        .padding(.bottom, 8)
+        .padding(.vertical, 2)
     }
 
     private var quitRow: some View {
@@ -247,6 +252,9 @@ struct MenuActionRow: View {
     var key: KeyEquivalent? = nil
     var modifiers: EventModifiers = [.command]
     var hint: String? = nil
+    /// Secondary utility rows (检查更新 / 关于) are slightly smaller and dimmer
+    /// so they do not compete with 历史与恢复 / 设置 (v4.2.24).
+    var compact = false
     let action: () -> Void
     @State private var hovering = false
 
@@ -254,11 +262,12 @@ struct MenuActionRow: View {
         Button(action: action) {
             HStack(spacing: 9) {
                 Image(systemName: symbol)
-                    .font(.system(size: 11))
+                    .font(.system(size: compact ? 10 : 11))
                     .foregroundStyle(.secondary)
                     .frame(width: 16)
                 Text(title)
-                    .font(.system(size: 12))
+                    .font(.system(size: compact ? 11 : 12))
+                    .foregroundStyle(compact ? Color.secondary : Color.primary)
                 Spacer(minLength: 6)
                 if let hint {
                     Text(hint)
@@ -267,7 +276,7 @@ struct MenuActionRow: View {
                 }
             }
             .padding(.horizontal, 14)
-            .padding(.vertical, 6)
+            .padding(.vertical, compact ? 4.5 : 6)
             .background(
                 RoundedRectangle(cornerRadius: 6, style: .continuous)
                     .fill(hovering ? Color.primary.opacity(0.06) : Color.clear)
@@ -276,36 +285,6 @@ struct MenuActionRow: View {
         }
         .buttonStyle(.plain)
         .modifier(OptionalShortcut(key: key, modifiers: modifiers))
-        .onHover { hovering = $0 }
-    }
-}
-
-/// Compact secondary action tile.
-struct MenuTile: View {
-    let symbol: String
-    let title: String
-    let action: () -> Void
-    @State private var hovering = false
-
-    var body: some View {
-        Button(action: action) {
-            VStack(spacing: 4) {
-                Image(systemName: symbol)
-                    .font(.system(size: 12, weight: .medium))
-                Text(title)
-                    .font(.system(size: 9.5))
-                    .lineLimit(1)
-            }
-            .foregroundStyle(.secondary)
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 8)
-            .background(
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .fill(Color.primary.opacity(hovering ? 0.08 : 0.04))
-            )
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
         .onHover { hovering = $0 }
     }
 }
