@@ -97,6 +97,71 @@ final class PullFailureClassificationTests: XCTestCase {
         XCTAssertEqual(capped.count, 401)   // 400 + ellipsis
         XCTAssertTrue(capped.hasSuffix("…"))
     }
+
+    /// Every case must render a non-empty localized reason; only `.failed` may
+    /// omit a recovery suggestion.
+    func testEveryCaseHasReadableDescriptionAndSuggestion() {
+        let cases: [PullError] = [
+            .noRemote, .ambiguousRemote, .notARepository, .detachedHead,
+            .remoteBranchMissing(remote: "origin", branch: "main"),
+            .unrelatedHistories,
+            .mergeConflict(files: ["a.md"], aborted: true),
+            .mergeConflict(files: ["a.md"], aborted: false),
+            .authenticationFailed(detail: "x"), .networkFailed(detail: "x"),
+            .remoteUnavailable(detail: "x"), .localChanges(detail: "x"),
+            .busy, .failed(detail: "x"),
+        ]
+        for error in cases {
+            XCTAssertFalse((error.errorDescription ?? "").isEmpty, "no description for \(error)")
+            if case .failed = error {
+                XCTAssertNil(error.recoverySuggestion)
+            } else {
+                XCTAssertFalse((error.recoverySuggestion ?? "").isEmpty, "no suggestion for \(error)")
+            }
+        }
+    }
+
+    func testConflictDescriptionReflectsCleanupState() {
+        let aborted = PullError.mergeConflict(files: ["a.md"], aborted: true)
+        let notAborted = PullError.mergeConflict(files: ["a.md"], aborted: false)
+        XCTAssertNotEqual(aborted.errorDescription, notAborted.errorDescription)
+        XCTAssertTrue((aborted.errorDescription ?? "").contains("已中止"))
+        XCTAssertTrue((notAborted.errorDescription ?? "").contains("未能自动恢复"))
+        XCTAssertTrue((aborted.recoverySuggestion ?? "").contains("git pull --rebase"))
+        XCTAssertTrue((notAborted.recoverySuggestion ?? "").contains("git rebase --abort"))
+    }
+
+    func testConflictFileListIsCappedAndReadable() {
+        XCTAssertEqual(PullError.fileList([]), "未知文件")
+        XCTAssertEqual(PullError.fileList(["a.md"]), "a.md")
+        XCTAssertEqual(PullError.fileList(["a.md", "b.md"]), "a.md、b.md")
+        let five = PullError.fileList(["a", "b", "c", "d", "e"])
+        XCTAssertTrue(five.contains("a、b、c"), five)
+        XCTAssertTrue(five.contains("等 5 个文件"), five)
+        XCTAssertTrue((PullError.mergeConflict(files: ["a.md"], aborted: true).recoverySuggestion ?? "")
+            .contains("a.md"))
+    }
+
+    func testTechnicalDetailOnlyForTextualCases() {
+        XCTAssertEqual(PullError.failed(detail: "boom").technicalDetail, "boom")
+        XCTAssertEqual(PullError.networkFailed(detail: "dns").technicalDetail, "dns")
+        XCTAssertNil(PullError.noRemote.technicalDetail)
+        XCTAssertEqual(PullError.mergeConflict(files: ["a.md", "b.md"], aborted: true).technicalDetail,
+                       "a.md, b.md")
+        XCTAssertNil(PullError.mergeConflict(files: [], aborted: true).technicalDetail)
+    }
+
+    func testUnstagedChangesAreClassifiedAsLocalChanges() {
+        let error = PullError.classify(stderr: "error: cannot pull with rebase: You have unstaged changes.",
+                                       remote: "origin", branch: "main")
+        guard case .localChanges = error else { return XCTFail("got \(error)") }
+    }
+
+    func testBusyAndNotARepositoryAreUserReadable() {
+        XCTAssertTrue((PullError.busy.errorDescription ?? "").contains("正在执行另一次"))
+        XCTAssertTrue((PullError.busy.recoverySuggestion ?? "").contains("重试"))
+        XCTAssertTrue((PullError.notARepository.errorDescription ?? "").contains("Git 仓库"))
+    }
 }
 
 /// The generic-NSError regression itself: localizedDescription must carry git's
@@ -637,5 +702,269 @@ final class PullScenarioTests: XCTestCase {
         let hashes = parents.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
             .split(separator: " ").map(String.init)
         XCTAssertEqual(Set(hashes.suffix(2)), Set([localHead, remoteHead]))
+    }
+
+    // MARK: - Empty repo, dirty tree, locking
+
+    func testPullIntoEmptyRepoAdoptsRemoteBranch() async throws {
+        let (remote, _) = try await seededRemote()
+        let empty = root + "/empty-pull"
+        try FileManager.default.createDirectory(atPath: empty, withIntermediateDirectories: true)
+        await git(["init", "-b", "main"], cwd: empty)
+        try await repos.setRemote(path: empty, url: remote)
+
+        let result = try await repos.pull(path: empty)
+        XCTAssertNil(result.headBefore)
+        XCTAssertEqual(result.strategy, .fastForward)
+        XCTAssertEqual(result.pulledCommits, 1)
+        XCTAssertEqual(try String(contentsOfFile: empty + "/seed.md", encoding: .utf8), "seed\n")
+        let log = try await repos.runner.run(["log", "--oneline"], cwd: empty)
+        XCTAssertTrue(log.succeeded, log.stderr)
+    }
+
+    func testPullCommitsPendingEditsBeforeFastForward() async throws {
+        let (remote, seed) = try await seededRemote()
+        let machineB = try await cloneOf(remote, as: "machine-b-dirty-pull")
+        try await commit("v2\n", file: "seed.md", in: seed)
+        await git(["push"], cwd: seed)
+        // Uncommitted local work must survive the pull as a commit.
+        TestSupport.write("draft\n", to: machineB + "/draft.md")
+
+        _ = try await repos.pull(path: machineB)
+        let subjects = try await repos.runner.run(["log", "--format=%s", "-3"], cwd: machineB)
+        XCTAssertTrue(subjects.stdout.contains("拉取前自动保存未提交改动"), subjects.stdout)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: machineB + "/draft.md"))
+        XCTAssertEqual(try String(contentsOfFile: machineB + "/seed.md", encoding: .utf8), "v2\n")
+        let dirty = try await repos.status(path: machineB).count
+        XCTAssertEqual(dirty, 0)
+    }
+
+    func testRemoteOperationLockIsReleasedAfterFailure() async throws {
+        let repo = try await makeRepo("lock-release")
+        for attempt in 1...2 {
+            do {
+                _ = try await repos.pull(path: repo)
+                XCTFail("attempt \(attempt): pull without a remote should throw")
+            } catch let error as PullError {
+                XCTAssertEqual(error, .noRemote,
+                               "attempt \(attempt) must not be .busy: the lock was released")
+            }
+        }
+    }
+
+    func testConcurrentPullsAreSerialized() async throws {
+        let (remote, seed) = try await seededRemote()
+        let machineB = try await cloneOf(remote, as: "machine-b-concurrent")
+        try await commit("v2\n", file: "seed.md", in: seed)
+        await git(["push"], cwd: seed)
+
+        async let first = repos.pull(path: machineB)
+        async let second = repos.pull(path: machineB)
+        let (r1, r2) = try await (first, second)
+        XCTAssertEqual(r1.headAfter, r2.headAfter, "both pulls must converge on the remote tip")
+        let dirty = try await repos.status(path: machineB).count
+        XCTAssertEqual(dirty, 0)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: machineB + "/.git/rebase-merge"))
+    }
+
+    // MARK: - Force pull edges
+
+    func testForcePullBacksUpPendingEdits() async throws {
+        let (remote, seed) = try await seededRemote()
+        let machineB = try await cloneOf(remote, as: "machine-b-force-dirty")
+        try await commit("v2\n", file: "seed.md", in: seed)
+        await git(["push"], cwd: seed)
+        TestSupport.write("unsaved local edit\n", to: machineB + "/draft.md")
+
+        let result = try await repos.forcePull(path: machineB)
+        let backupRef = try XCTUnwrap(result.backupRef)
+        // The pending edit was committed before the reset, so the backup ref
+        // still contains it.
+        let recovered = try await repos.runner.run(["show", backupRef + ":draft.md"], cwd: machineB)
+        XCTAssertEqual(recovered.stdout, "unsaved local edit\n")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: machineB + "/draft.md"),
+                       "the remote tree replaces the working tree")
+        XCTAssertGreaterThanOrEqual(result.discardedCommits, 1)
+    }
+
+    func testForcePullWhenAlreadyInSyncIsNoOp() async throws {
+        let (remote, _) = try await seededRemote()
+        let machineB = try await cloneOf(remote, as: "machine-b-force-same")
+        let before = try await repos.resolveHead(path: machineB)
+
+        let result = try await repos.forcePull(path: machineB)
+        XCTAssertNil(result.backupRef, "nothing is replaced, so nothing needs backing up")
+        XCTAssertEqual(result.discardedCommits, 0)
+        XCTAssertEqual(result.headAfter, before)
+    }
+
+    func testForcePullRejectsDetachedHead() async throws {
+        let repo = try await makeRepo("force-detached")
+        await git(["checkout", "--detach", "HEAD"], cwd: repo)
+        do {
+            _ = try await repos.forcePull(path: repo)
+            XCTFail("force pull on a detached HEAD should throw")
+        } catch let error as PullError {
+            XCTAssertEqual(error, .detachedHead)
+        }
+    }
+
+    func testForcePullRemoteWithoutBranchFailsCleanly() async throws {
+        let remote = try await makeBareRemote("force-empty.git")
+        let repo = try await makeRepo("force-unpushed")
+        try await repos.setRemote(path: repo, url: remote)
+        let before = try await repos.resolveHead(path: repo)
+        do {
+            _ = try await repos.forcePull(path: repo)
+            XCTFail("force pull from an empty remote should throw")
+        } catch let error as PullError {
+            XCTAssertEqual(error, .remoteBranchMissing(remote: "origin", branch: "main"))
+        }
+        let after = try await repos.resolveHead(path: repo)
+        XCTAssertEqual(after, before)
+    }
+
+    // MARK: - Merge sync edges
+
+    func testMergeSyncDeleteModifyKeepsSurvivingSide() async throws {
+        let (remote, seed) = try await seededRemote()
+        // Base commit carrying both files on the remote.
+        TestSupport.write("base\n", to: seed + "/mod-local.md")
+        TestSupport.write("base\n", to: seed + "/del-local.md")
+        _ = try await repos.commitAll(path: seed, message: "test: base files")
+        await git(["push"], cwd: seed)
+        let machineB = try await cloneOf(remote, as: "machine-b-delmod")
+        // Local: modify mod-local, delete del-local.
+        TestSupport.write("local change\n", to: machineB + "/mod-local.md")
+        _ = try await repos.runner.run(["rm", "del-local.md"], cwd: machineB)
+        _ = try await repos.commitAll(path: machineB, message: "test: local del/mod")
+        // Remote: delete mod-local, modify del-local.
+        _ = try await repos.runner.run(["rm", "mod-local.md"], cwd: seed)
+        TestSupport.write("remote change\n", to: seed + "/del-local.md")
+        _ = try await repos.commitAll(path: seed, message: "test: remote del/mod")
+        await git(["push"], cwd: seed)
+
+        let result = try await repos.mergeSync(path: machineB)
+        XCTAssertTrue(result.remoteCopies.isEmpty, "delete/modify keeps one surviving side, no copies")
+        XCTAssertEqual(try String(contentsOfFile: machineB + "/mod-local.md", encoding: .utf8),
+                       "local change\n", "remote deleted it but local changed it: keep local")
+        XCTAssertEqual(try String(contentsOfFile: machineB + "/del-local.md", encoding: .utf8),
+                       "remote change\n", "local deleted it but remote changed it: restore remote")
+        let dirty = try await repos.status(path: machineB).count
+        XCTAssertEqual(dirty, 0)
+        XCTAssertTrue(result.needsPush)
+    }
+
+    func testMergeSyncRemoteAheadFastForwards() async throws {
+        let (remote, seed) = try await seededRemote()
+        let machineB = try await cloneOf(remote, as: "machine-b-ff-sync")
+        try await commit("remote only\n", file: "new-remote.md", in: seed)
+        await git(["push"], cwd: seed)
+        let remoteHead = try await repos.resolveHead(path: seed)
+
+        let result = try await repos.mergeSync(path: machineB)
+        XCTAssertTrue(result.didChange)
+        XCTAssertEqual(result.addedFromRemote, 1)
+        XCTAssertTrue(result.remoteCopies.isEmpty)
+        XCTAssertEqual(result.headAfter, remoteHead)
+        let parents = try await repos.runner.run(["rev-list", "--parents", "-n", "1", "HEAD"], cwd: machineB)
+        let hashes = parents.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+            .split(separator: " ").map(String.init)
+        XCTAssertEqual(hashes.count, 2, "a fast-forward has a single parent")
+    }
+
+    func testMergeSyncCopyNameCollisionGetsSuffix() async throws {
+        let (remote, seed) = try await seededRemote()
+        let local = try await makeRepo("local-collision")
+        TestSupport.write("local\n", to: local + "/shared.md")
+        TestSupport.write("already there\n", to: local + "/shared (远程副本).md")
+        _ = try await repos.commitAll(path: local, message: "test: local files")
+        try await repos.setRemote(path: local, url: remote)
+        TestSupport.write("remote\n", to: seed + "/shared.md")
+        _ = try await repos.commitAll(path: seed, message: "test: remote file")
+        await git(["push"], cwd: seed)
+
+        let result = try await repos.mergeSync(path: local)
+        XCTAssertEqual(result.remoteCopies.count, 1)
+        XCTAssertEqual(result.remoteCopies.first?.copyPath, "shared (远程副本 2).md")
+        XCTAssertEqual(try String(contentsOfFile: local + "/shared.md", encoding: .utf8), "local\n")
+        XCTAssertEqual(try String(contentsOfFile: local + "/shared (远程副本 2).md", encoding: .utf8),
+                       "remote\n")
+        XCTAssertEqual(try String(contentsOfFile: local + "/shared (远程副本).md", encoding: .utf8),
+                       "already there\n")
+    }
+
+    func testMergeSyncEmptyLocalRepoAdoptsRemote() async throws {
+        let (remote, seed) = try await seededRemote()
+        let empty = root + "/empty-sync"
+        try FileManager.default.createDirectory(atPath: empty, withIntermediateDirectories: true)
+        await git(["init", "-b", "main"], cwd: empty)
+        try await repos.setRemote(path: empty, url: remote)
+        let remoteHead = try await repos.resolveHead(path: seed)
+
+        let result = try await repos.mergeSync(path: empty)
+        XCTAssertNil(result.headBefore)
+        XCTAssertEqual(result.headAfter, remoteHead)
+        XCTAssertGreaterThanOrEqual(result.addedFromRemote, 2)   // .gitignore + seed.md
+        XCTAssertTrue(FileManager.default.fileExists(atPath: empty + "/seed.md"))
+        let upstream = try await repos.runner.run(
+            ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"], cwd: empty)
+        XCTAssertTrue(upstream.succeeded, upstream.stderr)
+    }
+
+    func testMergeSyncCommitMessageNamesTheMode() async throws {
+        let (remote, _) = try await seededRemote()
+        let local = try await makeRepo("local-message", seedContent: "different content\n")
+        try await repos.setRemote(path: local, url: remote)
+        _ = try await repos.mergeSync(path: local)
+        let subject = try await repos.runner.run(["log", "-1", "--format=%s"], cwd: local)
+        XCTAssertEqual(subject.stdout.trimmingCharacters(in: .whitespacesAndNewlines),
+                       "sync: 同步远程文件到本地（保留本地文件）")
+    }
+}
+
+/// The auto-commit pipeline must stay out of the way while a pull's rebase or a
+/// sync merge owns the repository (v4.1.5).
+final class CommitPipelineGuardTests: XCTestCase {
+    func testPipelineSkipsWhileMergeOrRebaseInProgress() async throws {
+        let dir = TestSupport.makeTempDir("pipeguard")
+        defer { try? FileManager.default.removeItem(atPath: dir) }
+        TestSupport.write("seed\n", to: dir + "/seed.md")
+        let repos = RepoManager(runner: TestSupport.newRunner())
+        _ = try await repos.ensureRepo(at: dir)
+
+        var commits: [String] = []
+        let lock = NSLock()
+        let engine = CommitEngine(repoManager: repos,
+                                  debouncer: Debouncer(quietInterval: 30, maxWait: 60, onFired: { _ in }),
+                                  pause: PauseController())
+        engine.onCommit = { _, hash, _ in lock.lock(); commits.append(hash); lock.unlock() }
+        TestSupport.write("pending\n", to: dir + "/pending.md")
+
+        // A half-applied merge (as created by our sync merge) blocks commits.
+        let mergeHead = dir + "/.git/MERGE_HEAD"
+        let head = try await repos.resolveHead(path: dir)
+        TestSupport.write(head + "\n", to: mergeHead)
+        await engine.runCommitPipeline(repoPath: dir)
+        lock.lock(); let afterMerge = commits.count; lock.unlock()
+        XCTAssertEqual(afterMerge, 0, "no commit while MERGE_HEAD exists")
+        let dirtyAfterMerge = try await repos.status(path: dir).count
+        XCTAssertEqual(dirtyAfterMerge, 1, "the pending file stays uncommitted")
+
+        // Same for a half-applied rebase.
+        try? FileManager.default.removeItem(atPath: mergeHead)
+        try? FileManager.default.createDirectory(atPath: dir + "/.git/rebase-merge",
+                                                 withIntermediateDirectories: true)
+        await engine.runCommitPipeline(repoPath: dir)
+        lock.lock(); let afterRebase = commits.count; lock.unlock()
+        XCTAssertEqual(afterRebase, 0, "no commit while a rebase is half-applied")
+        try? FileManager.default.removeItem(atPath: dir + "/.git/rebase-merge")
+
+        // Once no operation is in progress the pipeline commits normally.
+        await engine.runCommitPipeline(repoPath: dir)
+        lock.lock(); let afterClean = commits.count; lock.unlock()
+        XCTAssertEqual(afterClean, 1, "pipeline commits again when the repo is free")
+        let dirty = try await repos.status(path: dir).count
+        XCTAssertEqual(dirty, 0)
     }
 }

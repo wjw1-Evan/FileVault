@@ -860,6 +860,10 @@ public final class RepoManager: @unchecked Sendable {
             guard reset.succeeded else {
                 throw GitCommandError(command: "reset --hard", exitCode: reset.exitCode, stderr: reset.stderr)
             }
+            // The upstream binding above cannot work while the branch is still
+            // unborn; bind it again now that the reset created the branch.
+            _ = try? await runner.run(["branch", "--set-upstream-to=" + target.remote + "/" + target.branch, branch],
+                                      cwd: path)
             let after = (try? await resolveHead(path: path)) ?? remoteTip
             let counts = await treeDiffCounts(path: path, old: nil, new: remoteTip)
             return MergeSyncResult(headBefore: nil, headAfter: after,

@@ -79,7 +79,7 @@ FileVault **永久免费**：无试用期、无激活码、无账号、无订阅
 
 ```bash
 swift build          # 构建
-swift test           # 运行全部测试（374 项）
+swift test           # 运行全部测试（398 项）
 .build/debug/FileVaultApp            # 启动菜单栏应用
 .build/debug/FileVaultApp --smoke    # 无 UI 冒烟自检
 swift run FileVaultApp --help        # 命令行参数

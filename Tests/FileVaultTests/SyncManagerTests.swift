@@ -183,4 +183,86 @@ final class SyncManagerTests: XCTestCase {
         let finalStatus = await sync.status(for: repo)
         XCTAssertEqual(finalStatus, .failed)
     }
+
+    // MARK: - Push classification (v4.1.5)
+
+    func testIsRejectedPushRecognisesNonFastForwardReasons() {
+        let samples = [
+            "! [rejected] main -> main (non-fast-forward)",
+            "! [rejected] main -> main (fetch first)",
+            "error: failed to push some refs to 'origin'",
+            "hint: Updates were rejected because the remote contains work that you do not have locally.",
+            "hint: Updates were rejected because the tip of your current branch is behind",
+        ]
+        for sample in samples {
+            XCTAssertTrue(SyncManager.isRejectedPush(GitCommandError(command: "push", exitCode: 1,
+                                                                     stderr: sample)), sample)
+        }
+        XCTAssertFalse(SyncManager.isRejectedPush(
+            GitCommandError(command: "push", exitCode: 128,
+                            stderr: "fatal: unable to access 'https://x': Could not resolve host")))
+        XCTAssertFalse(SyncManager.isRejectedPush(
+            GitCommandError(command: "push", exitCode: 1,
+                            stderr: "fatal: Authentication failed for 'https://x'")))
+        struct Fake: Error {}
+        XCTAssertFalse(SyncManager.isRejectedPush(Fake()))
+    }
+
+    func testDeterministicPullErrorsStopRetries() {
+        XCTAssertTrue(SyncManager.isDeterministic(.mergeConflict(files: ["a.md"], aborted: true)))
+        XCTAssertTrue(SyncManager.isDeterministic(.unrelatedHistories))
+        XCTAssertTrue(SyncManager.isDeterministic(.remoteBranchMissing(remote: "origin", branch: "main")))
+        XCTAssertFalse(SyncManager.isDeterministic(.authenticationFailed(detail: "x")))
+        XCTAssertFalse(SyncManager.isDeterministic(.networkFailed(detail: "x")))
+        XCTAssertFalse(SyncManager.isDeterministic(.busy))
+        XCTAssertFalse(SyncManager.isDeterministic(.localChanges(detail: "x")))
+    }
+
+    func testPushFailureMessageReusesPullReasonAndSuggestion() {
+        let conflict = SyncManager.pushFailureMessage(PullError.mergeConflict(files: ["a.md"], aborted: true))
+        XCTAssertTrue(conflict.contains("自动合并已中止"), conflict)
+        XCTAssertTrue(conflict.contains("git pull --rebase"), conflict)
+
+        let auth = SyncManager.pushFailureMessage(
+            GitCommandError(command: "push", exitCode: 1, stderr: "fatal: Authentication failed for 'https://x'"))
+        XCTAssertTrue(auth.contains(AuthClassifier.guidance()), auth)
+
+        let unknown = SyncManager.pushFailureMessage(PullError.failed(detail: "boom"))
+        XCTAssertEqual(unknown, "拉取失败：boom")
+    }
+
+    /// Unrelated histories cannot be reconciled automatically: the auto-push
+    /// loop must report once and stop rather than retrying on a timer.
+    func testAutoPushStopsOnUnrelatedHistories() async throws {
+        let remote = makeBareRemote("r5")
+        // Seed the remote from a different repo (a different root history).
+        let seed = root + "/seedRepo"
+        try FileManager.default.createDirectory(atPath: seed, withIntermediateDirectories: true)
+        TestSupport.write("seed\n", to: seed + "/seed.md")
+        _ = try await repos.ensureRepo(at: seed)
+        try await repos.setRemote(path: seed, url: remote)
+        _ = try await repos.runner.run(["push", "-u", "origin", "HEAD"], cwd: seed)
+
+        let repo = root + "/repoA"
+        _ = try await repos.ensureRepo(at: repo)
+        TestSupport.write("own\n", to: repo + "/own.md")
+        _ = try await repos.commitAll(path: repo)
+        let localHead = try await repos.resolveHead(path: repo)
+
+        var messages: [String] = []
+        let lock = NSLock()
+        sync.onPushFailure.handler = { _, reason in lock.lock(); messages.append(reason); lock.unlock() }
+        try await sync.configureRemote(repoPath: repo, url: remote, autoPush: true)
+
+        await waitForStatus(.failed, repo: repo)
+        try? await Task.sleep(nanoseconds: 400_000_000)
+        lock.lock(); let seen = messages; lock.unlock()
+        XCTAssertTrue(seen.contains { $0.contains("互不相关") }, seen.joined(separator: " || "))
+        let headNow = try await repos.resolveHead(path: repo)
+        XCTAssertEqual(headNow, localHead, "the local history must be preserved")
+        let dirty = try await repos.status(path: repo).count
+        XCTAssertEqual(dirty, 0)
+        let finalStatus = await sync.status(for: repo)
+        XCTAssertEqual(finalStatus, .failed)
+    }
 }
