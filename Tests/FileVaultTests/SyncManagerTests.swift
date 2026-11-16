@@ -265,6 +265,14 @@ final class SyncManagerTests: XCTestCase {
         XCTAssertTrue(tooLarge?.contains("big.bin") == true, tooLarge ?? "")
         XCTAssertTrue(tooLarge?.contains("photos/b.jpg") == true, tooLarge ?? "")
         XCTAssertEqual(SyncManager.oversizedFiles(in: tooLargeStderr), ["big.bin", "photos/b.jpg"])
+        let readOnly = SyncManager.deterministicPushRejection(
+            GitCommandError(command: "push", exitCode: 1,
+                            stderr: "remote: You are not allowed to push code to this project."))
+        XCTAssertTrue(readOnly?.contains("只读") == true, readOnly ?? "")
+        let archived = SyncManager.deterministicPushRejection(
+            GitCommandError(command: "push", exitCode: 1,
+                            stderr: "remote: Repository is archived and cannot be pushed to."))
+        XCTAssertTrue(archived?.contains("只读") == true, archived ?? "")
         XCTAssertNil(SyncManager.deterministicPushRejection(
             GitCommandError(command: "push", exitCode: 1,
                             stderr: "fatal: unable to access 'https://x': Could not resolve host")))

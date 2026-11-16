@@ -149,6 +149,10 @@ final class SettingsModel: ObservableObject {
                     self.rootCards[idx].repo.health = String(
                         format: NSLocalizedString("⚠️ 另一个 FileVault 实例正在管理（pid %d）",
                                                   comment: "repo health"), foreignInstancePID)
+                } else if let provider = CloudFolderAdvice.provider(for: id) {
+                    self.rootCards[idx].repo.health = healthInfo.summary + String(
+                        format: NSLocalizedString(" · ☁️ %@ 目录（按需下载可能被误判为删除）",
+                                                  comment: "repo health"), provider)
                 } else {
                     self.rootCards[idx].repo.health = healthInfo.summary
                 }

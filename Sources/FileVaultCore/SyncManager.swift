@@ -345,6 +345,12 @@ public actor SyncManager {
             return NSLocalizedString("远程仓库拒绝了这次推送（分支保护或仓库规则）。请在托管平台调整分支保护/权限后再试。",
                                      comment: "push rejected")
         }
+        if text.contains("you are not allowed to push") || text.contains("read-only")
+            || text.contains("repository is archived") || text.contains("archived repository")
+            || text.contains("protected branch") && text.contains("cannot push") {
+            return NSLocalizedString("远程仓库不允许推送（只读、已归档或没有写权限）。请在托管平台取消只读/归档或授予写权限后再试。",
+                                     comment: "push rejected")
+        }
         if text.contains("file is too large") || text.contains("exceeds github's file size limit")
             || (text.contains("push was rejected") && (text.contains("mb") || text.contains("limit"))) {
             var message = NSLocalizedString("远程仓库因为文件过大拒绝了这次推送。请检查大文件排除规则，或把大文件移出受保护文件夹后再试。",
