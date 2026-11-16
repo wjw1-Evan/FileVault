@@ -422,6 +422,12 @@
 "文件夹已添加，但远程绑定失败：" = "The folder was added, but binding the remote failed: ";
 "添加文件夹" = "Add folder";
 "认证：%@" = "Authentication: %@";
+"历史与恢复…" = "History & Recovery…";
+"FileVault 历史与恢复" = "FileVault History & Recovery";
+"找回与还原" = "Recover & Restore";
+"历史时间线" = "Timeline";
+"一个文件夹的所有版本：看时间线，或找回被删/改坏的文件" = "Every version of the folder: browse the timeline, or recover deleted/corrupted files.";
+"打开历史时间线" = "Open timeline";
 "自动" = "Automatic";
 "移除文件夹？" = "Remove folder?";
 "文件夹操作" = "Folder actions";

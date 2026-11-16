@@ -594,7 +594,7 @@ struct RecoveryView: View {
                     if let root = model.selectedRoot {
                         Button("在 Finder 中打开") { app.openPath(root) }
                     }
-                    Button("打开历史版本窗口") { openWindow(id: "history") }
+                    Button("打开历史时间线") { app.open("history") }
                 } label: {
                     HStack(spacing: 4) {
                         Text(folderName)

@@ -255,10 +255,10 @@ struct DashboardView: View {
                 FVSectionHeader(title: "最近活动",
                                 subtitle: "自动提交会按时间聚合，不需要你手动保存")
                 HStack(spacing: 10) {
-                    Button("恢复文件") { openWindow(id: "recovery") }
+                    Button("恢复文件") { app.open("recovery") }
                         .buttonStyle(.link)
                         .font(FVTheme.metaFont)
-                    Button("全部历史") { openWindow(id: "history") }
+                    Button("全部历史") { app.open("history") }
                         .buttonStyle(.link)
                         .font(FVTheme.metaFont)
                 }

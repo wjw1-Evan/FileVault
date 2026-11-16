@@ -321,8 +321,16 @@ final class AppState: ObservableObject {
     }
 
     func open(_ sceneID: String) {
-        if let handler = openWindowHandler {
-            handler(sceneID)
+        // v4.2.20: 历史 and 恢复 share one window; remember which tab to show.
+        switch sceneID {
+        case "history":
+            recordsTab = .history
+            openWindowHandler?("records")
+        case "recovery":
+            recordsTab = .recover
+            openWindowHandler?("records")
+        default:
+            openWindowHandler?(sceneID)
         }
         NSApp.activate(ignoringOtherApps: true)
     }
@@ -334,6 +342,8 @@ final class AppState: ObservableObject {
     @Published var lastUpdateCheckFailed = false
     /// Set by the menu bar to open the dashboard's quick-add sheet (v4.2.18).
     @Published var quickAddRequested = false
+    /// Shared 历史与恢复 window: which tab to show (v4.2.20).
+    @Published var recordsTab: RecordsTab = .recover
 
     /// Guards against overlapping checks (timer tick + manual menu item +
     /// toggling the setting back on used to be able to race).

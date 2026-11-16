@@ -54,18 +54,12 @@ struct FileVaultApp: App {
         }
         .defaultSize(width: 780, height: 760)
 
-        Window("FileVault 历史", id: "history") {
-            HistoryView()
+        // v4.2.20: 历史版本 + 文件恢复 share one window with two tabs.
+        Window("FileVault 历史与恢复", id: "records") {
+            RecordsWindow()
                 .environmentObject(app)
         }
-        .defaultSize(width: 1000, height: 640)
-
-        // v4.1: file-first recovery. 恢复 = 找回删除的文件 / 还原改过的文件.
-        Window("FileVault 恢复", id: "recovery") {
-            RecoveryView()
-                .environmentObject(app)
-        }
-        .defaultSize(width: 1060, height: 680)
+        .defaultSize(width: 1060, height: 720)
 
         #if DEBUG
         // Dev-only: lets --render-menu capture the panel as a PNG.
@@ -118,9 +112,11 @@ struct FileVaultApp: App {
         // --render-dashboard to an open+capture request.
         // Titles are localised, so resolve them through the same table the
         // window scenes use (v3.4.0).
+        let recordsTitle = NSLocalizedString("FileVault 历史与恢复", comment: "window title")
         var map = ["--render-settings": ("settings", NSLocalizedString("FileVault 设置", comment: "window title")),
-                   "--render-history": ("history", NSLocalizedString("FileVault 历史", comment: "window title")),
-                   "--render-recovery": ("recovery", NSLocalizedString("FileVault 恢复", comment: "window title")),
+                   "--render-history": ("history", recordsTitle),
+                   "--render-recovery": ("recovery", recordsTitle),
+                   "--render-records": ("records", recordsTitle),
                    "--render-dashboard": ("dashboard", "FileVault")]
         #if DEBUG
         map["--render-menu"] = ("menu-preview", "FileVault 菜单")

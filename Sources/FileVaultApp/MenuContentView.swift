@@ -160,10 +160,8 @@ struct MenuContentView: View {
 
     private var primaryActions: some View {
         VStack(spacing: 0) {
-            MenuActionRow(symbol: "arrow.uturn.backward.circle",
-                          title: "恢复文件…") { app.open("recovery") }
             MenuActionRow(symbol: "clock.arrow.circlepath",
-                          title: "历史版本…") { app.open("history") }
+                          title: "历史与恢复…") { app.open("records") }
             MenuActionRow(symbol: "gearshape",
                           title: "设置…",
                           key: ",", modifiers: [.command],
