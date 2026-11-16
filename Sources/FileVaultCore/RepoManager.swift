@@ -711,15 +711,306 @@ public final class RepoManager: @unchecked Sendable {
     /// a conflict can never leave the repository in a merge state, and by the
     /// commit pipeline so it never commits conflict markers (v4.1.2).
     func rebaseInProgress(path: String) async -> Bool {
-        for name in ["rebase-merge", "rebase-apply"] {
-            guard let r = try? await runner.run(["rev-parse", "--git-path", name], cwd: path),
-                  r.succeeded else { continue }
-            let p = r.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !p.isEmpty else { continue }
-            let full = p.hasPrefix("/") ? p : (path as NSString).appendingPathComponent(p)
-            if FileManager.default.fileExists(atPath: full) { return true }
+        if await gitPathExists(path: path, name: "rebase-merge") { return true }
+        return await gitPathExists(path: path, name: "rebase-apply")
+    }
+
+    /// Whether a merge is half-applied (MERGE_HEAD exists).
+    func mergeInProgress(path: String) async -> Bool {
+        await gitPathExists(path: path, name: "MERGE_HEAD")
+    }
+
+    /// Whether the repository is mid-rebase or mid-merge: the auto-commit
+    /// pipeline must stay out of the way while either is true (v4.1.3).
+    func operationInProgress(path: String) async -> Bool {
+        if await rebaseInProgress(path: path) { return true }
+        return await mergeInProgress(path: path)
+    }
+
+    /// Whether a path under .git (e.g. "MERGE_HEAD") exists, including in
+    /// worktrees where `rev-parse --git-path` resolves outside the folder.
+    private func gitPathExists(path: String, name: String) async -> Bool {
+        guard let r = try? await runner.run(["rev-parse", "--git-path", name], cwd: path), r.succeeded else {
+            return false
         }
-        return false
+        let p = r.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !p.isEmpty else { return false }
+        let full = p.hasPrefix("/") ? p : (path as NSString).appendingPathComponent(p)
+        return FileManager.default.fileExists(atPath: full)
+    }
+
+    /// Current SHA of refs/remotes/<remote>/<branch> (nil when it does not exist).
+    private func remoteTrackingSHA(path: String, remote: String, branch: String) async -> String? {
+        let ref = "refs/remotes/" + remote + "/" + branch
+        guard let r = try? await runner.run(["rev-parse", "--verify", "--quiet", ref], cwd: path),
+              r.succeeded else { return nil }
+        let sha = r.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+        return sha.isEmpty ? nil : sha
+    }
+
+    // MARK: - Merge sync (keep files from both sides)
+
+    /// Outcome of "sync with the remote and keep both sides' files".
+    public struct MergeSyncResult: Sendable, Equatable {
+        public let headBefore: String?
+        public let headAfter: String
+        /// Paths that only the remote had (now added to the local folder).
+        public let addedFromRemote: Int
+        /// Paths that only the local folder had (kept untouched).
+        public let keptLocalOnly: Int
+        /// Same path changed on both sides: the remote version stays at the
+        /// original path, the local version is saved next to it.
+        public let localCopies: [LocalCopy]
+        public let backupRef: String?
+        /// Whether new commits were created (false when already in sync).
+        public var didChange: Bool { headBefore != headAfter }
+
+        public struct LocalCopy: Sendable, Equatable {
+            /// Original path (now holds the remote version).
+            public let path: String
+            /// Where the local version was saved, e.g. "note (本地副本).md".
+            public let copyPath: String
+        }
+    }
+
+    /// Merge the remote branch into the local folder while keeping files from
+    /// both sides (v4.1.3).
+    ///
+    /// This is the "bind a remote to a folder that already has files" path and
+    /// it is deliberately lossless:
+    /// - remote-only paths are added to the folder;
+    /// - local-only paths are kept untouched;
+    /// - same path with different content keeps BOTH: the remote version at the
+    ///   original path (other machines stay stable) and the local version as
+    ///   "name (本地副本).ext" next to it;
+    /// - modify/delete vs delete/modify keeps the surviving side.
+    /// It creates a merge commit (both parents are history), and the pre-merge
+    /// HEAD is also kept in a backup ref. Files are never silently dropped.
+    public func mergeSync(path: String) async throws -> MergeSyncResult {
+        guard isRepo(at: path) else { throw PullError.notARepository }
+        let headRef = try await runner.run(["symbolic-ref", "--quiet", "--short", "HEAD"], cwd: path)
+        let branch = headRef.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard headRef.succeeded, !branch.isEmpty else { throw PullError.detachedHead }
+        let target = try await pullTarget(path: path, currentBranch: branch)
+
+        // Local-first: pending edits become a commit (fail closed when that is
+        // impossible - the merge must not lose them).
+        if await isDirty(path: path) {
+            _ = try? await commitAll(path: path, message: "auto: 同步前自动保存未提交改动")
+        }
+        guard !(await isDirty(path: path)) else { throw PullError.localChanges(detail: "") }
+
+        let fetch = try await runner.run(["fetch", target.remote], cwd: path)
+        guard fetch.succeeded else {
+            throw PullError.classify(stderr: fetch.stderr, remote: target.remote, branch: target.branch)
+        }
+        guard let remoteTip = await remoteTrackingSHA(path: path, remote: target.remote,
+                                                      branch: target.branch) else {
+            throw PullError.remoteBranchMissing(remote: target.remote, branch: target.branch)
+        }
+        // Bind the branch so later pulls/pushes need no setup.
+        _ = try? await runner.run(["branch", "--set-upstream-to=" + target.remote + "/" + target.branch, branch],
+                                  cwd: path)
+        let oldHead = try? await resolveHead(path: path)
+
+        // No local commits yet: just take the remote tree.
+        guard let oldHead else {
+            let reset = try await runner.run(["reset", "--hard", remoteTip], cwd: path)
+            guard reset.succeeded else {
+                throw GitCommandError(command: "reset --hard", exitCode: reset.exitCode, stderr: reset.stderr)
+            }
+            let after = (try? await resolveHead(path: path)) ?? remoteTip
+            let counts = await treeDiffCounts(path: path, old: nil, new: remoteTip)
+            return MergeSyncResult(headBefore: nil, headAfter: after,
+                                   addedFromRemote: counts.added, keptLocalOnly: 0,
+                                   localCopies: [], backupRef: nil)
+        }
+        if oldHead == remoteTip {
+            return MergeSyncResult(headBefore: oldHead, headAfter: oldHead,
+                                   addedFromRemote: 0, keptLocalOnly: 0,
+                                   localCopies: [], backupRef: nil)
+        }
+        if await isAncestor(remoteTip, of: oldHead, path: path) {
+            // Already contains the remote: nothing to bring in.
+            return MergeSyncResult(headBefore: oldHead, headAfter: oldHead,
+                                   addedFromRemote: 0, keptLocalOnly: 0,
+                                   localCopies: [], backupRef: nil)
+        }
+        if await isAncestor(oldHead, of: remoteTip, path: path) {
+            // Local is behind: a fast-forward cannot lose local files.
+            let ff = try await runner.run(["merge", "--ff-only", remoteTip], cwd: path)
+            guard ff.succeeded else {
+                throw GitCommandError(command: "merge --ff-only", exitCode: ff.exitCode, stderr: ff.stderr)
+            }
+            let after = (try? await resolveHead(path: path)) ?? remoteTip
+            let counts = await treeDiffCounts(path: path, old: oldHead, new: remoteTip)
+            return MergeSyncResult(headBefore: oldHead, headAfter: after,
+                                   addedFromRemote: counts.added, keptLocalOnly: 0,
+                                   localCopies: [], backupRef: nil)
+        }
+
+        // Keep the replaced HEAD recoverable before touching the working tree.
+        var backupRef: String?
+        let ref = "refs/filevault/backup/" + Self.backupStamp()
+        let backup = try await runner.run(["update-ref", ref, oldHead], cwd: path)
+        guard backup.succeeded else {
+            throw GitCommandError(command: "update-ref " + ref, exitCode: backup.exitCode, stderr: backup.stderr)
+        }
+        backupRef = ref
+
+        let related = await historiesRelated(oldHead, remoteTip, path: path)
+        var mergeArgs = ["merge", "--no-commit", "--no-ff"]
+        if !related { mergeArgs.append("--allow-unrelated-histories") }
+        mergeArgs.append(remoteTip)
+        let merge = try await runner.run(mergeArgs, cwd: path)
+        let conflicts = await unmergedPaths(path: path)
+        guard merge.succeeded || !conflicts.isEmpty else {
+            // Not a conflict (e.g. an untracked file in the way): undo everything.
+            if await mergeInProgress(path: path) {
+                _ = try? await runner.run(["merge", "--abort"], cwd: path)
+            }
+            throw PullError.classify(stderr: merge.stderr, remote: target.remote, branch: target.branch)
+        }
+
+        // Resolve conflicts without losing either side.
+        var copies: [MergeSyncResult.LocalCopy] = []
+        for file in conflicts {
+            let stages = await unmergedStages(path: path, file: file)
+            let hasLocal = stages.contains(2)
+            let hasRemote = stages.contains(3)
+            if hasLocal && hasRemote {
+                // Remote wins the original path; keep the local version beside it.
+                if let copyPath = Self.localCopyPath(for: file, exists: { relative in
+                    FileManager.default.fileExists(atPath: (path as NSString).appendingPathComponent(relative))
+                }), await materializeLocalStage(path: path, file: file, to: copyPath) {
+                    _ = try? await runner.run(["add", "--", copyPath], cwd: path)
+                    copies.append(MergeSyncResult.LocalCopy(path: file, copyPath: copyPath))
+                }
+                _ = try? await runner.run(["checkout", "--theirs", "--", file], cwd: path)
+                _ = try? await runner.run(["add", "--", file], cwd: path)
+            } else if hasRemote {
+                // Local deleted it, remote changed it: bring the remote back.
+                _ = try? await runner.run(["checkout", "--theirs", "--", file], cwd: path)
+                _ = try? await runner.run(["add", "--", file], cwd: path)
+            } else if hasLocal {
+                // Remote deleted it, local changed it: keep the local file.
+                _ = try? await runner.run(["checkout", "--ours", "--", file], cwd: path)
+                _ = try? await runner.run(["add", "--", file], cwd: path)
+            }
+        }
+        _ = try? await runner.run(["add", "-A"], cwd: path)
+        let commit = try await runner.run(["commit", "-m", "sync: 合并远程与本地文件（保留双方）"], cwd: path)
+        guard commit.succeeded else {
+            if await mergeInProgress(path: path) {
+                _ = try? await runner.run(["merge", "--abort"], cwd: path)
+            }
+            throw GitCommandError(command: "commit (sync merge)", exitCode: commit.exitCode,
+                                  stderr: commit.stderr)
+        }
+        let after = (try? await resolveHead(path: path)) ?? remoteTip
+        let counts = await treeDiffCounts(path: path, old: oldHead, new: remoteTip)
+        return MergeSyncResult(headBefore: oldHead, headAfter: after,
+                               addedFromRemote: counts.added, keptLocalOnly: counts.deleted,
+                               localCopies: copies, backupRef: backupRef)
+    }
+
+    /// "name (本地副本).ext" - a unique sibling path for the local version.
+    static func localCopyPath(for file: String, exists: (String) -> Bool) -> String? {
+        let ns = file as NSString
+        let dir = ns.deletingLastPathComponent
+        let base = ns.lastPathComponent as NSString
+        let ext = base.pathExtension
+        let stem = base.deletingPathExtension
+        func candidate(_ index: Int) -> String {
+            let suffix = index == 1
+                ? NSLocalizedString(" (本地副本)", comment: "sync conflict copy suffix")
+                : String(format: NSLocalizedString(" (本地副本 %d)", comment: "sync conflict copy suffix"), index)
+            let name = ext.isEmpty ? stem + suffix : stem + suffix + "." + ext
+            return dir.isEmpty ? name : dir + "/" + name
+        }
+        var index = 1
+        while exists(candidate(index)) {
+            index += 1
+            if index > 99 { return nil }
+        }
+        return candidate(index)
+    }
+
+    /// Write the stage-2 (local) blob to destination, binary-safe.
+    private func materializeLocalStage(path: String, file: String, to destination: String) async -> Bool {
+        let fm = FileManager.default
+        let tmp = fm.temporaryDirectory.appendingPathComponent("fv-sync-" + UUID().uuidString.prefix(8),
+                                                              isDirectory: true)
+        try? fm.createDirectory(at: tmp, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: tmp) }
+        let prefix = tmp.path + "/"
+        guard let r = try? await runner.run(["checkout-index", "--stage=2", "--force",
+                                             "--prefix=" + prefix, "--", file], cwd: path),
+              r.succeeded else { return false }
+        let produced = tmp.appendingPathComponent(file)
+        guard fm.fileExists(atPath: produced.path) else { return false }
+        let dest = (path as NSString).appendingPathComponent(destination)
+        try? fm.createDirectory(atPath: (dest as NSString).deletingLastPathComponent,
+                                withIntermediateDirectories: true)
+        try? fm.removeItem(atPath: dest)
+        do {
+            try fm.moveItem(at: produced, to: URL(fileURLWithPath: dest))
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    /// Unmerged stage numbers (1 = base, 2 = local, 3 = remote) of one path.
+    private func unmergedStages(path: String, file: String) async -> Set<Int> {
+        guard let r = try? await runner.run(["ls-files", "-u", "--", file], cwd: path), r.succeeded else {
+            return []
+        }
+        var stages = Set<Int>()
+        for line in r.stdout.split(separator: "\n") {
+            let head = line.split(separator: "\t", maxSplits: 1).first ?? line
+            if let stage = head.split(separator: " ").last.flatMap({ Int($0) }) {
+                stages.insert(stage)
+            }
+        }
+        return stages
+    }
+
+    /// Added / deleted file counts between two trees (nil = empty tree).
+    private func treeDiffCounts(path: String, old: String?, new: String?) async -> (added: Int, deleted: Int) {
+        guard let old, let new else {
+            let tip = old ?? new
+            guard let tip else { return (0, 0) }
+            guard let r = try? await runner.run(["ls-tree", "-r", "--name-only", tip], cwd: path),
+                  r.succeeded else { return (0, 0) }
+            let count = r.stdout.split(separator: "\n").filter { !$0.isEmpty }.count
+            return old == nil ? (count, 0) : (0, count)
+        }
+        guard let r = try? await runner.run(["diff", "--name-status", old, new], cwd: path),
+              r.succeeded else { return (0, 0) }
+        var added = 0
+        var deleted = 0
+        for line in r.stdout.split(separator: "\n") {
+            switch line.first {
+            case "A": added += 1
+            case "D": deleted += 1
+            default: break
+            }
+        }
+        return (added, deleted)
+    }
+
+    /// Whether candidate is an ancestor of descendant.
+    private func isAncestor(_ candidate: String, of descendant: String, path: String) async -> Bool {
+        guard let r = try? await runner.run(["merge-base", "--is-ancestor", candidate, descendant],
+                                            cwd: path) else { return false }
+        return r.exitCode == 0
+    }
+
+    /// Whether the two commits share any history at all.
+    private func historiesRelated(_ a: String, _ b: String, path: String) async -> Bool {
+        guard let r = try? await runner.run(["merge-base", a, b], cwd: path), r.succeeded else { return false }
+        return !r.stdout.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     // MARK: - Per-repo auth mode (v2.1.0)

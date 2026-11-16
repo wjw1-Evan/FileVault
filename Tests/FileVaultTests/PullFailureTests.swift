@@ -477,4 +477,116 @@ final class PullScenarioTests: XCTestCase {
         let after = try await repos.resolveHead(path: repo)
         XCTAssertEqual(after, before)
     }
+
+    // MARK: - Merge sync (keep both sides' files)
+
+    /// The requested case: the remote already has files AND the local folder
+    /// has files of its own. Sync must bring the remote files in without losing
+    /// either side; same-name differences end up as two files.
+    func testMergeSyncKeepsFilesFromBothSides() async throws {
+        let (remote, seed) = try await seededRemote()
+        // Local folder: own files, own (unrelated) history.
+        let local = try await makeRepo("local-sync")   // seed.md identical on both sides
+        TestSupport.write("local only\n", to: local + "/local-only.md")
+        try FileManager.default.createDirectory(atPath: local + "/dir", withIntermediateDirectories: true)
+        TestSupport.write("local shared\n", to: local + "/dir/shared.md")
+        _ = try await repos.commitAll(path: local, message: "test: local files")
+        try await repos.setRemote(path: local, url: remote)
+        let localHead = try await repos.resolveHead(path: local)
+
+        // Remote: its own files, including a same-name-different-content one.
+        try FileManager.default.createDirectory(atPath: seed + "/dir", withIntermediateDirectories: true)
+        TestSupport.write("remote shared\n", to: seed + "/dir/shared.md")
+        TestSupport.write("remote only\n", to: seed + "/remote-only.md")
+        _ = try await repos.commitAll(path: seed, message: "test: remote files")
+        await git(["push"], cwd: seed)
+        let remoteHead = try await repos.resolveHead(path: seed)
+
+        let result = try await repos.mergeSync(path: local)
+        XCTAssertTrue(result.didChange)
+        XCTAssertEqual(result.addedFromRemote, 1, "remote-only.md came from the remote")
+        XCTAssertEqual(result.keptLocalOnly, 1, "local-only.md stayed")
+        XCTAssertEqual(result.localCopies.count, 1)
+        let copy = try XCTUnwrap(result.localCopies.first)
+        XCTAssertEqual(copy.path, "dir/shared.md")
+        XCTAssertEqual(copy.copyPath, "dir/shared (本地副本).md")
+        XCTAssertNotNil(result.backupRef, "the replaced HEAD must stay recoverable")
+
+        // Remote version at the original path, local version in the copy.
+        let sharedNow = try String(contentsOfFile: local + "/dir/shared.md", encoding: .utf8)
+        let localCopyNow = try String(contentsOfFile: local + "/dir/shared (本地副本).md", encoding: .utf8)
+        XCTAssertEqual(sharedNow, "remote shared\n")
+        XCTAssertEqual(localCopyNow, "local shared\n")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: local + "/remote-only.md"))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: local + "/local-only.md"))
+        let dirty = try await repos.status(path: local).count
+        XCTAssertEqual(dirty, 0, "the merge commit leaves a clean tree")
+
+        // Merge commit with exactly the local and remote heads as parents.
+        let parents = try await repos.runner.run(["rev-list", "--parents", "-n", "1", "HEAD"], cwd: local)
+        let hashes = parents.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+            .split(separator: " ").map(String.init)
+        XCTAssertEqual(hashes.count, 3, "a merge commit has two parents")
+        XCTAssertEqual(Set(hashes.suffix(2)), Set([localHead, remoteHead]))
+
+        // Upstream bound for later pulls/pushes.
+        let upstream = try await repos.runner.run(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"],
+                                                  cwd: local)
+        XCTAssertTrue(upstream.succeeded, upstream.stderr)
+
+        // Backup ref still points at the replaced local HEAD.
+        let backupRef = try XCTUnwrap(result.backupRef)
+        let backupHead = try await repos.runner.run(["rev-parse", backupRef], cwd: local)
+        XCTAssertEqual(backupHead.stdout.trimmingCharacters(in: .whitespacesAndNewlines), localHead)
+    }
+
+    func testMergeSyncSecondRunIsNoOp() async throws {
+        let (remote, _) = try await seededRemote()
+        let local = try await makeRepo("local-sync2", seedContent: "local\n")
+        try await repos.setRemote(path: local, url: remote)
+        _ = try await repos.mergeSync(path: local)
+        let headAfterFirst = try await repos.resolveHead(path: local)
+
+        let second = try await repos.mergeSync(path: local)
+        XCTAssertFalse(second.didChange)
+        XCTAssertEqual(second.addedFromRemote, 0)
+        XCTAssertTrue(second.localCopies.isEmpty)
+        let headAfterSecond = try await repos.resolveHead(path: local)
+        XCTAssertEqual(headAfterSecond, headAfterFirst)
+    }
+
+    /// Related but diverged histories: both sides' new files survive.
+    func testMergeSyncRelatedDivergenceKeepsBothChanges() async throws {
+        let (remote, seed) = try await seededRemote()
+        let machineB = try await cloneOf(remote, as: "machine-b-sync")
+        try await commit("local\n", file: "local.md", in: machineB)
+        let localHead = try await repos.resolveHead(path: machineB)
+        try await commit("remote\n", file: "remote2.md", in: seed)
+        await git(["push"], cwd: seed)
+        let remoteHead = try await repos.resolveHead(path: seed)
+
+        let result = try await repos.mergeSync(path: machineB)
+        XCTAssertEqual(result.addedFromRemote, 1, "remote2.md")
+        XCTAssertEqual(result.keptLocalOnly, 1, "local.md")
+        XCTAssertTrue(result.localCopies.isEmpty, "different paths need no copies")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: machineB + "/local.md"))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: machineB + "/remote2.md"))
+        let parents = try await repos.runner.run(["rev-list", "--parents", "-n", "1", "HEAD"], cwd: machineB)
+        let hashes = parents.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+            .split(separator: " ").map(String.init)
+        XCTAssertEqual(Set(hashes.suffix(2)), Set([localHead, remoteHead]))
+    }
+
+    func testMergeSyncWithoutRemoteFailsWithoutChangingHead() async throws {
+        let repo = try await makeRepo("lonely-sync")
+        let before = try await repos.resolveHead(path: repo)
+        do {
+            _ = try await repos.mergeSync(path: repo)
+            XCTFail("sync without a remote should throw")
+        } catch let error as PullError {
+            XCTAssertEqual(error, .noRemote)
+        }
+        let after = try await repos.resolveHead(path: repo)
+        XCTAssertEqual(after, before)
+    }
 }

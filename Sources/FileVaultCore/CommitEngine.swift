@@ -121,7 +121,7 @@ public final class CommitEngine: @unchecked Sendable {
         // A pull's auto-rebase owns the repository for a moment (v4.1.2):
         // committing mid-rebase would stage conflict markers or move a detached
         // HEAD. The pull itself commits pending edits first, so nothing is lost.
-        guard !(await repoManager.rebaseInProgress(path: repoPath)) else { return }
+        guard !(await repoManager.operationInProgress(path: repoPath)) else { return }
         // Git cannot track empty directories: a folder created while we watch
         // would otherwise never appear in history. Give brand-new empty folders
         // a hidden marker file so their creation becomes a real version.

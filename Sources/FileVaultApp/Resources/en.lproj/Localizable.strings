@@ -132,6 +132,23 @@
 "✓ 已强制拉取：本地已更新到远程最新版本" = "✓ Force-pulled: the folder now matches the remote";
 "⚠️ 强制拉取失败：%@" = "⚠️ Force pull failed: %@";
 "强制拉取失败" = "Force pull failed";
+
+/* 同步（保留双方文件，v4.1.3） */
+"同步（保留双方文件）…" = "Sync (keep both sides)…";
+"。远程已有内容时，点「更多 → 同步（保留双方文件）」可把两边文件合到一起，不会丢文件" = ". If the remote already has content, choose More → Sync (keep both sides) to combine both sides' files without losing any.";
+"同步（保留双方文件）" = "Sync (keep both sides)";
+"会把远程的文件与本地文件夹合并，双方都不丢：远程独有的文件下载到本地，本地独有的文件原样保留；同名但内容不同的文件会保留两份——远程版本用原文件名，本地版本另存为「名称 (本地副本)」。同步会生成一个合并提交，之后可正常推送。确定继续？" = "This merges the remote files into the local folder without losing either side: files only on the remote are downloaded, files only in the folder are kept, and same-name files with different content are kept twice — the remote version at the original name and the local version saved as \"name (local copy)\". A merge commit is created, so you can push normally afterwards. Continue?";
+"同步" = "Sync";
+"正在同步…" = "Syncing…";
+"✓ 已是最新，两边没有需要同步的文件" = "✓ Already up to date — nothing to sync";
+"✓ 已同步：新增远程文件 %d 个，保留本地文件 %d 个" = "✓ Synced: added %d remote file(s), kept %d local file(s)";
+"✓ 已同步：新增远程文件 %d 个，保留本地文件 %d 个，%d 个同名文件保留两份（本地版本另存为「本地副本」）" = "✓ Synced: added %d remote file(s), kept %d local file(s), and kept %d same-name file(s) twice (the local version is saved as a local copy)";
+"⚠️ 同步失败：%@" = "⚠️ Sync failed: %@";
+"同步失败" = "Sync failed";
+"sync: 合并远程与本地文件（保留双方）" = "sync: merged remote and local files (kept both sides)";
+"auto: 同步前自动保存未提交改动" = "auto: saved pending edits before sync";
+" (本地副本)" = " (local copy)";
+" (本地副本 %d)" = " (local copy %d)";
 "在设置里填写远程仓库地址（留空表示仅本地），保存并连通后再拉取。" = "Enter the remote URL in Settings (empty = local only), save it, and pull once the connection works.";
 "在终端执行 git switch main 回到主分支后再试。" = "In Terminal run git switch main to return to the main branch, then try again.";
 "先把本地分支推送上去：点「立即推送」，或在终端执行 git push -u %@ %@。" = "Push the local branch first: click Push Now, or run git push -u %@ %@ in Terminal.";
