@@ -27,12 +27,18 @@ public final class FileVaultService: @unchecked Sendable {
     /// FSEvents notification is missed (sleep/wake, dropped events) (v4.2.4).
     public let sweepInterval: TimeInterval
     private var sweepTask: Task<Void, Never>?
+    /// How often the sweep also checks the remote for new commits (v4.2.17).
+    public let remoteSyncInterval: TimeInterval
+    private var lastRemoteSync: [String: Date] = [:]
+    private let remoteSyncLock = NSLock()
 
     public init(configDirectory: URL? = nil, locator: GitLocator = SystemGitLocator(),
-                sweepInterval: TimeInterval = 120) {
+                sweepInterval: TimeInterval = 120,
+                remoteSyncInterval: TimeInterval = 300) {
         self.configStore = ConfigStore(directory: configDirectory)
         self.envGuard = GitEnvGuard(locator: locator)
         self.sweepInterval = sweepInterval
+        self.remoteSyncInterval = remoteSyncInterval
     }
 
     deinit {
@@ -184,7 +190,24 @@ public final class FileVaultService: @unchecked Sendable {
             if !entries.isEmpty {
                 await commitEngine.runCommitPipeline(repoPath: root)
             }
+            // Periodic remote sync: pull new commits made on other machines
+            // (and push our own), every remoteSyncInterval (v4.2.17).
+            if await repoManager.remoteURL(path: root) != nil, remoteSyncDue(root) {
+                markRemoteSynced(root)
+                await sync.syncWithRemote(repoPath: root)
+            }
         }
+    }
+
+    private func remoteSyncDue(_ root: String) -> Bool {
+        remoteSyncLock.lock(); defer { remoteSyncLock.unlock() }
+        guard let last = lastRemoteSync[root] else { return true }
+        return Date().timeIntervalSince(last) >= remoteSyncInterval
+    }
+
+    private func markRemoteSynced(_ root: String) {
+        remoteSyncLock.lock(); defer { remoteSyncLock.unlock() }
+        lastRemoteSync[root] = Date()
     }
 
     // MARK: - Root lifecycle

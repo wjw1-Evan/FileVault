@@ -309,6 +309,37 @@ public actor SyncManager {
         }
     }
 
+    /// Periodic bidirectional sync (v4.2.17): bring remote-only commits down
+    /// (fast-forward or auto-rebase), resolve a conflict / unrelated history
+    /// with the lossless keep-local merge, then push whatever local is ahead.
+    ///
+    /// This is what makes "remote changed on another machine → local files
+    /// update" happen without any user action. Safe to call often: an
+    /// up-to-date repo only costs a fetch.
+    public func syncWithRemote(repoPath: String) async {
+        guard await repoManager.remoteURL(path: repoPath) != nil else { return }
+        // Let an ongoing commit/rebase/push own the repo for now.
+        guard !(await repoManager.operationInProgress(path: repoPath)) else { return }
+        do {
+            _ = try await repoManager.pull(path: repoPath)
+        } catch let error as PullError where Self.isLosslesslyMergeable(error) {
+            // Same-file conflict or unrelated histories: keep both sides
+            // (remote versions become "远程副本") instead of stalling.
+            do {
+                _ = try await repoManager.mergeSync(path: repoPath)
+            } catch {
+                return
+            }
+        } catch {
+            // Auth / network / missing branch: the push loop and auth monitor
+            // already report these; a periodic check must stay quiet.
+            return
+        }
+        // Push anything local is ahead with (including a merge/rebased commit).
+        setState(repoPath, .pendingPush)
+        await enqueuePush(repoPath: repoPath)
+    }
+
     /// Whether a failed push was rejected because the remote has commits the
     /// local branch does not have (reconciling can fix this).
     static func isRejectedPush(_ error: Error) -> Bool {

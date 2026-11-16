@@ -435,6 +435,92 @@ final class SyncManagerTests: XCTestCase {
             .trimmingCharacters(in: .whitespacesAndNewlines)
         XCTAssertEqual(calls, "2", "the timed-out push must be retried once with the longer budget")
     }
+
+    // MARK: - Periodic remote sync (v4.2.17)
+
+    /// A commit pushed from another machine must reach the local folder without
+    /// the user pressing anything.
+    func testPeriodicSyncBringsRemoteChangesDown() async throws {
+        let remote = makeBareRemote("periodic")
+        let repoA = root + "/repoA"
+        _ = try await repos.ensureRepo(at: repoA)
+        try await sync.configureRemote(repoPath: repoA, url: remote, autoPush: true)
+        await waitForStatus(.synced, repo: repoA)
+
+        let machineB = root + "/machineB"
+        _ = try await repos.runner.run(["clone", remote, machineB], cwd: root)
+        TestSupport.write("from B", to: machineB + "/from-b.md")
+        _ = try await repos.runner.run(["add", "-A"], cwd: machineB)
+        _ = try await repos.runner.run(["-c", "user.name=B", "-c", "user.email=b@x",
+                                        "commit", "-m", "B change"], cwd: machineB)
+        _ = try await repos.runner.run(["push"], cwd: machineB)
+
+        await sync.syncWithRemote(repoPath: repoA)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: repoA + "/from-b.md"),
+                      "the remote-only file must be pulled into the folder")
+        await waitForStatus(.synced, repo: repoA)
+        let dirty = try await repos.status(path: repoA).count
+        XCTAssertEqual(dirty, 0)
+    }
+
+    /// Diverged histories reconcile automatically (rebase) and the local commit
+    /// is pushed back.
+    func testPeriodicSyncMergesDivergedAndPushes() async throws {
+        let remote = makeBareRemote("periodic-diverge")
+        let repoA = root + "/repoA"
+        _ = try await repos.ensureRepo(at: repoA)
+        try await sync.configureRemote(repoPath: repoA, url: remote, autoPush: true)
+        await waitForStatus(.synced, repo: repoA)
+
+        let machineB = root + "/machineB"
+        _ = try await repos.runner.run(["clone", remote, machineB], cwd: root)
+        TestSupport.write("from B", to: machineB + "/from-b.md")
+        _ = try await repos.runner.run(["add", "-A"], cwd: machineB)
+        _ = try await repos.runner.run(["-c", "user.name=B", "-c", "user.email=b@x",
+                                        "commit", "-m", "B change"], cwd: machineB)
+        _ = try await repos.runner.run(["push"], cwd: machineB)
+        TestSupport.write("from A", to: repoA + "/from-a.md")
+        _ = try await repos.commitAll(path: repoA)
+
+        await sync.syncWithRemote(repoPath: repoA)
+        await waitForStatus(.synced, repo: repoA)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: repoA + "/from-b.md"))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: repoA + "/from-a.md"))
+        let remoteLog = try await repos.runner.run(["--git-dir=" + remote, "log", "--oneline", "main"],
+                                                   cwd: remote)
+        XCTAssertTrue(remoteLog.stdout.contains("from-a.md") || remoteLog.stdout.contains("auto:"),
+                      remoteLog.stdout)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: repoA + "/.git/rebase-merge"))
+    }
+
+    /// Same-file conflict on a periodic sync keeps both sides losslessly.
+    func testPeriodicSyncResolvesConflictLosslessly() async throws {
+        let remote = makeBareRemote("periodic-conflict")
+        let repoA = root + "/repoA"
+        _ = try await repos.ensureRepo(at: repoA)
+        TestSupport.write("base\n", to: repoA + "/note.md")
+        _ = try await repos.commitAll(path: repoA)
+        try await sync.configureRemote(repoPath: repoA, url: remote, autoPush: true)
+        await waitForStatus(.synced, repo: repoA)
+
+        let machineB = root + "/machineB"
+        _ = try await repos.runner.run(["clone", remote, machineB], cwd: root)
+        TestSupport.write("remote edit\n", to: machineB + "/note.md")
+        _ = try await repos.runner.run(["add", "-A"], cwd: machineB)
+        _ = try await repos.runner.run(["-c", "user.name=B", "-c", "user.email=b@x",
+                                        "commit", "-m", "B edit"], cwd: machineB)
+        _ = try await repos.runner.run(["push"], cwd: machineB)
+        TestSupport.write("local edit\n", to: repoA + "/note.md")
+        _ = try await repos.commitAll(path: repoA)
+
+        await sync.syncWithRemote(repoPath: repoA)
+        await waitForStatus(.synced, repo: repoA)
+        XCTAssertEqual(try String(contentsOfFile: repoA + "/note.md", encoding: .utf8), "local edit\n")
+        let copy = repoA + "/note (远程副本).md"
+        XCTAssertTrue(FileManager.default.fileExists(atPath: copy), "remote version must be kept")
+        XCTAssertEqual(try String(contentsOfFile: copy, encoding: .utf8), "remote edit\n")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: repoA + "/.git/rebase-merge"))
+    }
     // MARK: - Switching the remote repository (v4.1.6)
 
     /// Replacing the remote with an EMPTY repository re-points everything and
