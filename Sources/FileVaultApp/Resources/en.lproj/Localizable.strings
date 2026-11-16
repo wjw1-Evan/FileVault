@@ -121,6 +121,17 @@
 "这个文件夹已经不是 Git 仓库（可能被移动、删除，或磁盘未挂载）" = "This folder is no longer a Git repository (it may have moved, been deleted, or its disk is unmounted)";
 "在终端执行 git branch --set-upstream-to=<远程>/<分支> 指定上游后再试。" = "Set an upstream in Terminal with git branch --set-upstream-to=<remote>/<branch> and try again.";
 "确认文件夹还在原位置、磁盘已挂载；若文件夹已被删除，请在设置里移除它。" = "Check that the folder is still in place and its disk is mounted; if it was deleted, remove it from Settings.";
+
+/* 强制拉取（以远程为准，v4.1.2） */
+"强制拉取（以远程为准）…" = "Force pull (remote wins)…";
+"强制拉取（以远程为准）" = "Force pull (remote wins)";
+"会用远程分支的内容覆盖这个文件夹：本地未推送的提交会被丢弃，远程版本里没有的受版本管理文件会从磁盘删除。旧版本会先备份到隐藏 ref（refs/filevault/backup），之后可在历史窗口的「找回被回滚的版本」里找回。确定继续？" = "This will overwrite the folder with the remote branch: unpushed local commits are discarded and version-managed files that the remote does not have are deleted from disk. The previous version is backed up to a hidden ref (refs/filevault/backup) first and can be recovered later from the History window via “Find rolled-back versions”. Continue?";
+"强制拉取" = "Force pull";
+"正在强制拉取…" = "Force pulling…";
+"✓ 已强制拉取：丢弃 %d 个本地提交，旧版本已备份（可在历史窗口找回）" = "✓ Force-pulled: discarded %d local commit(s); the previous version is backed up (recoverable from History)";
+"✓ 已强制拉取：本地已更新到远程最新版本" = "✓ Force-pulled: the folder now matches the remote";
+"⚠️ 强制拉取失败：%@" = "⚠️ Force pull failed: %@";
+"强制拉取失败" = "Force pull failed";
 "在设置里填写远程仓库地址（留空表示仅本地），保存并连通后再拉取。" = "Enter the remote URL in Settings (empty = local only), save it, and pull once the connection works.";
 "在终端执行 git switch main 回到主分支后再试。" = "In Terminal run git switch main to return to the main branch, then try again.";
 "先把本地分支推送上去：点「立即推送」，或在终端执行 git push -u %@ %@。" = "Push the local branch first: click Push Now, or run git push -u %@ %@ in Terminal.";
@@ -237,6 +248,7 @@
 /* 自动生成的提交信息（仅影响新提交） */
 "auto: 初始版本" = "auto: initial version";
 "auto: 拉取前自动保存未提交改动" = "auto: saved pending edits before pull";
+"auto: 强制拉取前自动保存未提交改动" = "auto: saved pending edits before force pull";
 "backup: 回滚前自动保存未提交改动" = "backup: saved uncommitted work before rollback";
 "backup: 恢复前自动保存未提交改动" = "backup: saved uncommitted work before restore";
 

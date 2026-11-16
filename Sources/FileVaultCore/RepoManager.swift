@@ -549,6 +549,95 @@ public final class RepoManager: @unchecked Sendable {
         throw PullError.classify(stderr: rebase.stderr, remote: target.remote, branch: target.branch)
     }
 
+
+    // MARK: - Force pull (remote is authoritative)
+
+    /// Outcome of a force pull (v4.1.2).
+    public struct ForcePullResult: Sendable, Equatable {
+        /// refs/filevault/backup/<stamp> holding the replaced HEAD (nil when
+        /// there was nothing to back up, or the backup failed).
+        public let backupRef: String?
+        public let replacedHead: String?
+        public let headAfter: String
+        /// Local commits that are no longer on the branch (0 = plain catch-up).
+        public let discardedCommits: Int
+    }
+
+    /// Make the local branch identical to the remote tip, discarding local
+    /// commits and content (v4.1.2).
+    ///
+    /// This is the "remote is authoritative" resolution for repositories whose
+    /// local history is unrelated to (or hopelessly diverged from) the remote.
+    /// It is never automatic: the UI asks first, and the replaced HEAD is kept
+    /// in a hidden backup ref (refs/filevault/backup/…), so a mistaken force
+    /// pull stays recoverable from the History window.
+    ///
+    /// Pending edits are committed before anything is replaced, exactly like a
+    /// rollback, so they are part of the backup too.
+    public func forcePull(path: String) async throws -> ForcePullResult {
+        guard isRepo(at: path) else { throw PullError.notARepository }
+        let headRef = try await runner.run(["symbolic-ref", "--quiet", "--short", "HEAD"], cwd: path)
+        let branch = headRef.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard headRef.succeeded, !branch.isEmpty else { throw PullError.detachedHead }
+
+        let target = try await pullTarget(path: path, currentBranch: branch)
+
+        // Preserve pending edits in history first (same rule as rollback).
+        if await isDirty(path: path) {
+            _ = try? await commitAll(path: path, message: "auto: 强制拉取前自动保存未提交改动")
+        }
+        // Fail closed: reset --hard would silently destroy edits we failed to
+        // commit, so refuse instead of proceeding.
+        guard !(await isDirty(path: path)) else {
+            throw PullError.localChanges(detail: "")
+        }
+        let oldHead = try? await resolveHead(path: path)
+
+        // Fetch first: a force pull must never touch the working tree when the
+        // remote is unreachable or the branch is missing.
+        let fetch = try await runner.run(["fetch", target.remote], cwd: path)
+        guard fetch.succeeded else {
+            throw PullError.classify(stderr: fetch.stderr, remote: target.remote, branch: target.branch)
+        }
+        let remoteRef = "refs/remotes/\(target.remote)/\(target.branch)"
+        guard let tip = try? await runner.run(["rev-parse", "--verify", "--quiet", remoteRef], cwd: path),
+              tip.succeeded else {
+            throw PullError.remoteBranchMissing(remote: target.remote, branch: target.branch)
+        }
+        let remoteTip = tip.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !remoteTip.isEmpty else {
+            throw PullError.remoteBranchMissing(remote: target.remote, branch: target.branch)
+        }
+
+        // Fail closed: never discard history unless it is safely reachable from
+        // a backup ref first.
+        var backupRef: String?
+        if let oldHead, oldHead != remoteTip {
+            let ref = "refs/filevault/backup/\(Self.backupStamp())"
+            let backup = try await runner.run(["update-ref", ref, oldHead], cwd: path)
+            guard backup.succeeded else {
+                throw GitCommandError(command: "update-ref \(ref)", exitCode: backup.exitCode,
+                                      stderr: backup.stderr)
+            }
+            backupRef = ref
+        }
+
+        let reset = try await runner.run(["reset", "--hard", remoteTip], cwd: path)
+        guard reset.succeeded else {
+            throw GitCommandError(command: "reset --hard", exitCode: reset.exitCode, stderr: reset.stderr)
+        }
+        // Bind the branch to the remote so the next pull/push needs no setup.
+        _ = try? await runner.run(["branch", "--set-upstream-to=\(target.remote)/\(target.branch)", branch],
+                                  cwd: path)
+        let after = (try? await resolveHead(path: path)) ?? remoteTip
+        var discarded = 0
+        if let oldHead {
+            discarded = await countCommits(path: path, from: remoteTip, to: oldHead)
+        }
+        return ForcePullResult(backupRef: backupRef, replacedHead: oldHead,
+                              headAfter: after, discardedCommits: discarded)
+    }
+
     /// Remote/branch a pull should fast-forward from: the configured upstream
     /// when there is one, otherwise the current branch on origin (the same pair
     /// `push -u origin HEAD` would establish).

@@ -397,4 +397,84 @@ final class PullScenarioTests: XCTestCase {
             XCTAssertEqual(error, .detachedHead)
         }
     }
+
+    // MARK: - Force pull (remote wins)
+
+    /// The reported situation: a new local repo bound to a remote that already
+    /// has its own history. Force pull replaces the local history with the
+    /// remote one and keeps the old HEAD recoverable.
+    func testForcePullReplacesUnrelatedHistoryAndBacksUpLocal() async throws {
+        let (remote, seed) = try await seededRemote()
+        let fresh = try await makeRepo("fresh-force", seedContent: "different content\n")
+        try await repos.setRemote(path: fresh, url: remote)
+        let oldHead = try await repos.resolveHead(path: fresh)
+        let remoteHead = try await repos.resolveHead(path: seed)
+
+        let result = try await repos.forcePull(path: fresh)
+        XCTAssertEqual(result.replacedHead, oldHead)
+        XCTAssertEqual(result.headAfter, remoteHead)
+        XCTAssertEqual(result.discardedCommits, 1)
+        let backupRef = try XCTUnwrap(result.backupRef)
+        let backupHead = try await repos.runner.run(["rev-parse", backupRef], cwd: fresh)
+        XCTAssertEqual(backupHead.stdout.trimmingCharacters(in: .whitespacesAndNewlines), oldHead)
+        // Folder content now matches the remote.
+        XCTAssertEqual(try String(contentsOfFile: fresh + "/seed.md", encoding: .utf8), "seed\n")
+        let status = try await repos.status(path: fresh)
+        XCTAssertEqual(status.count, 0, "working tree must be clean after the reset")
+        // Upstream is bound so the next pull/push needs no setup.
+        let upstream = try await repos.runner.run(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"],
+                                                  cwd: fresh)
+        XCTAssertTrue(upstream.succeeded, upstream.stderr)
+        XCTAssertEqual(upstream.stdout.trimmingCharacters(in: .whitespacesAndNewlines), "origin/main")
+    }
+
+    /// Diverged (related) history: the local commit is discarded but its content
+    /// stays recoverable from the backup ref.
+    func testForcePullDiscardsDivergedCommitRecoverably() async throws {
+        let (remote, seed) = try await seededRemote()
+        let machineB = try await cloneOf(remote, as: "machine-b-force")
+        try await commit("local only\n", file: "local.md", in: machineB)
+        let oldHead = try await repos.resolveHead(path: machineB)
+        try await commit("remote only\n", file: "remote.md", in: seed)
+        await git(["push"], cwd: seed)
+        let remoteHead = try await repos.resolveHead(path: seed)
+
+        let result = try await repos.forcePull(path: machineB)
+        XCTAssertEqual(result.headAfter, remoteHead)
+        XCTAssertEqual(result.discardedCommits, 1)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: machineB + "/local.md"),
+                       "a file only present in the discarded history is removed from disk")
+        let backupRef = try XCTUnwrap(result.backupRef)
+        let recovered = try await repos.runner.run(["show", backupRef + ":local.md"], cwd: machineB)
+        XCTAssertEqual(recovered.stdout, "local only\n", "the backup ref still contains that content")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: machineB + "/remote.md"))
+    }
+
+    /// Force pull with nothing to discard is just a safe catch-up.
+    func testForcePullFastForwardsWhenLocalIsBehind() async throws {
+        let (remote, seed) = try await seededRemote()
+        let machineB = try await cloneOf(remote, as: "machine-b-behind")
+        try await commit("v2\n", file: "seed.md", in: seed)
+        await git(["push"], cwd: seed)
+        let remoteHead = try await repos.resolveHead(path: seed)
+
+        let result = try await repos.forcePull(path: machineB)
+        XCTAssertEqual(result.headAfter, remoteHead)
+        XCTAssertEqual(result.discardedCommits, 0)
+        XCTAssertEqual(try String(contentsOfFile: machineB + "/seed.md", encoding: .utf8), "v2\n")
+    }
+
+    /// No remote: the force pull must fail without touching HEAD.
+    func testForcePullWithoutRemoteLeavesRepoUntouched() async throws {
+        let repo = try await makeRepo("lonely-force")
+        let before = try await repos.resolveHead(path: repo)
+        do {
+            _ = try await repos.forcePull(path: repo)
+            XCTFail("force pull without a remote should throw")
+        } catch let error as PullError {
+            XCTAssertEqual(error, .noRemote)
+        }
+        let after = try await repos.resolveHead(path: repo)
+        XCTAssertEqual(after, before)
+    }
 }

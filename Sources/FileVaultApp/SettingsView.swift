@@ -512,6 +512,44 @@ final class SettingsModel: ObservableObject {
         }
     }
 
+    /// v4.1.2: make the remote authoritative for this folder. Destructive by
+    /// design, so it always asks first and keeps the replaced HEAD in a backup
+    /// ref the History window can restore.
+    func forcePull(_ id: String) {
+        guard let svc = service else { return }
+        let confirm = NSAlert()
+        confirm.messageText = NSLocalizedString("强制拉取（以远程为准）", comment: "settings alert")
+        confirm.informativeText = NSLocalizedString("会用远程分支的内容覆盖这个文件夹：本地未推送的提交会被丢弃，远程版本里没有的受版本管理文件会从磁盘删除。旧版本会先备份到隐藏 ref（refs/filevault/backup），之后可在历史窗口的「找回被回滚的版本」里找回。确定继续？",
+                                                    comment: "settings alert")
+        confirm.addButton(withTitle: NSLocalizedString("取消", comment: "settings alert"))
+        confirm.addButton(withTitle: NSLocalizedString("强制拉取", comment: "settings alert"))
+        guard confirm.runModal() == .alertSecondButtonReturn else { return }
+
+        setMessage(id, NSLocalizedString("正在强制拉取…", comment: "settings status"))
+        Task { [weak self] in
+            do {
+                let result = try await svc.repoManager.forcePull(path: id)
+                let text: String
+                if result.discardedCommits > 0 {
+                    text = String(format: NSLocalizedString("✓ 已强制拉取：丢弃 %d 个本地提交，旧版本已备份（可在历史窗口找回）",
+                                                             comment: "settings status"), result.discardedCommits)
+                } else {
+                    text = NSLocalizedString("✓ 已强制拉取：本地已更新到远程最新版本", comment: "settings status")
+                }
+                self?.setMessage(id, text)
+                self?.fillRepoDetails(id: id)
+            } catch {
+                let description = error.localizedDescription
+                self?.setMessage(id, String(format: NSLocalizedString("⚠️ 强制拉取失败：%@", comment: "settings status"),
+                                            description), error: true)
+                if let suggestion = (error as? LocalizedError)?.recoverySuggestion, !suggestion.isEmpty {
+                    await self?.alert(NSLocalizedString("强制拉取失败", comment: "settings alert"),
+                                      description + "\n\n" + suggestion)
+                }
+            }
+        }
+    }
+
     /// v4.0.5: read-only repository integrity check (git fsck --full).
     func checkIntegrity(_ id: String) {
         guard let svc = service else { return }
@@ -952,6 +990,7 @@ struct SettingsView: View {
                 Menu("更多") {
                     Button("立即推送") { model.pushNow(repo.id) }
                     Button("拉取远程更新") { model.pull(repo.id) }
+                    Button("强制拉取（以远程为准）…") { model.forcePull(repo.id) }
                     Button("编辑忽略规则…") { model.openGitignoreEditor(repo.id) }
                     Button("在 GitHub 建仓并绑定…") { model.createRepoTarget = repo.id }
                     Divider()
