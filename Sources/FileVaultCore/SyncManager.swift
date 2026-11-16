@@ -46,8 +46,13 @@ public actor SyncManager {
 
     // MARK: - Remote configuration (FR-06)
 
-    /// Configure remote + auto-push for a repo (v4.1.6: a REPLACED remote that
-    /// already has commits is left to the user instead of being auto-merged).
+    /// Configure remote + auto-push for a repo.
+    ///
+    /// v4.2: binding a remote is one automatic action. A remote that already
+    /// carries work (a new bind or a replaced remote) is merged into the folder
+    /// losslessly — remote-only files come in, local files stay, same-name
+    /// differences keep both copies — and the result is pushed afterwards.
+    /// There is no "decide what to do" step any more.
     @discardableResult
     public func configureRemote(repoPath: String, url: String,
                                 autoPush: Bool) async throws -> RepoManager.RemoteChange {
@@ -56,14 +61,12 @@ public actor SyncManager {
         states[repoPath]?.task = nil
         let change = try await repoManager.setRemote(path: repoPath, url: url)
         await repoManager.setAutoPush(path: repoPath, enabled: autoPush)
-        // Re-saving while a replaced remote is still undecided must not start
-        // pushing either (setRemote keeps the flag for the same URL).
         let stillPending = await repoManager.remoteSwitchPending(path: repoPath)
         if change.needsDecision || stillPending {
-            // The new remote already carries work: do not auto-push/merge two
-            // histories. Wait for the user to pick sync / force pull / push.
-            setState(repoPath, .pendingPush)
-            return change
+            // Best effort: the push below reports the real git error when the
+            // merge cannot finish, and mergeSync never discards local files.
+            _ = try? await repoManager.mergeSync(path: repoPath)
+            await repoManager.clearRemoteSwitchPending(path: repoPath)
         }
         if autoPush {
             setState(repoPath, .pendingPush)
@@ -103,11 +106,12 @@ public actor SyncManager {
             setState(repoPath, .noRemote)
             return
         }
-        // A replaced remote that already has history waits for an explicit user
-        // decision (sync / force pull / push) before anything is pushed (v4.1.6).
+        // A replaced remote left undecided (an older version, or a crash between
+        // binding and merging) is finished here automatically (v4.2): merge the
+        // remote files in losslessly, then let the push loop continue.
         if await repoManager.remoteSwitchPending(path: repoPath) {
-            setState(repoPath, .pendingPush)
-            return
+            _ = try? await repoManager.mergeSync(path: repoPath)
+            await repoManager.clearRemoteSwitchPending(path: repoPath)
         }
         let enabled = await repoManager.autoPushEnabled(path: repoPath)
         guard enabled else {
@@ -248,7 +252,7 @@ public actor SyncManager {
     static func isDeterministic(_ error: PullError) -> Bool {
         switch error {
         case .mergeConflict, .unrelatedHistories, .remoteBranchMissing, .ambiguousRemote,
-             .notARepository, .detachedHead:
+             .notARepository, .detachedHead, .unsafeRepository:
             return true
         case .noRemote, .busy, .repositoryLocked, .authenticationFailed, .networkFailed,
              .remoteUnavailable, .localChanges, .failed:

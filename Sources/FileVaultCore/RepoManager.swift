@@ -934,7 +934,7 @@ public final class RepoManager: @unchecked Sendable {
         if remotes.count == 1 {
             return (remotes[0].name, currentBranch)
         }
-        if remotes.count > 1 { throw PullError.ambiguousRemote }
+        if remotes.count > 1 { throw PullError.ambiguousRemote(remotes: remotes.map(\.name)) }
         throw PullError.noRemote
     }
 
@@ -1001,13 +1001,28 @@ public final class RepoManager: @unchecked Sendable {
     public struct InterruptedOperation: Sendable, Equatable {
         public let rebase: Bool
         public let merge: Bool
-        public var isEmpty: Bool { !rebase && !merge }
+        /// A .git/index.lock older than `staleLockAge` (crash leftover).
+        public let staleLock: Bool
+        public var isEmpty: Bool { !rebase && !merge && !staleLock }
     }
 
-    /// Inspect leftover rebase/merge state without changing anything.
+    /// A leftover .git/index.lock older than this is considered stale: a live
+    /// FileVault git command times out after 120 s, so 5 minutes means a crash.
+    static let staleLockAge: TimeInterval = 5 * 60
+
+    /// Inspect leftover rebase/merge/lock state without changing anything.
     public func interruptedOperation(path: String) async -> InterruptedOperation {
         InterruptedOperation(rebase: await rebaseInProgress(path: path),
-                             merge: await mergeInProgress(path: path))
+                             merge: await mergeInProgress(path: path),
+                             staleLock: await staleIndexLock(path: path))
+    }
+
+    /// Whether a stale .git/index.lock blocks commits and pulls (v4.1.9).
+    public func staleIndexLock(path: String) async -> Bool {
+        guard let full = await gitPathFull("index.lock", path: path),
+              let attrs = try? FileManager.default.attributesOfItem(atPath: full),
+              let modified = attrs[.modificationDate] as? Date else { return false }
+        return Date().timeIntervalSince(modified) > Self.staleLockAge
     }
 
     /// Abort a leftover rebase/merge so commits and pulls work again. Committed
@@ -1035,8 +1050,24 @@ public final class RepoManager: @unchecked Sendable {
             }
             cleared.append(NSLocalizedString("合并", comment: "repair interrupted operation"))
         }
+        if await staleIndexLock(path: path), let lockPath = await gitPathFull("index.lock", path: path) {
+            try? FileManager.default.removeItem(atPath: lockPath)
+            if !FileManager.default.fileExists(atPath: lockPath) {
+                cleared.append(NSLocalizedString("过期的锁文件", comment: "repair interrupted operation"))
+            }
+        }
         return cleared.isEmpty ? nil
             : cleared.joined(separator: NSLocalizedString("、", comment: "repair list joiner"))
+    }
+
+    /// Resolve a path under .git (handles worktrees where it lives outside).
+    private func gitPathFull(_ name: String, path: String) async -> String? {
+        guard let r = try? await runner.run(["rev-parse", "--git-path", name], cwd: path), r.succeeded else {
+            return nil
+        }
+        let p = r.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !p.isEmpty else { return nil }
+        return p.hasPrefix("/") ? p : (path as NSString).appendingPathComponent(p)
     }
 
     /// Whether a path under .git (e.g. "MERGE_HEAD") exists, including in

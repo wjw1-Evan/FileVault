@@ -11,7 +11,6 @@ struct RepoSection: Identifiable, Equatable {
     var statusColor: Color = Color(nsColor: .systemGray)
     var health: String = "…"
     var urlText: String = ""
-    var autoPush: Bool = false
     var authMode: RepoManager.AuthMode = .auto
     var authUser: String = ""
     var authToken: String = ""
@@ -119,7 +118,6 @@ final class SettingsModel: ObservableObject {
         guard let svc = service else { return }
         Task { [weak self] in
             let url = await svc.repoManager.remoteURL(path: id)
-            let auto = await svc.sync.autoPushEnabled(repoPath: id)
             let healthInfo = await svc.repoManager.health(path: id)
             let st = await svc.sync.status(for: id)
             let mode = await svc.repoManager.authMode(path: id)
@@ -143,7 +141,6 @@ final class SettingsModel: ObservableObject {
                 if !self.editedPaths.contains(id) {
                     self.rootCards[idx].repo.urlText = url ?? ""
                 }
-                self.rootCards[idx].repo.autoPush = auto
                 self.rootCards[idx].repo.health = healthInfo.summary
                 let glyph = Self.repoGlyph(st)
                 self.rootCards[idx].repo.statusGlyph = glyph.symbol
@@ -320,14 +317,6 @@ final class SettingsModel: ObservableObject {
                 })
     }
 
-    func autoPushBinding(_ id: String) -> Binding<Bool> {
-        Binding(get: { [weak self] in self?.indexOf(id).flatMap { self?.rootCards[$0].repo.autoPush } ?? false },
-                set: { [weak self] v in
-                    guard let self, let idx = self.indexOf(id) else { return }
-                    self.rootCards[idx].repo.autoPush = v
-                })
-    }
-
     /// "用户名 + 访问令牌" mode: user name field (optional on GitHub).
     func authUserBinding(_ id: String) -> Binding<String> {
         Binding(get: { [weak self] in self?.indexOf(id).flatMap { self?.rootCards[$0].repo.authUser } ?? "" },
@@ -386,7 +375,6 @@ final class SettingsModel: ObservableObject {
         guard let svc = service, let idx = indexOf(id) else { return }
         let section = rootCards[idx].repo
         let url = section.urlText.trimmingCharacters(in: .whitespacesAndNewlines)
-        let auto = section.autoPush
         let mode = section.authMode
         let user = section.authUser.trimmingCharacters(in: .whitespacesAndNewlines)
         let token = section.authToken.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -440,7 +428,9 @@ final class SettingsModel: ObservableObject {
                 }
 
                 // The remote address is always saved, even when the token is missing.
-                let change = try await svc.sync.configureRemote(repoPath: id, url: url, autoPush: auto)
+                // v4.2: syncing is not optional — saving a remote makes this folder
+                // an automatically synced one, so auto-push is always on.
+                let change = try await svc.sync.configureRemote(repoPath: id, url: url, autoPush: true)
                 if needsToken {
                     await MainActor.run {
                         self.setMessage(id, NSLocalizedString("已保存地址，但「用户名 + 访问令牌」还需要填写访问令牌（令牌只写进本机凭证库，不写进 git 配置）",
@@ -452,34 +442,21 @@ final class SettingsModel: ObservableObject {
                 await MainActor.run { self.fillRepoDetails(id: id) }   // remote limit may have changed
                 let conn = await svc.sync.testConnectivity(repoPath: id)
                 self.editedPaths.remove(id)
-                let pending = await svc.repoManager.remoteSwitchPending(path: id)
                 let status: String
-                if pending {
-                    // A remote that already has commits (new bind or replacement)
-                    // must not be merged or pushed silently (v4.1.6): point at
-                    // the two explicit exits instead.
-                    let decision = change.isReplacement
-                        ? NSLocalizedString("✓ 已切换到新的远程，但它已有 %d 个提交。请选择：「更多 → 同步远程文件到本地（保留本地文件）」把两边合到一起，或「强制拉取（以远程为准）」；做出选择前不会自动推送",
-                                            comment: "settings status")
-                        : NSLocalizedString("✓ 已保存并连通；这个远程已有 %d 个提交。请选择：「更多 → 同步远程文件到本地（保留本地文件）」把两边合到一起，或「强制拉取（以远程为准）」；做出选择前不会自动推送",
-                                            comment: "settings status")
-                    status = String(format: decision, change.remoteCommitCount)
-                } else if change.changed && !change.fetchSucceeded {
+                if change.changed && !change.fetchSucceeded {
                     status = String(format: NSLocalizedString("⚠️ 已保存新远程地址，但暂时读不到这个远程（检查地址或认证）：%@",
                                                              comment: "settings status"), conn.detail) + credentialNote
+                } else if change.needsDecision {
+                    // v4.2: a remote that already has commits is merged into the
+                    // folder automatically (local files kept, same-name files kept
+                    // twice) and pushed; nothing is left for the user to choose.
+                    status = String(format: NSLocalizedString("✓ 已保存并连通；远程已有 %d 个提交，已自动合并进这个文件夹（本地文件都保留），随后自动推送",
+                                                             comment: "settings status"), change.remoteCommitCount) + credentialNote
                 } else if change.changed && change.isReplacement {
-                    status = (auto
-                        ? NSLocalizedString("✓ 已切换到新的远程仓库（空仓库），本地版本会自动推送上去", comment: "settings status")
-                        : NSLocalizedString("✓ 已切换到新的远程仓库（空仓库），可点「立即推送」上传本地版本", comment: "settings status")) + credentialNote
+                    status = NSLocalizedString("✓ 已切换到新的远程仓库，本地版本会自动同步上去",
+                                               comment: "settings status") + credentialNote
                 } else if conn.ok {
-                    let base = NSLocalizedString(auto ? "✓ 已保存并连通，提交后将自动推送" : "✓ 已保存并连通（自动推送未开启）",
-                                                 comment: "settings status")
-                    // Discoverability for the "remote already has files" case
-                    // (v4.1.3): point at the lossless union sync right where the
-                    // remote was just bound.
-                    let syncHint = NSLocalizedString("。远程已有内容时，点「更多 → 同步远程文件到本地（保留本地文件）」可把两边文件合到一起，不会丢文件",
-                                                     comment: "settings status")
-                    status = base + credentialNote + syncHint
+                    status = NSLocalizedString("✓ 已保存并连通，之后自动同步", comment: "settings status") + credentialNote
                 } else {
                     status = String(format: NSLocalizedString("⚠️ 已保存但连接失败：%@", comment: "settings status"),
                                     conn.detail) + credentialNote
@@ -494,14 +471,6 @@ final class SettingsModel: ObservableObject {
         }
     }
 
-    func pushNow(_ id: String) {
-        guard let svc = service else { return }
-        Task { [weak self] in
-            await svc.sync.pushNow(repoPath: id)
-            await MainActor.run { self?.fillRepoDetails(id: id) }
-        }
-    }
-
     func testConnection(_ id: String) {
         guard let svc = service else { return }
         Task { [weak self] in
@@ -512,167 +481,7 @@ final class SettingsModel: ObservableObject {
         }
     }
 
-    func pull(_ id: String) {
-        guard let svc = service, beginRepoOp(id) else { return }
-        setMessage(id, NSLocalizedString("正在拉取…", comment: "settings status"))
-        Task { [weak self] in
-            defer { self?.endRepoOp(id) }
-            do {
-                let result = try await svc.repoManager.pull(path: id)
-                await svc.repoManager.clearRemoteSwitchPending(path: id)
-                var text: String
-                if result.pulledCommits == 0 {
-                    text = NSLocalizedString("✓ 已是最新", comment: "settings status")
-                } else if result.strategy == .rebased {
-                    // v4.1.2: local auto-commits were replayed on the remote tip.
-                    text = String(format: NSLocalizedString("✓ 已自动合并：拉取 %d 个新版本，本地 %d 个提交已变基",
-                                                             comment: "settings status"),
-                                  result.pulledCommits, result.replayedCommits)
-                } else {
-                    text = String(format: NSLocalizedString("✓ 已拉取 %d 个新版本（快进）", comment: "settings status"),
-                                  result.pulledCommits)
-                }
-                text += self?.movedCopiesNote(result.movedLocalCopies) ?? ""
-                self?.setMessage(id, text)
-                if result.replayedCommits > 0 {
-                    // The rebase rewrote the local commit SHAs: push them right
-                    // away so both machines converge without waiting for the
-                    // next auto-commit (respects the auto-push toggle).
-                    await svc.sync.enqueuePush(repoPath: id)
-                }
-                self?.fillRepoDetails(id: id)   // remote/health/status may have changed
-            } catch {
-                let description = error.localizedDescription
-                self?.setMessage(id, String(format: NSLocalizedString("⚠️ 拉取失败：%@", comment: "settings status"),
-                                            description), error: true)
-                // The inline label truncates at two lines; the alert carries the
-                // full reason plus a concrete recovery step (v4.1.1).
-                if let suggestion = (error as? LocalizedError)?.recoverySuggestion, !suggestion.isEmpty {
-                    await self?.alert(NSLocalizedString("拉取失败", comment: "settings alert"),
-                                      description + "\n\n" + suggestion)
-                }
-            }
-        }
-    }
-
-    /// v4.1.2: make the remote authoritative for this folder. Destructive by
-    /// design, so it always asks first and keeps the replaced HEAD in a backup
-    /// ref the History window can restore.
-    func forcePull(_ id: String) {
-        guard let svc = service, beginRepoOp(id) else { return }
-        let confirm = NSAlert()
-        confirm.messageText = NSLocalizedString("强制拉取（以远程为准）", comment: "settings alert")
-        confirm.informativeText = NSLocalizedString("会用远程分支的内容覆盖这个文件夹：本地未推送的提交会被丢弃，远程版本里没有的受版本管理文件会从磁盘删除。旧版本会先备份到隐藏 ref（refs/filevault/backup），之后可在历史窗口的「找回被回滚的版本」里找回。确定继续？",
-                                                    comment: "settings alert")
-        confirm.addButton(withTitle: NSLocalizedString("取消", comment: "settings alert"))
-        confirm.addButton(withTitle: NSLocalizedString("强制拉取", comment: "settings alert"))
-        guard confirm.runModal() == .alertSecondButtonReturn else {
-            endRepoOp(id)
-            return
-        }
-
-        setMessage(id, NSLocalizedString("正在强制拉取…", comment: "settings status"))
-        Task { [weak self] in
-            defer { self?.endRepoOp(id) }
-            do {
-                let result = try await svc.repoManager.forcePull(path: id)
-                await svc.repoManager.clearRemoteSwitchPending(path: id)
-                var text: String
-                if result.discardedCommits > 0 {
-                    text = String(format: NSLocalizedString("✓ 已强制拉取：丢弃 %d 个本地提交，旧版本已备份（可在历史窗口找回）",
-                                                             comment: "settings status"), result.discardedCommits)
-                } else {
-                    text = NSLocalizedString("✓ 已强制拉取：本地已更新到远程最新版本", comment: "settings status")
-                }
-                text += self?.movedCopiesNote(result.movedLocalCopies) ?? ""
-                self?.setMessage(id, text)
-                self?.fillRepoDetails(id: id)
-            } catch {
-                let description = error.localizedDescription
-                self?.setMessage(id, String(format: NSLocalizedString("⚠️ 强制拉取失败：%@", comment: "settings status"),
-                                            description), error: true)
-                if let suggestion = (error as? LocalizedError)?.recoverySuggestion, !suggestion.isEmpty {
-                    await self?.alert(NSLocalizedString("强制拉取失败", comment: "settings alert"),
-                                      description + "\n\n" + suggestion)
-                }
-            }
-        }
-    }
-
-    /// v4.1.4: sync remote files into the folder while keeping local files.
-    /// Remote-only paths are added, local-only paths stay, same-name differences
-    /// keep the local file at the original path and save the remote version as
-    /// "name (远程副本).ext". Any local commits still ahead of the remote are
-    /// pushed afterwards, so the sync is a full round trip.
-    func mergeSync(_ id: String) {
-        guard let svc = service, beginRepoOp(id) else { return }
-        let confirm = NSAlert()
-        confirm.messageText = NSLocalizedString("同步远程文件到本地（保留本地文件）", comment: "settings alert")
-        confirm.informativeText = NSLocalizedString("会把远程的文件同步到这个文件夹，本地文件一个都不丢：远程独有的文件下载到本地；本地独有的文件原样保留；同名但内容不同的文件保留两份——本地版本沿用原文件名，远程版本另存为「名称 (远程副本)」。之后会把本地结果推送到远程，让两边保持一致。确定继续？",
-                                                    comment: "settings alert")
-        confirm.addButton(withTitle: NSLocalizedString("取消", comment: "settings alert"))
-        confirm.addButton(withTitle: NSLocalizedString("同步", comment: "settings alert"))
-        guard confirm.runModal() == .alertSecondButtonReturn else {
-            endRepoOp(id)
-            return
-        }
-
-        setMessage(id, NSLocalizedString("正在同步…", comment: "settings status"))
-        Task { [weak self] in
-            defer { self?.endRepoOp(id) }
-            do {
-                let result = try await svc.repoManager.mergeSync(path: id)
-                await svc.repoManager.clearRemoteSwitchPending(path: id)
-                var text: String
-                if !result.didChange && result.addedFromRemote == 0 && result.remoteCopies.isEmpty {
-                    text = NSLocalizedString("✓ 已是最新，两边没有需要同步的文件", comment: "settings status")
-                } else if result.remoteCopies.isEmpty {
-                    text = String(format: NSLocalizedString("✓ 已同步：新增远程文件 %d 个，保留本地文件 %d 个",
-                                                             comment: "settings status"),
-                                  result.addedFromRemote, result.keptLocalOnly)
-                } else {
-                    text = String(format: NSLocalizedString("✓ 已同步：新增远程文件 %d 个，保留本地文件 %d 个，%d 个同名文件保留两份（远程版本另存为「远程副本」）",
-                                                             comment: "settings status"),
-                                  result.addedFromRemote, result.keptLocalOnly, result.remoteCopies.count)
-                }
-                text += self?.movedCopiesNote(result.movedLocalCopies) ?? ""
-                if result.needsPush {
-                    // A "sync" is a round trip: push the merge commit and any
-                    // local-only commits so the remote gets the local files too.
-                    let pushed = await svc.sync.pushNow(repoPath: id)
-                    text += pushed
-                        ? NSLocalizedString("，已推送到远程", comment: "settings status")
-                        : NSLocalizedString("（本地已合并，但推送失败，请稍后点「立即推送」）", comment: "settings status")
-                }
-                self?.setMessage(id, text)
-                self?.fillRepoDetails(id: id)
-            } catch {
-                let description = error.localizedDescription
-                self?.setMessage(id, String(format: NSLocalizedString("⚠️ 同步失败：%@", comment: "settings status"),
-                                            description), error: true)
-                if let suggestion = (error as? LocalizedError)?.recoverySuggestion, !suggestion.isEmpty {
-                    await self?.alert(NSLocalizedString("同步失败", comment: "settings alert"),
-                                      description + "\n\n" + suggestion)
-                }
-            }
-        }
-    }
-
-
-
     /// v4.0.5: read-only repository integrity check (git fsck --full).
-    /// Note appended when a pull/sync had to move ignored local files aside
-    /// because the remote tree also adds them (v4.1.8).
-    private func movedCopiesNote(_ copies: [String]) -> String {
-        guard !copies.isEmpty else { return "" }
-        let shown = copies.prefix(3).joined(separator: "、")
-        let more = copies.count > 3
-            ? String(format: NSLocalizedString(" 等 %d 个文件", comment: "settings status"), copies.count)
-            : ""
-        return String(format: NSLocalizedString("；被占用的本地文件已另存为：%@%@（内容未丢失）", comment: "settings status"),
-                       shown, more)
-    }
-
     func checkIntegrity(_ id: String) {
         guard let svc = service else { return }
         setMessage(id, NSLocalizedString("正在检查仓库完整性…", comment: "settings status"))
@@ -711,7 +520,7 @@ final class SettingsModel: ObservableObject {
             }
             let confirm = NSAlert()
             confirm.messageText = NSLocalizedString("清理未完成的合并/变基？", comment: "settings alert")
-            confirm.informativeText = NSLocalizedString("上次的合并或变基没有正常结束（可能是崩溃或强退）。清理会丢弃那一步的中间状态，已提交的历史和文件不会丢失。",
+            confirm.informativeText = NSLocalizedString("上次的合并、变基或 Git 操作没有正常结束（可能是崩溃或强退）。清理会丢弃那一步的中间状态（包括过期的 .git/index.lock），已提交的历史和文件不会丢失。",
                                                         comment: "settings alert")
             confirm.addButton(withTitle: NSLocalizedString("清理", comment: "settings alert"))
             confirm.addButton(withTitle: NSLocalizedString("取消", comment: "settings alert"))
@@ -1129,10 +938,6 @@ struct SettingsView: View {
             }
 
             HStack(spacing: 12) {
-                Toggle("自动推送", isOn: model.autoPushBinding(repo.id))
-                    .toggleStyle(.switch)
-                    .controlSize(.mini)
-                    .font(.system(size: 11))
                 Picker("", selection: model.authModeBinding(repo.id)) {
                     Text("自动（gh 凭证助手）").tag(RepoManager.AuthMode.auto)
                     Text("用户名 + 访问令牌").tag(RepoManager.AuthMode.pat)
@@ -1147,10 +952,6 @@ struct SettingsView: View {
                     .lineLimit(1)
                 Spacer(minLength: 4)
                 Menu("更多") {
-                    Button("立即推送") { model.pushNow(repo.id) }
-                    Button("拉取远程更新") { model.pull(repo.id) }
-                    Button("强制拉取（以远程为准）…") { model.forcePull(repo.id) }
-                    Button("同步远程文件到本地（保留本地文件）…") { model.mergeSync(repo.id) }
                     Button("编辑忽略规则…") { model.openGitignoreEditor(repo.id) }
                     Button("在 GitHub 建仓并绑定…") { model.createRepoTarget = repo.id }
                     Divider()

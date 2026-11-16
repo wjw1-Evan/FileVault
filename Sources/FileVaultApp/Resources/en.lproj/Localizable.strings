@@ -88,12 +88,10 @@
 "正在保存…" = "Saving…";
 "已保存，正在测试连接…" = "Saved, testing connection…";
 "✓ 已保存并连通，提交后将自动推送" = "✓ Saved and connected — commits will be pushed automatically";
-"✓ 已保存并连通（自动推送未开启）" = "✓ Saved and connected (auto-push off)";
-"✓ 已切换到新的远程，但它已有 %d 个提交。请选择：「更多 → 同步远程文件到本地（保留本地文件）」把两边合到一起，或「强制拉取（以远程为准）」；做出选择前不会自动推送" = "✓ Switched to the new remote, but it already has %d commit(s). Choose More → Sync remote files into the folder (keep local files) to combine both sides, or Force pull (remote wins); nothing is pushed until you decide";
+"✓ 已保存并连通，之后自动同步" = "✓ Saved and connected — syncing is automatic from now on";
+"✓ 已保存并连通；远程已有 %d 个提交，已自动合并进这个文件夹（本地文件都保留），随后自动推送" = "✓ Saved and connected; the remote already has %d commit(s) — merged into this folder automatically (no local file was dropped) and pushed back";
 "⚠️ 已保存新远程地址，但暂时读不到这个远程（检查地址或认证）：%@" = "⚠️ New remote saved, but it cannot be read right now (check the URL or credentials): %@";
-"✓ 已切换到新的远程仓库（空仓库），本地版本会自动推送上去" = "✓ Switched to the new remote (an empty repository); local versions will be pushed automatically";
-"✓ 已切换到新的远程仓库（空仓库），可点「立即推送」上传本地版本" = "✓ Switched to the new remote (an empty repository); click Push now to upload the local versions";
-"✓ 已保存并连通；这个远程已有 %d 个提交。请选择：「更多 → 同步远程文件到本地（保留本地文件）」把两边合到一起，或「强制拉取（以远程为准）」；做出选择前不会自动推送" = "✓ Saved and connected; this remote already has %d commit(s). Choose More → Sync remote files into the folder (keep local files) to combine both sides, or Force pull (remote wins); nothing is pushed until you decide";
+"✓ 已切换到新的远程仓库，本地版本会自动同步上去" = "✓ Switched to the new remote — local versions will sync automatically";
 "✓ 已拉取 %d 个新版本（快进）" = "✓ Pulled %d new versions (fast-forward)";
 "✓ 已自动合并：拉取 %d 个新版本，本地 %d 个提交已变基" = "✓ Merged automatically: pulled %d new version(s), rebased %d local commit(s)";
 "✓ 已是最新" = "✓ Already up to date";
@@ -126,7 +124,6 @@
 "修复未完成的合并/变基…" = "Repair an interrupted merge/rebase…";
 "没有发现未完成的合并或变基" = "No interrupted merge or rebase was found";
 "清理未完成的合并/变基？" = "Clean up the interrupted merge/rebase?";
-"上次的合并或变基没有正常结束（可能是崩溃或强退）。清理会丢弃那一步的中间状态，已提交的历史和文件不会丢失。" = "The last merge or rebase did not finish (a crash or force-quit). Cleaning up discards only that step's intermediate state; committed history and files are kept.";
 "清理" = "Clean up";
 "✓ 已清理未完成的%@，可以继续拉取/推送" = "✓ Cleaned up the interrupted %@; pulls and pushes work again";
 "⚠️ 清理失败：%@" = "⚠️ Cleanup failed: %@";
@@ -134,6 +131,12 @@
 "、" = ", ";
 "变基" = "rebase";
 "合并" = "merge";
+"仓库有多个远程（%@），无法确定从哪个拉取" = "Several remotes are configured (%@); cannot decide which one to pull from";
+"在终端执行 git branch --set-upstream-to=%@/<分支> 指定用哪个远程，或只保留一个远程后再试。" = "Run git branch --set-upstream-to=%@/<branch> in Terminal to pick the upstream remote, or keep only one remote and retry.";
+"Git 拒绝访问这个文件夹（文件夹所有者与本机账户不一致）" = "Git refuses this folder because its owner differs from the current account";
+"在终端执行 git config --global --add safe.directory <这个文件夹的路径> 后重试。" = "Run git config --global --add safe.directory <this folder> in Terminal, then retry.";
+"过期的锁文件" = "stale lock file";
+"上次的合并、变基或 Git 操作没有正常结束（可能是崩溃或强退）。清理会丢弃那一步的中间状态（包括过期的 .git/index.lock），已提交的历史和文件不会丢失。" = "The last merge, rebase or Git operation did not finish (a crash or force-quit). Cleaning up discards only that step's intermediate state (including a stale .git/index.lock); committed history and files are kept.";
 "远程仓库与本地历史互不相关，不能快进合并" = "The remote and local histories are unrelated — cannot fast-forward";
 "本地与远程改动了同一个文件，自动合并已中止（仓库已恢复原状）" = "Local and remote changed the same file — the automatic merge was aborted (the repository is back to its previous state)";
 "本地与远程改动了同一个文件，自动合并失败且未能自动恢复" = "Local and remote changed the same file — the automatic merge failed and could not be undone";

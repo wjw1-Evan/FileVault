@@ -102,14 +102,15 @@ final class PullFailureClassificationTests: XCTestCase {
     /// omit a recovery suggestion.
     func testEveryCaseHasReadableDescriptionAndSuggestion() {
         let cases: [PullError] = [
-            .noRemote, .ambiguousRemote, .notARepository, .detachedHead,
+            .noRemote, .ambiguousRemote(), .notARepository, .detachedHead,
             .remoteBranchMissing(remote: "origin", branch: "main"),
             .unrelatedHistories,
             .mergeConflict(files: ["a.md"], aborted: true),
             .mergeConflict(files: ["a.md"], aborted: false),
             .authenticationFailed(detail: "x"), .networkFailed(detail: "x"),
             .remoteUnavailable(detail: "x"), .localChanges(detail: "x"),
-            .busy, .repositoryLocked(detail: "x"), .failed(detail: "x"),
+            .busy, .repositoryLocked(detail: "x"), .unsafeRepository(detail: "x"),
+            .failed(detail: "x"),
         ]
         for error in cases {
             XCTAssertFalse((error.errorDescription ?? "").isEmpty, "no description for \(error)")
@@ -171,6 +172,18 @@ final class PullFailureClassificationTests: XCTestCase {
         XCTAssertTrue((error.errorDescription ?? "").contains("占用"))
         XCTAssertTrue((error.recoverySuggestion ?? "").contains("index.lock"))
         XCTAssertTrue(error.technicalDetail?.contains("index.lock") == true)
+    }
+
+    /// A folder owned by another account makes git refuse everything; the fix
+    /// is a single safe.directory line (v4.1.9).
+    func testDubiousOwnershipIsExplained() {
+        let error = PullError.classify(
+            stderr: "fatal: detected dubious ownership in repository at '/Volumes/X/repo'",
+            remote: "origin", branch: "main")
+        guard case .unsafeRepository = error else { return XCTFail("got \(error)") }
+        XCTAssertTrue((error.errorDescription ?? "").contains("所有者"))
+        XCTAssertTrue((error.recoverySuggestion ?? "").contains("safe.directory"))
+        XCTAssertTrue(error.technicalDetail?.contains("dubious ownership") == true)
     }
 
     /// main-vs-master mismatches are common; the error must list the remote's
@@ -474,8 +487,12 @@ final class PullScenarioTests: XCTestCase {
             _ = try await repos.pull(path: repo)
             XCTFail("ambiguous remotes should throw")
         } catch let error as PullError {
-            XCTAssertEqual(error, .ambiguousRemote)
-            XCTAssertTrue((error.recoverySuggestion ?? "").contains("--set-upstream-to"),
+            guard case .ambiguousRemote(let remotes) = error else { return XCTFail("got \(error)") }
+            XCTAssertEqual(remotes.sorted(), ["alpha", "beta"], "the actual remote names must be listed")
+            let description = error.errorDescription ?? ""
+            XCTAssertTrue(description.contains("alpha"), description)
+            XCTAssertTrue(description.contains("beta"), description)
+            XCTAssertTrue((error.recoverySuggestion ?? "").contains("--set-upstream-to=alpha/"),
                           error.recoverySuggestion ?? "")
         }
     }
@@ -1155,6 +1172,32 @@ final class InterruptedOperationRepairTests: XCTestCase {
         XCTAssertEqual(afterMergeRepair, mainHead)
     }
 
+
+    func testRepairRemovesStaleIndexLockButKeepsFreshOne() async throws {
+        let dir = root + "/locked"
+        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        TestSupport.write("seed\n", to: dir + "/seed.md")
+        _ = try await repos.ensureRepo(at: dir)
+        let lock = dir + "/.git/index.lock"
+        TestSupport.write("", to: lock)
+
+        // A fresh lock may belong to a live git command: never touch it.
+        let freshCleaned = try await repos.repairInterruptedOperation(path: dir)
+        XCTAssertNil(freshCleaned)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: lock))
+
+        // A 10-minute-old lock is crash leftover: detect and remove it.
+        try FileManager.default.setAttributes([.modificationDate: Date().addingTimeInterval(-600)],
+                                              ofItemAtPath: lock)
+        let state = await repos.interruptedOperation(path: dir)
+        XCTAssertTrue(state.staleLock)
+        XCTAssertFalse(state.isEmpty)
+        let cleaned = try await repos.repairInterruptedOperation(path: dir)
+        XCTAssertNotNil(cleaned, "the stale lock must be removed")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: lock))
+        let after = await repos.interruptedOperation(path: dir)
+        XCTAssertTrue(after.isEmpty)
+    }
     func testRepairIsNoOpWhenNothingPending() async throws {
         let dir = root + "/clean"
         try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)

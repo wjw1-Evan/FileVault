@@ -14,7 +14,7 @@ public enum PullError: Error, LocalizedError, Equatable {
     case noRemote
     /// Several remotes and no upstream: pulling from a guessed remote could
     /// fast-forward the working tree from the wrong place, so we refuse.
-    case ambiguousRemote
+    case ambiguousRemote(remotes: [String] = [])
     /// The protected folder is not a git repository (moved, deleted, or its
     /// disk is not mounted any more).
     case notARepository
@@ -39,14 +39,21 @@ public enum PullError: Error, LocalizedError, Equatable {
     case busy
     /// The repository is locked by another git process (index.lock / stale lock).
     case repositoryLocked(detail: String)
+    /// Git refuses the folder because its owner differs from the current user
+    /// (external disk, another account): "dubious ownership" (v4.1.9).
+    case unsafeRepository(detail: String)
     case failed(detail: String)
 
     public var errorDescription: String? {
         switch self {
         case .noRemote:
             return NSLocalizedString("这个文件夹还没有绑定远程仓库，无法拉取", comment: "pull error")
-        case .ambiguousRemote:
-            return NSLocalizedString("仓库有多个远程，无法确定从哪个拉取", comment: "pull error")
+        case .ambiguousRemote(let remotes):
+            if remotes.isEmpty {
+                return NSLocalizedString("仓库有多个远程，无法确定从哪个拉取", comment: "pull error")
+            }
+            return String(format: NSLocalizedString("仓库有多个远程（%@），无法确定从哪个拉取",
+                                                    comment: "pull error"), remotes.joined(separator: "、"))
         case .notARepository:
             return NSLocalizedString("这个文件夹已经不是 Git 仓库（可能被移动、删除，或磁盘未挂载）",
                                      comment: "pull error")
@@ -80,6 +87,9 @@ public enum PullError: Error, LocalizedError, Equatable {
             return NSLocalizedString("这个文件夹正在执行另一次同步操作", comment: "pull error")
         case .repositoryLocked:
             return NSLocalizedString("仓库正被另一个 Git 操作占用（锁文件）", comment: "pull error")
+        case .unsafeRepository:
+            return NSLocalizedString("Git 拒绝访问这个文件夹（文件夹所有者与本机账户不一致）",
+                                     comment: "pull error")
         case .failed(let detail):
             if detail.isEmpty {
                 return String(format: NSLocalizedString("拉取失败：%@", comment: "pull error"),
@@ -99,7 +109,12 @@ public enum PullError: Error, LocalizedError, Equatable {
         case .noRemote:
             return NSLocalizedString("在设置里填写远程仓库地址（留空表示仅本地），保存并连通后再拉取。",
                                      comment: "pull recovery")
-        case .ambiguousRemote:
+        case .ambiguousRemote(let remotes):
+            if !remotes.isEmpty,
+               let first = remotes.first {
+                return String(format: NSLocalizedString("在终端执行 git branch --set-upstream-to=%@/<分支> 指定用哪个远程，或只保留一个远程后再试。",
+                                                        comment: "pull recovery"), first)
+            }
             return NSLocalizedString("在终端执行 git branch --set-upstream-to=<远程>/<分支> 指定上游后再试。",
                                      comment: "pull recovery")
         case .notARepository:
@@ -140,6 +155,9 @@ public enum PullError: Error, LocalizedError, Equatable {
         case .repositoryLocked:
             return NSLocalizedString("等几秒后重试；若一直失败，确认没有其他 Git 工具在操作这个文件夹后，可在终端删除 .git/index.lock 再重试。",
                                      comment: "pull recovery")
+        case .unsafeRepository:
+            return NSLocalizedString("在终端执行 git config --global --add safe.directory <这个文件夹的路径> 后重试。",
+                                     comment: "pull recovery")
         case .failed:
             return nil
         }
@@ -150,7 +168,7 @@ public enum PullError: Error, LocalizedError, Equatable {
         switch self {
         case .authenticationFailed(let detail), .networkFailed(let detail),
              .remoteUnavailable(let detail), .localChanges(let detail),
-             .repositoryLocked(let detail), .failed(let detail):
+             .repositoryLocked(let detail), .unsafeRepository(let detail), .failed(let detail):
             return detail
         case .mergeConflict(let files, _):
             return files.isEmpty ? nil : files.joined(separator: ", ")
@@ -201,6 +219,11 @@ public enum PullError: Error, LocalizedError, Equatable {
         let text = stderr.lowercased()
         let detail = condense(stderr)
 
+        // A folder owned by another account (external disk, second Mac account)
+        // makes git refuse every command; only safe.directory can fix it.
+        if text.contains("dubious ownership") || text.contains("safe.directory") {
+            return .unsafeRepository(detail: detail)
+        }
         // A stale/held git lock is neither auth nor network: name it so the user
         // knows to close the other tool (or remove index.lock).
         if text.contains("index.lock") || text.contains("another git process")
