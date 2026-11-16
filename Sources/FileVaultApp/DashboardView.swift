@@ -130,11 +130,14 @@ final class DashboardModel: ObservableObject {
             }
         } else {
             overall = .ok
-            stateLine = NSLocalizedString("全部正常", comment: "dashboard state")
+            // The pill already says 全部正常 — do not repeat it in the subtitle.
+            stateLine = ""
         }
-        // Count-first summary kept for menu parity and the dashboard subtitle.
-        stateLine = String(format: NSLocalizedString("%d 个文件夹受守护 · %@", comment: "dashboard state"),
-                           rootCount, stateLine)
+        let units = String(format: NSLocalizedString("%d 个文件夹受守护", comment: "dashboard state"),
+                           rootCount)
+        stateLine = stateLine.isEmpty
+            ? units
+            : String(format: NSLocalizedString("%@ · %@", comment: "dashboard state"), units, stateLine)
     }
 }
 
@@ -316,9 +319,8 @@ struct DashboardView: View {
 
     private var rootsCard: some View {
         VStack(spacing: 0) {
-            FVSectionHeader(title: "受保护的文件夹",
-                            trailing: String(format: NSLocalizedString("%d 个文件夹", comment: "dashboard caption"),
-                                             model.rootCount))
+            // The summary tile above already shows the folder count.
+            FVSectionHeader(title: "受保护的文件夹")
             FVHairline(leading: 0)
             if model.rootsEmpty {
                 FVEmptyState(symbol: "folder.badge.plus",

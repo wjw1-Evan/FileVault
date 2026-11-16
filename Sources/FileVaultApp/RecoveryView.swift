@@ -643,12 +643,8 @@ struct RecoveryView: View {
                 Spacer()
                 if model.loading {
                     ProgressView().controlSize(.small)
-                } else {
-                    Text("\(model.visibleFiles.count)")
-                        .font(FVTheme.metaFont)
-                        .foregroundStyle(.tertiary)
-                        .monospacedDigit()
                 }
+                // Per-scope counts already sit in the tabs right below.
             }
             .padding(.horizontal, 14)
             .padding(.top, 12)

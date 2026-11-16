@@ -242,7 +242,7 @@
 "该文件夹还没有提交历史" = "This folder has no commit history yet";
 "回滚到该版本" = "Roll back to this version";
 "回滚确认" = "Confirm rollback";
-"文件夹中受版本管理的内容会回到这个版本，其后的提交从当前分支移除。被忽略的文件、大文件和嵌套仓库保持原样；已绑定的远程仓库不会跟着回退（之后「拉取远程更新」可能把版本带回来）。未提交的改动会先自动保存，回滚前的状态备份到隐藏 ref（refs/filevault/backup，可用 git 找回），不会永久丢失。" = "Version-managed content in this folder returns to this version, and later commits are removed from the branch. Ignored files, large files and nested repositories stay as they are; a bound remote is not rolled back (pulling from it later can bring the version back). Uncommitted edits are saved first, and the pre-rollback state is kept in a hidden ref (refs/filevault/backup) so nothing is lost permanently.";
+"文件夹中受版本管理的内容会回到这个版本，其后的提交从当前分支移除。被忽略的文件、大文件和嵌套仓库保持原样；已绑定的远程仓库不会跟着回退（之后自动同步可能把版本带回来）。未提交的改动会先自动保存，回滚前的状态备份到隐藏 ref（refs/filevault/backup，可用 git 找回），不会永久丢失。" = "Version-managed content in this folder returns to this version, and later commits are removed from the branch. Ignored files, large files and nested repositories stay as they are; a bound remote is not rolled back (pulling from it later can bring the version back). Uncommitted edits are saved first, and the pre-rollback state is kept in a hidden ref (refs/filevault/backup) so nothing is lost permanently.";
 "查看历史版本" = "View history";
 "最近提交" = "Latest commit";
 "正在加载提交历史…" = "Loading history…";
@@ -403,6 +403,7 @@
 "%@（%@）" = "%@ (%@)";
 "受保护文件夹" = "Protected folders";
 "尚未添加任何文件夹——先在设置中添加文件夹" = "No protected folders yet — add one in Settings";
+"%d 个文件夹受守护" = "%d protected folder(s)";
 "%d 个文件夹受守护 · %@" = "%d folders protected · %@";
 "全部纳入版本管理" = "Everything under version control";
 "添加一个文件夹，里面的所有文件都会自动拥有版本历史。" = "Add a folder and every file inside gets an automatic history.";
@@ -424,7 +425,6 @@
 "认证：%@" = "Authentication: %@";
 "历史与恢复…" = "History & Recovery…";
 "FileVault 历史与恢复" = "FileVault History & Recovery";
-"找回与还原" = "Recover & Restore";
 "历史时间线" = "Timeline";
 "一个文件夹的所有版本：看时间线，或找回被删/改坏的文件" = "Every version of the folder: browse the timeline, or recover deleted/corrupted files.";
 "打开历史时间线" = "Open timeline";

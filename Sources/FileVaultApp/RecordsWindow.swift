@@ -23,10 +23,6 @@ struct RecordsWindow: View {
                 .labelsHidden()
                 .frame(width: 280)
                 Spacer(minLength: 12)
-                Text("一个文件夹的所有版本：看时间线，或找回被删/改坏的文件")
-                    .font(.system(size: 10))
-                    .foregroundStyle(.tertiary)
-                    .lineLimit(1)
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 8)
@@ -58,7 +54,7 @@ enum RecordsTab: String, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
-        case .recover: return NSLocalizedString("找回与还原", comment: "records tab")
+        case .recover: return NSLocalizedString("文件恢复", comment: "records tab")
         case .history: return NSLocalizedString("历史时间线", comment: "records tab")
         }
     }

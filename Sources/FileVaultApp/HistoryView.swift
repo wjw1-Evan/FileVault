@@ -969,7 +969,7 @@ struct HistoryView: View {
             Button("回滚到该版本", role: .destructive) { model.rollback() }
             Button("取消", role: .cancel) {}
         } message: {
-            Text("文件夹中受版本管理的内容会回到这个版本，其后的提交从当前分支移除。被忽略的文件、大文件和嵌套仓库保持原样；已绑定的远程仓库不会跟着回退（之后「拉取远程更新」可能把版本带回来）。未提交的改动会先自动保存，回滚前的状态备份到隐藏 ref（refs/filevault/backup，可用 git 找回），不会永久丢失。")
+            Text("文件夹中受版本管理的内容会回到这个版本，其后的提交从当前分支移除。被忽略的文件、大文件和嵌套仓库保持原样；已绑定的远程仓库不会跟着回退（之后自动同步可能把版本带回来）。未提交的改动会先自动保存，回滚前的状态备份到隐藏 ref（refs/filevault/backup，可用 git 找回），不会永久丢失。")
         }
         .confirmationDialog("恢复文件夹？", isPresented: directoryRestoreBinding, titleVisibility: .visible) {
             Button("恢复文件夹", role: .destructive) { model.confirmDirectoryRestore() }

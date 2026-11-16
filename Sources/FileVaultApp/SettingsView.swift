@@ -708,8 +708,9 @@ struct SettingsView: View {
                 }
                 if model.rootCards.isEmpty {
                     emptyRootsCard
+                } else {
+                    addRootButton
                 }
-                addRootButton
             }
             .padding(24)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -874,9 +875,9 @@ struct SettingsView: View {
 
     private var supportCard: some View {
         VStack(spacing: 0) {
+            // Version already shown once in the 通用 card.
             FVSectionHeader(title: "关于与支持",
-                            subtitle: "FileVault 永久免费 · 无账号、无订阅、无遥测",
-                            trailing: app.version.isEmpty ? nil : "v\(app.version)")
+                            subtitle: "FileVault 永久免费 · 无账号、无订阅、无遥测")
             FVHairline(leading: 0)
             settingRow(title: "导出诊断包",
                        detail: "脱敏报告（不含文件内容/远程地址/账号），便于反馈问题") {
