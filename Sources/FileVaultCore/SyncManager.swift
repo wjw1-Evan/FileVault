@@ -12,6 +12,9 @@ public actor SyncManager {
     public nonisolated let onStatusChange = EventCallbackBox()
 
     private var states: [String: RepoSyncState] = [:]
+    /// Repos whose current push-failure episode already produced a notification.
+    private var failureStreakNotified: Set<String> = []
+    private let streakLock = NSLock()
 
     public struct RepoSyncState {
         public var status: SyncStatus
@@ -151,6 +154,7 @@ public actor SyncManager {
                 // / auto-rebase) and retry once instead of failing forever
                 // (v4.1.5).
                 try await pushWithReconcile(repoPath: repoPath)
+                clearFailureStreak(repoPath: repoPath)
                 setState(repoPath, .synced)
                 attempt = 0
                 if states[repoPath]?.needsPushAgain == true {
@@ -164,10 +168,15 @@ public actor SyncManager {
                 // retrying: report once with guidance and stop (v4.1.7).
                 if let rejection = Self.deterministicPushRejection(error) {
                     onPushFailure(repoPath, rejection)
+                    clearFailureStreak(repoPath: repoPath)
                     setState(repoPath, .failed)
                     return
                 }
-                onPushFailure(repoPath, Self.pushFailureMessage(error))
+                // Notify once per failure episode: retrying a flaky network no
+                // longer spams one notification per attempt (v4.2.3).
+                self.noteFailureStreak(repoPath: repoPath,
+                                       message: Self.pushFailureMessage(error),
+                                       finalAttempt: false)
                 setState(repoPath, .failed)
                 // A merge conflict / unrelated history needs a human decision;
                 // retrying on a timer cannot fix it.
@@ -175,6 +184,11 @@ public actor SyncManager {
                     return
                 }
                 if attempt >= maxAttempts {
+                    self.noteFailureStreak(
+                        repoPath: repoPath,
+                        message: String(format: NSLocalizedString("已自动重试 %d 次仍未成功，稍后新的改动会再试",
+                                                                  comment: "push retries exhausted"), attempt),
+                        finalAttempt: true)
                     return
                 }
                 let delay = backoffSchedule[min(attempt - 1, backoffSchedule.count - 1)]
@@ -183,6 +197,27 @@ public actor SyncManager {
                 continue
             }
         }
+    }
+
+    /// One notification per failure episode: the first failure is reported, the
+    /// intermediate retries stay quiet, and a final "gave up" note is always
+    /// reported so a persistent outage is not silent (v4.2.3).
+    private func noteFailureStreak(repoPath: String, message: String, finalAttempt: Bool) {
+        streakLock.lock()
+        let alreadyNotified = failureStreakNotified.contains(repoPath)
+        if finalAttempt || !alreadyNotified {
+            failureStreakNotified.insert(repoPath)
+        }
+        streakLock.unlock()
+        if finalAttempt || !alreadyNotified {
+            onPushFailure(repoPath, message)
+        }
+    }
+
+    private func clearFailureStreak(repoPath: String) {
+        streakLock.lock()
+        failureStreakNotified.remove(repoPath)
+        streakLock.unlock()
     }
 
     /// Push once; throws on failure.

@@ -95,6 +95,14 @@ public final class GitRunner: Sendable {
         // Self-contained payloads (bundled/downloaded git) keep their libexec,
         // templates and CA bundle outside the system paths.
         for (k, v) in baseEnvironment { e[k] = v }
+        // FileVault has no terminal: a missing credential or SSH passphrase must
+        // fail fast with a readable error instead of hanging (or popping a GUI
+        // askpass) in the background (v4.2.3). Users can still override these
+        // through their own environment or git config (core.sshCommand).
+        if e["GIT_TERMINAL_PROMPT"] == nil { e["GIT_TERMINAL_PROMPT"] = "0" }
+        if e["GIT_SSH_COMMAND"] == nil {
+            e["GIT_SSH_COMMAND"] = "ssh -o BatchMode=yes -o ConnectTimeout=20"
+        }
         // Make sure the git executable's directory is on PATH so that
         // credential helpers / hooks / ssh can be resolved.
         let gitDir = (gitExecutable as NSString).deletingLastPathComponent

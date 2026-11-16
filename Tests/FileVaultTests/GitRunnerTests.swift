@@ -21,6 +21,30 @@ final class GitRunnerTests: XCTestCase {
     /// FileVault only touches folders the user added, so every command trusts
     /// that folder (command-line safe.directory) instead of failing on external
     /// disks or folders created by another account (v4.2.1).
+
+    /// FileVault runs in the background: credential/SSH prompts are disabled so
+    /// a missing secret fails fast with a readable error instead of hanging (v4.2.3).
+    func testPromptsAreDisabledAndSSHFailsFast() async throws {
+        let dir = TestSupport.makeTempDir("git-env")
+        defer { try? FileManager.default.removeItem(atPath: dir) }
+        let script = dir + "/fake-git"
+        let out = dir + "/env.txt"
+        TestSupport.write("#!/bin/sh\nprintf '%s|%s' \"$GIT_TERMINAL_PROMPT\" \"$GIT_SSH_COMMAND\" > "
+                          + out + "\nexit 0\n", to: script)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script)
+        let runner = GitRunner(gitExecutable: script)
+
+        _ = try await runner.run(["status"], cwd: dir)
+        let env = try String(contentsOfFile: out, encoding: .utf8)
+        XCTAssertTrue(env.hasPrefix("0|"), env)
+        XCTAssertTrue(env.contains("BatchMode=yes"), env)
+        XCTAssertTrue(env.contains("ConnectTimeout=20"), env)
+
+        // A caller-provided SSH command still wins (custom keys/hosts).
+        _ = try await runner.run(["status"], cwd: dir, env: ["GIT_SSH_COMMAND": "ssh -i /tmp/custom"])
+        let overridden = try String(contentsOfFile: out, encoding: .utf8)
+        XCTAssertEqual(overridden.components(separatedBy: "|").last, "ssh -i /tmp/custom")
+    }
     func testManagedFolderIsTrustedForSafeDirectory() async throws {
         let dir = TestSupport.makeTempDir("safe-dir")
         defer { try? FileManager.default.removeItem(atPath: dir) }

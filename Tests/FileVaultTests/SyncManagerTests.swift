@@ -377,6 +377,30 @@ final class SyncManagerTests: XCTestCase {
         XCTAssertTrue(log.stdout.contains("sync: 同步远程文件到本地") || log.stdout.contains("auto:"), log.stdout)
     }
 
+
+    /// v4.2.3: a flaky network must not produce one notification per retry; the
+    /// first failure and the final give-up are reported, retries stay quiet.
+    func testPushFailureNotifiesOncePerEpisode() async throws {
+        let repo = root + "/repoA"
+        _ = try await repos.ensureRepo(at: repo)
+        let limited = SyncManager(repoManager: repos, backoffSchedule: [0.05], maxAttempts: 4)
+        var messages: [String] = []
+        let lock = NSLock()
+        limited.onPushFailure.handler = { _, reason in lock.lock(); messages.append(reason); lock.unlock() }
+
+        try await limited.configureRemote(repoPath: repo, url: root + "/absent.git", autoPush: true)
+        var waited = 0.0
+        while waited < 10 {
+            if await limited.status(for: repo) == .failed { break }
+            try? await Task.sleep(nanoseconds: 100_000_000)
+            waited += 0.1
+        }
+        try? await Task.sleep(nanoseconds: 600_000_000)
+        lock.lock(); let seen = messages; lock.unlock()
+        XCTAssertEqual(seen.count, 2,
+                       "one failure + one give-up, not one per retry: " + seen.joined(separator: " || "))
+        XCTAssertTrue(seen.last?.contains("已自动重试 4 次") == true, seen.last ?? "")
+    }
     // MARK: - Switching the remote repository (v4.1.6)
 
     /// Replacing the remote with an EMPTY repository re-points everything and
