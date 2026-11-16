@@ -121,6 +121,7 @@ final class SettingsModel: ObservableObject {
         Task { [weak self] in
             let url = await svc.repoManager.remoteURL(path: id)
             let healthInfo = await svc.repoManager.health(path: id)
+            let foreignInstancePID = svc.repoManager.foreignInstancePID(path: id)
             let st = await svc.sync.status(for: id)
             let mode = await svc.repoManager.authMode(path: id)
             let remoteNames = await svc.repoManager.remoteNames(path: id)
@@ -144,7 +145,13 @@ final class SettingsModel: ObservableObject {
                 if !self.editedPaths.contains(id) {
                     self.rootCards[idx].repo.urlText = url ?? ""
                 }
-                self.rootCards[idx].repo.health = healthInfo.summary
+                if let foreignInstancePID {
+                    self.rootCards[idx].repo.health = String(
+                        format: NSLocalizedString("⚠️ 另一个 FileVault 实例正在管理（pid %d）",
+                                                  comment: "repo health"), foreignInstancePID)
+                } else {
+                    self.rootCards[idx].repo.health = healthInfo.summary
+                }
                 let glyph = Self.repoGlyph(st)
                 self.rootCards[idx].repo.statusGlyph = glyph.symbol
                 self.rootCards[idx].repo.statusColor = glyph.color

@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(Darwin)
+import Darwin
+#endif
 
 /// Manages the repo that IS a managed root folder: init/adopt, status, commit,
 /// remote config, log, rollback.
@@ -1058,6 +1061,39 @@ public final class RepoManager: @unchecked Sendable {
         }
         return cleared.isEmpty ? nil
             : cleared.joined(separator: NSLocalizedString("、", comment: "repair list joiner"))
+    }
+
+    /// PID of ANOTHER live FileVault instance currently managing this folder
+    /// (two copies of the app must never commit/push the same repo) (v4.2.9).
+    public func foreignInstancePID(path: String) -> Int32? {
+        let file = (path as NSString).appendingPathComponent(".git/filevault-instance.pid")
+        guard let raw = try? String(contentsOfFile: file, encoding: .utf8),
+              let pid = Int32(raw.trimmingCharacters(in: .whitespacesAndNewlines)),
+              pid > 0, pid != getpid() else { return nil }
+        return isProcessAlive(pid) ? pid : nil
+    }
+
+    /// Take the per-folder instance lock. Returns false when another LIVE
+    /// FileVault instance owns it; a stale lock from a crashed run is taken over.
+    @discardableResult
+    public func acquireInstanceLock(path: String) -> Bool {
+        if foreignInstancePID(path: path) != nil { return false }
+        let file = (path as NSString).appendingPathComponent(".git/filevault-instance.pid")
+        try? Data(String(getpid()).utf8).write(to: URL(fileURLWithPath: file))
+        return true
+    }
+
+    /// Release the instance lock only when this process owns it.
+    public func releaseInstanceLock(path: String) {
+        let file = (path as NSString).appendingPathComponent(".git/filevault-instance.pid")
+        guard let raw = try? String(contentsOfFile: file, encoding: .utf8),
+              raw.trimmingCharacters(in: .whitespacesAndNewlines) == String(getpid()) else { return }
+        try? FileManager.default.removeItem(atPath: file)
+    }
+
+    private func isProcessAlive(_ pid: Int32) -> Bool {
+        if kill(pid, 0) == 0 { return true }
+        return errno == EPERM
     }
 
     /// Resolve a path under .git (handles worktrees where it lives outside).

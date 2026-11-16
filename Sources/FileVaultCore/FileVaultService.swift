@@ -140,6 +140,16 @@ public final class FileVaultService: @unchecked Sendable {
     /// and the UI can trigger it deterministically (v4.2.4).
     public func sweepOnce() async {
         guard let repoManager, let commitEngine else { return }
+        // Roots that failed to attach at startup (external disk unplugged,
+        // another live instance, transient error) are retried here, so they
+        // recover without restarting the app (v4.2.9).
+        let attachedNow = rootsSnapshot()
+        for cfgRoot in configStore.load().roots {
+            let root = resolved(cfgRoot.path)
+            guard !attachedNow.contains(root),
+                  FileManager.default.fileExists(atPath: root) else { continue }
+            try? await attachRoot(path: root, paused: pause.isPaused(root: root))
+        }
         for root in rootsSnapshot() {
             // Self-heal watching: an external disk that disappears and comes
             // back, or a watch stream that stopped, must start watching again
@@ -186,6 +196,7 @@ public final class FileVaultService: @unchecked Sendable {
         roots.removeAll { $0 == p }
         lock.unlock()
         commitEngine.unregisterRoot(p)
+        repoManager.releaseInstanceLock(path: p)
         var cfg = configStore.load()
         cfg.roots.removeAll { $0.path == p }
         configStore.save(cfg)
@@ -227,6 +238,7 @@ public final class FileVaultService: @unchecked Sendable {
         roots.removeAll { $0 == old }
         lock.unlock()
         commitEngine.unregisterRoot(old)
+        repoManager.releaseInstanceLock(path: old)
         pause.setPaused(false, forRoot: old)
 
         // Attach the new path (adopts the .git that moved with the folder).
@@ -264,6 +276,11 @@ public final class FileVaultService: @unchecked Sendable {
             atPath: (p as NSString).appendingPathComponent(".git"))
         let contentsBefore = (try? FileManager.default.contentsOfDirectory(atPath: p)) ?? []
         _ = try await repoManager.ensureRepo(at: p)
+        // Two copies of the app must not watch/commit the same folder: only the
+        // first live instance owns it (v4.2.9).
+        guard repoManager.acquireInstanceLock(path: p) else {
+            throw FileVaultServiceError.managedByAnotherInstance
+        }
         if announceReinitialisation, !hadRepo, !contentsBefore.isEmpty {
             // A configured root silently losing its .git would otherwise come
             // back as an EMPTY history with no explanation (v4.2.8).
@@ -406,12 +423,15 @@ public final class FileVaultService: @unchecked Sendable {
 public enum FileVaultServiceError: LocalizedError {
     case rootMissing
     case rootAlreadyManaged
+    case managedByAnotherInstance
     public var errorDescription: String? {
         switch self {
         case .rootMissing:
             return NSLocalizedString("文件夹不存在或不可访问", comment: "service error")
         case .rootAlreadyManaged:
             return NSLocalizedString("这个文件夹已经在受保护列表里了", comment: "service error")
+        case .managedByAnotherInstance:
+            return NSLocalizedString("这个文件夹正被另一个 FileVault 实例管理", comment: "service error")
         }
     }
 }
