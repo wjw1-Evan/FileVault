@@ -76,8 +76,12 @@ final class SelfUpdaterTests: XCTestCase {
         XCTAssertThrowsError(try SelfUpdater.verify(zipURL: zip, expectedSHA256: "0000")) { e in
             XCTAssertEqual(e as? UpdateError, .checksumMismatch)
         }
-        // No expected digest -> verification is a no-op.
-        XCTAssertNoThrow(try SelfUpdater.verify(zipURL: zip, expectedSHA256: nil))
+        // v4.2.26: no digest is FAIL-CLOSED. GitHub's API always sends a digest
+        // for published assets; a missing one means we cannot prove the download
+        // matches the release, so installing it silently was a security hole.
+        XCTAssertThrowsError(try SelfUpdater.verify(zipURL: zip, expectedSHA256: nil)) { e in
+            XCTAssertEqual(e as? UpdateError, .missingChecksum)
+        }
         try? FileManager.default.removeItem(atPath: dir.path)
     }
 

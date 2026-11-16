@@ -47,6 +47,20 @@ hub.fill()
 img.unlockFocus()
 
 // Export PNG 1024.
-let rep = NSBitmapImageRep(data: img.tiffRepresentation!)!
-try! rep.representation(using: .png, properties: [:])!.write(to: URL(fileURLWithPath: CommandLine.arguments[1]))
+guard CommandLine.arguments.count > 1, !CommandLine.arguments[1].isEmpty else {
+    FileHandle.standardError.write(Data("用法: swift scripts/make_icon.swift <输出.png>\n".utf8))
+    exit(2)
+}
+guard let tiff = img.tiffRepresentation,
+      let rep = NSBitmapImageRep(data: tiff),
+      let png = rep.representation(using: .png, properties: [:]) else {
+    FileHandle.standardError.write(Data("✗ 无法生成图标位图\n".utf8))
+    exit(1)
+}
+do {
+    try png.write(to: URL(fileURLWithPath: CommandLine.arguments[1]))
+} catch {
+    FileHandle.standardError.write(Data("✗ 写入图标失败：\(error)\n".utf8))
+    exit(1)
+}
 print("icon written")

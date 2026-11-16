@@ -108,10 +108,12 @@ final class GitignoreHelperTests: XCTestCase {
         let repos = RepoManager(runner: TestSupport.newRunner())
         _ = try await repos.ensureRepo(at: root + "/repo")
         let repo = root + "/repo"
-        let original = repos.gitignore(path: repo)
+        // v4.2.26: read/save are throwing now — a read failure must never be
+        // mistaken for an empty file (saving that would wipe the user's rules).
+        let original = try repos.readGitignore(path: repo)
         XCTAssertTrue(original.contains(".DS_Store"), "template should be injected on init")
-        repos.saveGitignore(path: repo, content: original + "\ncustom-*.log\n")
-        let updated = repos.gitignore(path: repo)
+        try repos.saveGitignore(path: repo, content: original + "\ncustom-*.log\n")
+        let updated = try repos.readGitignore(path: repo)
         XCTAssertTrue(updated.contains("custom-*.log"))
         try? FileManager.default.removeItem(atPath: root)
     }

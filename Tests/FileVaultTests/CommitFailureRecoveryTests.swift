@@ -23,10 +23,13 @@ final class CommitFailureRecoveryTests: XCTestCase {
         engine.onCommitFailure = { _, reason in lock.lock(); failures.append(reason); lock.unlock() }
         engine.onCommit = { _, hash, _ in lock.lock(); commits.append(hash); lock.unlock() }
 
-        // A rejecting pre-commit hook fails the commit deterministically.
-        TestSupport.write("#!/bin/sh\nexit 1\n", to: dir + "/.git/hooks/pre-commit")
-        try FileManager.default.setAttributes([.posixPermissions: 0o755],
-                                              ofItemAtPath: dir + "/.git/hooks/pre-commit")
+        // A read-only .git fails the commit deterministically. (A rejecting
+        // pre-commit hook no longer works here: v4.2.27 auto-commits pass
+        // --no-verify on purpose — hooks are for human-initiated commits.)
+        if geteuid() == 0 {
+            throw XCTSkip("filesystem ignores file permissions (running as root?)")
+        }
+        try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: dir + "/.git")
         TestSupport.write("pending\n", to: dir + "/pending.md")
         await engine.runCommitPipeline(repoPath: dir)
         lock.lock(); let firstFailures = failures; let firstCommits = commits.count; lock.unlock()
@@ -35,7 +38,7 @@ final class CommitFailureRecoveryTests: XCTestCase {
         XCTAssertFalse(firstFailures.first?.isEmpty ?? true)
 
         // The cause disappears; the scheduled retry commits without new events.
-        try? FileManager.default.removeItem(atPath: dir + "/.git/hooks/pre-commit")
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: dir + "/.git")
         var waited = 0.0
         while waited < 8 {
             lock.lock(); let committed = commits.count; lock.unlock()

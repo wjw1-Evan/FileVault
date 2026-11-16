@@ -12,19 +12,27 @@ public struct RepoHealth: Equatable, Sendable {
     /// or is no longer a git repository: the card must say so instead of
     /// showing a misleading "0 commits · 0KB" (v4.2.8).
     public var available: Bool
+    /// Set when git reads failed (rev-list/log): the health line must show the
+    /// failure instead of a misleading "0 次提交" (v4.2.27).
+    public var readError: String?
 
     public init(commitCount: Int, sizeBytes: UInt64, lastCommitDate: Date?,
-                excludedLargeFileCount: Int = 0, available: Bool = true) {
+                excludedLargeFileCount: Int = 0, available: Bool = true,
+                readError: String? = nil) {
         self.commitCount = commitCount
         self.sizeBytes = sizeBytes
         self.lastCommitDate = lastCommitDate
         self.excludedLargeFileCount = excludedLargeFileCount
         self.available = available
+        self.readError = readError
     }
 
     public var summary: String {
         guard available else {
             return NSLocalizedString("⚠️ 文件夹当前不可用（可能未挂载或被移动）", comment: "repo health")
+        }
+        if let readError {
+            return NSLocalizedString("⚠️ 仓库读取失败", comment: "repo health") + "：" + readError
         }
         var t = commitCount == 1
             ? String(format: NSLocalizedString("1 次提交 · %@", comment: "repo health"), sizeText)
@@ -76,9 +84,17 @@ public extension RepoManager {
         let countResult = try? await runner.run(["rev-list", "--count", "HEAD"], cwd: path)
         let count = countResult.flatMap { Int($0.stdout.trimmingCharacters(in: .whitespacesAndNewlines)) } ?? 0
         let log = (try? await self.log(path: path, max: 1)) ?? []
+        // A failed read is an error, not "0 commits" — EXCEPT an unborn HEAD
+        // (fresh repo), which is genuinely empty (v4.2.27).
+        var readError: String?
+        if countResult?.succeeded != true,
+           !(countResult?.stderr.contains("unknown revision") ?? false),
+           !(countResult?.stderr.contains("does not have any commits yet") ?? false) {
+            readError = "rev-list exit \((countResult?.exitCode ?? -1))"
+        }
         let excluded = self.excludedLargeFiles(path: path).count
         return RepoHealth(commitCount: count, sizeBytes: size, lastCommitDate: log.first?.date,
-                          excludedLargeFileCount: excluded)
+                          excludedLargeFileCount: excluded, readError: readError)
     }
 }
 
@@ -92,7 +108,11 @@ public extension RepoManager {
     /// Returns true when gc actually ran.
     @discardableResult
     func runMaintenanceIfNeeded(path: String, interval: TimeInterval = RepoManager.defaultGcInterval) async -> Bool {
-        let marker = (path as NSString).appendingPathComponent(".git/filevault-last-gc")
+        // Resolve the REAL git dir: a worktree/linked checkout has .git as a
+        // FILE, and writing the marker into "<path>/.git/..." either failed or
+        // re-ran gc on every launch (v4.2.26).
+        let gitDir = RepoManager.gitDirectory(forRepoAt: path)
+        let marker = (gitDir as NSString).appendingPathComponent("filevault-last-gc")
         let fm = FileManager.default
         let now = Date().timeIntervalSince1970
         if let attrs = try? fm.attributesOfItem(atPath: marker),
@@ -100,7 +120,10 @@ public extension RepoManager {
            now - t.timeIntervalSince1970 < interval {
             return false
         }
-        _ = try? await runner.run(["gc", "--auto", "--quiet"], cwd: path)
+        // Only record a successful gc: a failed run used to be remembered for a
+        // whole week, so maintenance never retried (v4.2.26).
+        guard let gc = try? await runner.run(["gc", "--auto", "--quiet"], cwd: path),
+              gc.succeeded else { return false }
         fm.createFile(atPath: marker, contents: Data(String(now).utf8), attributes: nil)
         return true
     }

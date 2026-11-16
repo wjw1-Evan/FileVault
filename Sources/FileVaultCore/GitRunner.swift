@@ -88,7 +88,20 @@ public final class GitRunner: Sendable {
         // ALL commands with "dubious ownership". FileVault only ever operates on
         // folders the user explicitly added, so trusting that folder for this
         // process (command-line scope, NOT the user's global config) is right.
-        var execArgs = ["-c", "core.quotepath=false"]
+        // Every path FileVault passes to git is a LITERAL file name, never a
+        // pattern: with default pathspec rules a file named "a[1].txt" also
+        // matches "a1.txt", so restoring one file could rewrite its siblings and
+        // "*.md" would match every markdown file (v4.2.26). This global flag
+        // disables globbing/pathspec magic for the whole process while keeping
+        // normal directory-prefix matching (verified: add -A, checkout/rm/diff/
+        // log with a directory still operate on the directory).
+        // check-ignore REJECTS the literal pathspec magic (it errors out), so the
+        // global flag must be omitted there; its arguments are plain pathnames and
+        // are already matched literally.
+        let subcommand = args.first ?? ""
+        var execArgs = subcommand == "check-ignore"
+            ? ["-c", "core.quotepath=false"]
+            : ["--literal-pathspecs", "-c", "core.quotepath=false"]
         if let cwd, !cwd.isEmpty {
             execArgs += ["-c", "safe.directory=" + cwd]
         }
@@ -107,9 +120,24 @@ public final class GitRunner: Sendable {
         // SyncManager.deterministicPushRejection, blockedUntrackedFiles, …)
         // matches English phrases. A gettext-enabled git under a Chinese locale
         // prints translated messages, which silently degraded every failure to
-        // "unknown" (no auto-rebase, no branch-protection stop) (v4.2.25).
-        if e["LC_ALL"] == nil { e["LC_ALL"] = "C" }
-        if e["LANG"] == nil { e["LANG"] = "C" }
+        // "unknown" (no auto-rebase, no branch-protection stop).
+        //
+        // v4.2.26: FORCE this instead of only defaulting it. Inheriting the
+        // user's LANG/LC_ALL (Terminal launch, `launchctl setenv`, login item)
+        // reintroduced exactly the bug v4.2.25 fixed. Callers can still opt out
+        // with an explicit `env:` override below.
+        e["LC_ALL"] = "C"
+        e["LANG"] = "C"
+        // FileVault is headless: no git command may ever open an editor or a
+        // pager and block the command (and the caller's timeout) on stdin.
+        if e["GIT_EDITOR"] == nil { e["GIT_EDITOR"] = "true" }
+        if e["GIT_PAGER"] == nil { e["GIT_PAGER"] = "cat" }
+        // GIT_TERMINAL_PROMPT=0 only blocks the TERMINAL prompt; a configured
+        // core.askpass (or inherited GIT_ASKPASS) still pops a GUI box in the
+        // background and blocks until the command timeout (v4.2.27). Provide an
+        // empty-answer askpass unless the user explicitly set one.
+        if e["GIT_ASKPASS"] == nil { e["GIT_ASKPASS"] = "/usr/bin/true" }
+        if e["SSH_ASKPASS"] == nil { e["SSH_ASKPASS"] = "/usr/bin/true" }
         if e["GIT_SSH_COMMAND"] == nil {
             e["GIT_SSH_COMMAND"] = "ssh -o BatchMode=yes -o ConnectTimeout=20"
         }
@@ -191,6 +219,13 @@ public final class GitRunner: Sendable {
 
         let waitResult = exitSem.wait(timeout: .now() + timeout)
         if waitResult == .timedOut {
+            // Kill git's direct children (ssh, git-remote-https, credential
+            // helpers) BEFORE git itself: they inherit the stdout/stderr pipe
+            // write ends, so a surviving child keeps the reader threads below
+            // blocked on EOF even after git is gone. That leaked one
+            // global-queue thread per timed-out fetch/push (v4.2.26). Best
+            // effort: a missing pkill or an already-dead child is ignored.
+            Self.terminateChildProcesses(of: process.processIdentifier)
             process.terminate()
             if exitSem.wait(timeout: .now() + 5) == .timedOut {
                 // SIGTERM was ignored (or the process is stuck in an
@@ -224,6 +259,26 @@ public final class GitRunner: Sendable {
             stderr: String(decoding: errData, as: UTF8.self)
         )
     }
+    /// Send SIGTERM to the direct children of `pid` (`pkill -TERM -P`).
+    ///
+    /// A timed-out git leaves ssh / git-remote-* descendants holding the
+    /// stdout/stderr pipes; without this the pipe readers stay blocked long
+    /// after the main process is killed. Failure is non-fatal: the timeout
+    /// path below still SIGTERMs/SIGKILLs the main process.
+    private static func terminateChildProcesses(of pid: pid_t) {
+        let pkill = Process()
+        pkill.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
+        pkill.arguments = ["-TERM", "-P", String(pid)]
+        pkill.standardOutput = FileHandle.nullDevice
+        pkill.standardError = FileHandle.nullDevice
+        do {
+            try pkill.run()
+        } catch {
+            return
+        }
+        pkill.waitUntilExit()
+    }
+
     /// One-time `gh auth setup-git` so GitHub HTTPS pushes work without manual
     /// credential setup (idempotent).
     public static func ghAuthSetupGit() async {

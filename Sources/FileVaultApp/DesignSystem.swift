@@ -75,6 +75,9 @@ struct FVIconBadge: View {
             )
             .frame(width: size, height: size)
             .shadow(color: tint.opacity(0.28), radius: 5, x: 0, y: 2)
+            // Decorative: the adjacent text carries the meaning; reading the
+            // SF Symbol name aloud is noise for VoiceOver users (v4.2.27).
+            .accessibilityHidden(true)
     }
 }
 
@@ -268,6 +271,10 @@ extension String {
         var out = ""
         var pending: [UInt8] = []
         var decodedAny = false
+        // git wraps a C-quoted path in double quotes; only the WRAPPER pair must
+        // be dropped. Removing every quote (the old behaviour) corrupted commit
+        // messages that legitimately contained quotes (v4.2.26).
+        var inQuotes = false
 
         func flush() {
             guard !pending.isEmpty else { return }
@@ -287,13 +294,27 @@ extension String {
                 i += 4
                 continue
             }
+            if c == "\\", i + 1 < chars.count, inQuotes {
+                // Escaped quote / backslash inside the quoted path.
+                flush()
+                out.append(chars[i + 1])
+                i += 2
+                continue
+            }
+            if c == "\"" {
+                // Wrapper quotes are syntax, not content.
+                flush()
+                inQuotes.toggle()
+                i += 1
+                continue
+            }
             flush()
             out.append(c)
             i += 1
         }
         flush()
         guard decodedAny else { return self }
-        return out.replacingOccurrences(of: "\"", with: "")
+        return out
     }
 }
 

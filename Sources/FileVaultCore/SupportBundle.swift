@@ -37,7 +37,7 @@ public enum SupportBundle {
         lines.append(String(format: NSLocalizedString("环境: %@", comment: "diagnostics report"),
                             gitDescription ?? NSLocalizedString("未检测到", comment: "diagnostics report")))
         lines.append("")
-        lines.append(NSLocalizedString("## 受保护的文件夹（已脱敏）", comment: "diagnostics report"))
+        lines.append(NSLocalizedString("## 受保护的文件夹", comment: "diagnostics report"))
         if roots.isEmpty {
             lines.append(NSLocalizedString("（无）", comment: "diagnostics report"))
         } else {
@@ -50,7 +50,11 @@ public enum SupportBundle {
         lines.append(NSLocalizedString("## 配置（已脱敏）", comment: "diagnostics report"))
         if let config {
             let encoder = JSONEncoder()
-            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            // withoutEscapingSlashes is REQUIRED for masking to work: the default
+            // encoder writes JSON paths as \"/Users\\/alice\\/...\" (escaped
+            // slashes), so the home/Users replacement below silently missed them
+            // and the "redacted" report leaked full account paths (v4.2.26).
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
             if let data = try? encoder.encode(config),
                let json = String(data: data, encoding: .utf8) {
                 lines.append(Self.masked(json))
@@ -62,7 +66,7 @@ public enum SupportBundle {
         }
         lines.append("")
         lines.append(NSLocalizedString("## 隐私说明", comment: "diagnostics report"))
-        lines.append(NSLocalizedString("本报告不含任何文件内容、远程地址或账号；路径已替换为 ~。",
+        lines.append(NSLocalizedString("本报告不含任何文件内容、远程地址或账号；家目录路径已替换为 ~，受保护文件夹的名称会保留以便排查。",
                                        comment: "diagnostics report"))
         // Mask the WHOLE report, not just roots/config: the git path and any
         // diagnostic detail can contain the user name, and the privacy section
@@ -86,8 +90,25 @@ public enum SupportBundle {
         if let configDirectory {
             let src = configDirectory.appendingPathComponent("config.json")
             if let data = try? Data(contentsOf: src) {
-                let masked = Self.masked(String(decoding: data, as: UTF8.self))
-                try? masked.write(to: staging.appendingPathComponent("config.redacted.json"), atomically: true, encoding: .utf8)
+                // Re-encode through the typed config (with unescaped slashes) so
+                // the masked copy really has no /Users/<name> left. The old raw
+                // text path kept \"\\/Users\\/name\" intact (v4.2.26).
+                let redacted: String
+                let decoder = JSONDecoder()
+                if let cfg = try? decoder.decode(AppConfig.self, from: data) {
+                    let encoder = JSONEncoder()
+                    encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+                    if let encoded = try? encoder.encode(cfg),
+                       let json = String(data: encoded, encoding: .utf8) {
+                        redacted = Self.masked(json)
+                    } else {
+                        redacted = Self.masked(String(decoding: data, as: UTF8.self))
+                    }
+                } else {
+                    redacted = Self.masked(String(decoding: data, as: UTF8.self))
+                }
+                try? redacted.write(to: staging.appendingPathComponent("config.redacted.json"),
+                                    atomically: true, encoding: .utf8)
             }
         }
 
@@ -120,9 +141,16 @@ public enum SupportBundle {
     /// Collapse the user's home directory to `~` (reports are shareable).
     public static func masked(_ text: String) -> String {
         var out = text
+        // JSON text contains escaped slashes (\/Users\/alice). Normalise first:
+        // otherwise every replacement below silently misses and the "redacted"
+        // report keeps full account paths (v4.2.26).
+        out = out.replacingOccurrences(of: "\\/", with: "/")
         let home = NSHomeDirectory()
         if !home.isEmpty, home != "/" {
-            out = out.replacingOccurrences(of: home, with: "~")
+            // Complete path component only: /Users/alice must not turn
+            // /Users/alice2 into ~2.
+            let homePattern = NSRegularExpression.escapedPattern(for: home) + "(?=/|$)"
+            out = out.replacingOccurrences(of: homePattern, with: "~", options: .regularExpression)
         }
         // Other accounts on the same Mac still reveal a login name; collapse
         // them too (idempotent for paths already shortened to "~").

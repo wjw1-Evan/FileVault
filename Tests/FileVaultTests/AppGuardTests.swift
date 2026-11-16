@@ -270,8 +270,18 @@ final class HistoryModelTests: XCTestCase {
         model.selectCommit(firstHash)
         // Restore the selected commit's file — forms a rollback commit.
         model.restoreFile("s.md")
-        try await Task.sleep(nanoseconds: 1_500_000_000)
-        let log = try await service.repoManager.log(path: repoPath)
+        // Poll for the restore commit AND the UI feedback instead of a fixed
+        // 1.5 s sleep: the restore path grew with the v4.2.26/27 guardrails and
+        // a slow disk made this flake (same fix the sibling test got in v4.2.26).
+        var log: [CommitInfo] = []
+        for _ in 0..<60 {
+            try await Task.sleep(nanoseconds: 100_000_000)
+            log = try await service.repoManager.log(path: repoPath)
+            if log.count >= 3,
+               model.statusText.contains("已恢复") || model.statusText.contains("包含") {
+                break
+            }
+        }
         XCTAssertEqual(log.count, 3, "restore must form a new commit")
         XCTAssertTrue(log.first!.subject.contains("restore: 还原 s.md"),
                       "restore commit message: \(log.first!.subject)")
@@ -313,7 +323,14 @@ final class HistoryModelTests: XCTestCase {
             try await Task.sleep(nanoseconds: 100_000_000)
         }
         XCTAssertEqual(try String(contentsOfFile: repo + "/s.md", encoding: .utf8), "s")
-        let log = try await service.repoManager.log(path: repo)
+        // The file appears right after `checkout`; the restore commit that
+        // follows may still be in flight — poll for the commit instead of
+        // reading the log once (v4.2.26 made the restore path a bit longer).
+        var log = try await service.repoManager.log(path: repo)
+        for _ in 0..<60 where log.first?.subject.contains("restore: 找回 s.md") != true {
+            try await Task.sleep(nanoseconds: 100_000_000)
+            log = try await service.repoManager.log(path: repo)
+        }
         XCTAssertTrue(log.first?.subject.contains("restore: 找回 s.md") == true,
                       "recovery commit: \(log.first?.subject ?? "nil")")
     }

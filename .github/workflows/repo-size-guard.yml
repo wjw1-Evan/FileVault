@@ -12,8 +12,20 @@ jobs:
     name: GitHub 100 MiB guard
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      # Pinned by SHA: a repointed floating tag must not change CI behavior (v4.2.27).
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           fetch-depth: 0
       - name: Check large blobs in history
         run: ./scripts/check-large-files.sh
+
+  build:
+    name: swift build (macOS 14)
+    # CI used to stay green even when the tree did not compile — the only job
+    # ran the large-file guard (v4.2.27). Build gate only; tests stay local
+    # per AGENTS.md.
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Build (App + Core)
+        run: swift build

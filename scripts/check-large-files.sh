@@ -25,6 +25,19 @@ BLOCK_MB="${FV_BLOCK_MB:-}"
 [ -z "$WARN_MB" ] && WARN_MB=50
 [ -z "$BLOCK_MB" ] && BLOCK_MB=100
 
+# Fail CLOSED on a bad threshold: bash 3.2 turns non-numeric values into 0
+# inside $(( )), which silently disabled the whole guard (v4.2.26).
+case "$WARN_MB" in
+  ''|*[!0-9]*) echo "✗ FV_WARN_MB 必须是整数（当前：${WARN_MB}）" >&2; exit 2 ;;
+esac
+case "$BLOCK_MB" in
+  ''|*[!0-9]*) echo "✗ FV_BLOCK_MB 必须是整数（当前：${BLOCK_MB}）" >&2; exit 2 ;;
+esac
+if [ "$WARN_MB" -ge "$BLOCK_MB" ]; then
+  echo "✗ FV_WARN_MB（${WARN_MB}）必须小于 FV_BLOCK_MB（${BLOCK_MB}）" >&2
+  exit 2
+fi
+
 WARN_BYTES=$((WARN_MB * 1024 * 1024))
 BLOCK_BYTES=$((BLOCK_MB * 1024 * 1024))
 REPO_WARN_BYTES=$((1024 * 1024 * 1024))
@@ -88,10 +101,33 @@ check_staged() {
   local checked=0
   local path size
 
+  # Read the file list into a temp file instead of a process substitution:
+  # with <( ) the producer's exit status is invisible, so a failing
+  # `git diff`/`git ls-files` reported "✓ 0 files" and the guard passed
+  # (v4.2.26). A bash variable cannot hold NUL-separated output, hence a file.
+  local listing_file
+  listing_file=$(mktemp) || { echo "✗ 无法创建临时文件" >&2; return 2; }
+  if git rev-parse --verify -q HEAD >/dev/null 2>&1; then
+    if ! git diff --cached --name-only -z --diff-filter=ACMRT > "$listing_file"; then
+      rm -f "$listing_file"
+      echo "✗ 无法读取暂存区（git diff --cached 失败），已停止检查" >&2
+      return 2
+    fi
+  else
+    if ! git ls-files -z > "$listing_file"; then
+      rm -f "$listing_file"
+      echo "✗ 无法读取索引（git ls-files 失败），已停止检查" >&2
+      return 2
+    fi
+  fi
   if git rev-parse --verify -q HEAD >/dev/null 2>&1; then
     while IFS= read -r -d '' path; do
       [ -z "$path" ] && continue
-      size=$(git cat-file -s ":$path" 2>/dev/null) || continue
+      if ! size=$(git cat-file -s ":$path" 2>/dev/null); then
+        rm -f "$listing_file"
+        echo "✗ 无法读取 $path 的大小（git cat-file 失败），已停止检查" >&2
+        return 2
+      fi
       checked=$((checked + 1))
       if [ "$size" -gt "$BLOCK_BYTES" ]; then
         violations=$((violations + 1))
@@ -102,12 +138,16 @@ check_staged() {
         printf '%s! %s  %s MiB%s（超过 %s MiB，建议改用 LFS 或移出仓库）\n' \
           "$YELLOW" "$path" "$(bytes_to_mib "$size")" "$RESET" "$WARN_MB"
       fi
-    done < <(git diff --cached --name-only -z --diff-filter=ACMR)
+    done < "$listing_file"
   else
     # 首次提交（HEAD 尚不存在）：检查索引中的全部文件
     while IFS= read -r -d '' path; do
       [ -z "$path" ] && continue
-      size=$(git cat-file -s ":$path" 2>/dev/null) || continue
+      if ! size=$(git cat-file -s ":$path" 2>/dev/null); then
+        rm -f "$listing_file"
+        echo "✗ 无法读取 $path 的大小（git cat-file 失败），已停止检查" >&2
+        return 2
+      fi
       checked=$((checked + 1))
       if [ "$size" -gt "$BLOCK_BYTES" ]; then
         violations=$((violations + 1))
@@ -118,8 +158,9 @@ check_staged() {
         printf '%s! %s  %s MiB%s（超过 %s MiB，建议改用 LFS 或移出仓库）\n' \
           "$YELLOW" "$path" "$(bytes_to_mib "$size")" "$RESET" "$WARN_MB"
       fi
-    done < <(git ls-files -z)
+    done < "$listing_file"
   fi
+  rm -f "$listing_file"
 
   if [ "$violations" -gt 0 ]; then
     printf '\n%s提交已阻止：%s 个文件超过 %s MiB。\n%s' \

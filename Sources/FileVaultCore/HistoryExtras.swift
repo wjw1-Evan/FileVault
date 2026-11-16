@@ -440,7 +440,12 @@ public extension HistoryService {
         for extra in [[], ["--ignored", "--exclude-standard"]] {
             let args = ["ls-files", "--others", "-z"] + extra + ["--", dir]
             let r = try await repoManager.runner.run(args, cwd: repoPath)
-            guard r.succeeded else { continue }
+            // Fail closed: a failed listing means "unknown", not "nothing in
+            // the way" — the folder removal below would silently delete
+            // content that exists in no commit (v4.2.27).
+            guard r.succeeded else {
+                throw GitCommandError(command: "ls-files --others", exitCode: r.exitCode, stderr: r.stderr)
+            }
             paths += r.stdout.split(separator: "\0").map(String.init).filter { !$0.isEmpty }
         }
         return Array(Set(paths)).sorted()
@@ -459,9 +464,25 @@ public extension HistoryService {
         guard !dir.isEmpty else { throw HistoryError.invalidPath(directory) }
         try RepoManager.validateRepoRelativePath(dir)
         try Self.requireHash(hash, error: HistoryError.commitNotFound(hash))
+        // restoreFile/resetRepo verify the object exists; restoreDirectory was
+        // the one entry that skipped this check, so a well-formed but
+        // nonexistent hash fell into the "folder absent at that version"
+        // branch and DELETED the folder instead of erroring (v4.2.27).
+        let verify = try await repoManager.runner.run(["rev-parse", "--verify", "\(hash)^{commit}"], cwd: repoPath)
+        guard verify.succeeded else { throw HistoryError.commitNotFound(hash) }
+        // Same exclusion rules as single-file restore/reset: no concurrent
+        // rebase and no concurrent auto-commit while the working tree is being
+        // rewritten (v4.2.26).
+        try await repoManager.acquireRemoteOp(repoPath)
+        defer { repoManager.releaseRemoteOp(repoPath) }
+        try await repoManager.acquireLocalOp(repoPath)
+        defer { repoManager.releaseLocalOp(repoPath) }
+        guard !(await repoManager.operationInProgress(path: repoPath)) else {
+            throw HistoryError.repositoryBusy
+        }
 
-        // Never lose pending edits.
-        let dirty = (try? await repoManager.status(path: repoPath)) ?? []
+        // Never lose pending edits; a failed status means unknown, not clean.
+        let dirty = try await repoManager.status(path: repoPath)
         if !dirty.isEmpty {
             _ = try await repoManager.commitAll(path: repoPath, message: "backup: 恢复文件夹前自动保存未提交改动")
         }
@@ -476,18 +497,43 @@ public extension HistoryService {
                 ["diff", "--name-only", "-z", "--no-renames", "--diff-filter=D", "HEAD", hash, "--", dir],
                 cwd: repoPath
             )
-            if deleted.succeeded {
-                let paths = deleted.stdout.split(separator: "\u{0}").map(String.init).filter { !$0.isEmpty }
-                if !paths.isEmpty {
-                    let rm = try await repoManager.runner.run(["rm", "-f", "--"] + paths, cwd: repoPath)
-                    guard rm.succeeded else {
-                        throw HistoryError.restoreFailed(stderr: rm.stderr)
-                    }
+            // A failed diff must not be skipped silently: files added since the
+            // target version would survive while the UI says the folder was
+            // restored (v4.2.26).
+            guard deleted.succeeded else {
+                throw GitCommandError(command: "diff --name-only",
+                                      exitCode: deleted.exitCode, stderr: deleted.stderr)
+            }
+            // The "folder exists at that version" branch needs the same
+            // ignored-file guardrail as resetRepo/restoreFile: checkout rewrites
+            // every tracked-in-target path, so an ignored/untracked file sitting
+            // there (a .env, a credential file) would be silently replaced by
+            // content from the target commit — and that content is in NO commit,
+            // so no backup ref could bring it back (v4.2.27). Checked BEFORE the
+            // rm below so a refusal leaves the working tree untouched.
+            let tree = try await repoManager.runner.run(
+                ["ls-tree", "-r", "--name-only", "-z", hash, "--", dir], cwd: repoPath)
+            guard tree.succeeded else {
+                throw GitCommandError(command: "ls-tree", exitCode: tree.exitCode, stderr: tree.stderr)
+            }
+            let targets = tree.stdout.split(separator: "\0").map(String.init).filter { !$0.isEmpty }
+            let conflicts = try await repoManager.ignoredConflicts(targetPaths: targets, path: repoPath)
+            if !conflicts.isEmpty {
+                throw HistoryError.rollbackWouldOverwriteIgnored(files: conflicts)
+            }
+            let paths = deleted.stdout.split(separator: "\u{0}").map(String.init).filter { !$0.isEmpty }
+            if !paths.isEmpty {
+                let rm = try await repoManager.runner.run(["rm", "-f", "--"] + paths, cwd: repoPath)
+                guard rm.succeeded else {
+                    throw HistoryError.restoreFailed(stderr: rm.stderr)
                 }
             }
             let checkout = try await repoManager.runner.run(["checkout", hash, "--", dir], cwd: repoPath)
             guard checkout.succeeded else {
-                throw HistoryError.directoryNotInCommit(directory: dir, hash: String(hash.prefix(7)))
+                // The target tree may exist but checkout can still fail (an
+                // untracked file in the way, unreadable file): report the real
+                // git reason instead of claiming the version lacks the folder.
+                throw HistoryError.restoreFailed(stderr: checkout.stderr)
             }
         } else {
             // The folder did not exist at that version: remove it entirely.

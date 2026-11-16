@@ -19,6 +19,15 @@ public enum HistoryError: Error, LocalizedError, Equatable {
     /// Rolling back would delete files that are NOT under version control
     /// (ignored/untracked), e.g. a .env inside a folder restored away (v4.2.16).
     case rollbackWouldDeleteUntracked(directory: String, files: [String])
+    /// Rolling back with `git reset --hard` would silently overwrite files that
+    /// are currently ignored/untracked but tracked in the target version: their
+    /// content is in no commit, so it would be lost forever (v4.2.26).
+    case rollbackWouldOverwriteIgnored(files: [String])
+    /// Restoring one file would overwrite an ignored/untracked file at that path
+    /// (same data-loss shape as above) (v4.2.26).
+    case restoreWouldOverwriteIgnored(file: String)
+    /// A pull/rebase/merge (or another restore) currently owns the repository.
+    case repositoryBusy
 
     public var errorDescription: String? {
         switch self {
@@ -32,8 +41,7 @@ public enum HistoryError: Error, LocalizedError, Equatable {
             return String(format: NSLocalizedString("找不到提交 %@，可能已被清理",
                                                    comment: "history error"), hash)
         case .resetFailed(let stderr):
-            let reason = stderr.isEmpty ? NSLocalizedString("未知错误", comment: "history error") : stderr
-            return String(format: NSLocalizedString("回滚失败：%@", comment: "history error"), reason)
+            return stderr.isEmpty ? NSLocalizedString("未知错误", comment: "history error") : stderr
         case .exportFailed(let file):
             return String(format: NSLocalizedString("无法打开 %@（版本内容缺失或不可读）", comment: "history error"), file)
         case .invalidTagName(let name):
@@ -44,10 +52,22 @@ public enum HistoryError: Error, LocalizedError, Equatable {
                                                    comment: "history error"), hash, directory)
         case .restoreFailed(let stderr):
             let reason = stderr.trimmingCharacters(in: .whitespacesAndNewlines)
-            return String(format: NSLocalizedString("恢复失败：%@", comment: "history error"),
-                          reason.isEmpty ? NSLocalizedString("未知错误", comment: "history error") : reason)
+            return reason.isEmpty ? NSLocalizedString("未知错误", comment: "history error") : reason
         case .restoreTargetIsDirectory(let file):
-            return String(format: NSLocalizedString("恢复失败：%@ 现在是一个文件夹，请先把它改名或移走再恢复",
+            return String(format: NSLocalizedString("「%@」现在是一个文件夹，请先把它改名或移走再恢复",
+                                                    comment: "history error"), file)
+        case .repositoryBusy:
+            return NSLocalizedString("正在与远程同步（拉取/合并）或执行另一个恢复操作，请稍后再试",
+                                     comment: "history error")
+        case .rollbackWouldOverwriteIgnored(let files):
+            let names = files.prefix(3).joined(separator: "、")
+            let more = files.count > 3
+                ? String(format: NSLocalizedString(" 等 %d 个文件", comment: "history error"), files.count)
+                : ""
+            return String(format: NSLocalizedString("回滚会覆盖未纳入版本管理（被忽略）的文件：%@%@；请先把它们移走或改名后再回滚",
+                                                    comment: "history error"), names, more)
+        case .restoreWouldOverwriteIgnored(let file):
+            return String(format: NSLocalizedString("「%@」当前是被忽略、未纳入版本管理的文件，恢复会覆盖它；请先把它改名或移走再恢复",
                                                     comment: "history error"), file)
         case .rollbackWouldDeleteUntracked(let directory, let files):
             let names = files.prefix(3).joined(separator: "、")

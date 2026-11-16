@@ -12,6 +12,10 @@ import Darwin
 public final class RepoManager: @unchecked Sendable {
     public let runner: GitRunner
 
+    /// A nested repo could not be staged (unborn HEAD) and was excluded via
+    /// info/exclude so auto-commit of the outer repo keeps working (v4.2.27).
+    public var onNestedRepoExcluded: (@Sendable (String, String) -> Void)?
+
     /// Serializes remote operations (pull / sync / force-pull) per folder: two
     /// rebases on the same repo would fight over the index. The wait is async
     /// (no thread blocking) and bounded.
@@ -22,9 +26,48 @@ public final class RepoManager: @unchecked Sendable {
         self.runner = runner
     }
 
+    /// Serializes LOCAL working-tree mutations (commit pipeline, restore,
+    /// rollback, directory restore) per folder. Without it a restore's
+    /// `status → commit → checkout` can interleave with the 5-second auto-commit
+    /// pipeline: index.lock collisions, a checkout that already applied but a
+    /// commit that failed, or interleaved commits (v4.2.26).
+    private let localOpLock = NSLock()
+    private var localOpsBusy: Set<String> = []
+
+    /// Try to take the local-mutation slot without waiting. Background work
+    /// (auto-commit pipeline) uses this and simply retries later.
+    func tryAcquireLocalOp(_ path: String) -> Bool {
+        localOpLock.lock(); defer { localOpLock.unlock() }
+        guard !localOpsBusy.contains(path) else { return false }
+        localOpsBusy.insert(path)
+        return true
+    }
+
+    /// Take the local-mutation slot, waiting for a short operation to finish.
+    func acquireLocalOp(_ path: String) async throws {
+        let deadline = Date().addingTimeInterval(60)
+        while true {
+            if tryAcquireLocalOp(path) { return }
+            if Date() > deadline { throw PullError.busy }
+            try? await Task.sleep(nanoseconds: 50_000_000)
+        }
+    }
+
+    func releaseLocalOp(_ path: String) {
+        localOpLock.lock()
+        localOpsBusy.remove(path)
+        localOpLock.unlock()
+    }
+
+    /// Whether a local mutation (restore/rollback/commit) currently owns the repo.
+    public func localOperationInProgress(path: String) -> Bool {
+        localOpLock.lock(); defer { localOpLock.unlock() }
+        return localOpsBusy.contains(path)
+    }
+
     /// Wait for the folder's remote-operation slot (throws `busy` after 60 s,
     /// which only happens if a previous operation is genuinely stuck).
-    private func acquireRemoteOp(_ path: String) async throws {
+    func acquireRemoteOp(_ path: String) async throws {
         let deadline = Date().addingTimeInterval(60)
         while true {
             remoteOpLock.lock()
@@ -39,10 +82,17 @@ public final class RepoManager: @unchecked Sendable {
         }
     }
 
-    private func releaseRemoteOp(_ path: String) {
+    func releaseRemoteOp(_ path: String) {
         remoteOpLock.lock()
         remoteOpsBusy.remove(path)
         remoteOpLock.unlock()
+    }
+
+    /// True while a pull/rebase/merge owns the repo (used by restore/rollback to
+    /// refuse instead of racing the remote operation).
+    func remoteOperationInProgress(path: String) -> Bool {
+        remoteOpLock.lock(); defer { remoteOpLock.unlock() }
+        return remoteOpsBusy.contains(path)
     }
 
     /// Network git commands (fetch/pull/push) get a much longer budget than
@@ -70,27 +120,55 @@ public final class RepoManager: @unchecked Sendable {
 
     /// Prepare the managed root itself as ONE repo: adopt an existing .git
     /// untouched, otherwise git init + identity + initial commit (FR-03).
+    ///
+    /// `remoteURL` (when the user binds one in the same step) is written into
+    /// the repo BEFORE the first commit so the large-file ceiling is known while
+    /// the first version is built (v4.2.26).
     @discardableResult
-    public func ensureRepo(at path: String) async throws -> RepoSetupResult {
+    public func ensureRepo(at path: String, remoteURL: String? = nil) async throws -> RepoSetupResult {
         if isRepo(at: path) {
             return RepoSetupResult(created: false, adopted: true)
         }
-        try await createRepo(at: path)
+        try await createRepo(at: path, remoteURL: remoteURL)
         return RepoSetupResult(created: true, adopted: false)
     }
 
     /// Create a new repo in an existing folder: init + gitignore + identity + initial commit.
-    func createRepo(at path: String) async throws {
+    func createRepo(at path: String, remoteURL: String? = nil) async throws {
         // git init -b main
         _ = try await runner.run(["init", "-b", "main"], cwd: path)
         injectGitignore(into: path)
         // Local identity so auto-commits always work (never touches user's global config).
         _ = try? await runner.run(["config", "user.name", "FileVault"], cwd: path)
         _ = try? await runner.run(["config", "user.email", "filevault@localhost"], cwd: path)
+        // Bind the remote BEFORE the first commit. The commit pipeline derives the
+        // single-file ceiling from the remote; without it a 100 MiB+ blob lands in
+        // the very first commit, can never be pushed to github.com, and no future
+        // commit can fix that history (v4.2.26). Only the config is written here —
+        // no network call, the fetch/merge happens in SyncManager.configureRemote.
+        var threshold: UInt64 = 0
+        if let remoteURL, !remoteURL.isEmpty {
+            let add = try await runner.run(["remote", "add", "origin", remoteURL], cwd: path)
+            if add.succeeded {
+                threshold = GitHubLimits.effectiveThreshold(remoteURL: remoteURL)
+            }
+        }
         // Initial commit when working tree is not empty.
         let entries = try await status(path: path)
         if !entries.isEmpty {
-            _ = try? await commitAll(path: path, message: "auto: 初始版本")
+            if threshold > 0 {
+                _ = await excludeLargeFiles(path: path, threshold: threshold, entries: entries)
+            }
+            // A transiently failed initial commit (index.lock, disk full) used
+            // to report "添加成功" while the repo had zero versions and no
+            // immediate feedback. Retry once, then surface the failure to the
+            // add flow (v4.2.27).
+            do {
+                _ = try await commitAll(path: path, message: "auto: 初始版本")
+            } catch {
+                try? await Task.sleep(nanoseconds: 200_000_000)
+                _ = try await commitAll(path: path, message: "auto: 初始版本")
+            }
         }
     }
 
@@ -207,6 +285,18 @@ public final class RepoManager: @unchecked Sendable {
             let comps = rel.split(separator: "/")
             guard !comps.contains(where: { $0 == ".git" }) else { continue }
             let full = (path as NSString).appendingPathComponent(rel)
+            // A nested repository is the user's own repo, not ours: never write
+            // our folder marker (or anything else) inside it (v4.2.26).
+            var isInsideNestedRepo = false
+            for i in 1...max(1, comps.count) {
+                let prefix = comps.prefix(i).joined(separator: "/")
+                let candidate = (path as NSString).appendingPathComponent(prefix)
+                if fm.fileExists(atPath: (candidate as NSString).appendingPathComponent(".git")) {
+                    isInsideNestedRepo = true
+                    break
+                }
+            }
+            guard !isInsideNestedRepo else { continue }
             // Real directories only: never follow symlinks (a marker could land
             // outside the protected folder) and never touch ignored folders
             // (node_modules/ etc.).
@@ -218,11 +308,11 @@ public final class RepoManager: @unchecked Sendable {
             // empty folder that merely gets touched (Finder .DS_Store, mtime)
             // must not produce a "new folder" version.
             guard let created = values.creationDate, created >= since else { continue }
-            if let r = try? await runner.run(["check-ignore", "-q", rel], cwd: path), r.exitCode == 0 {
+            if let r = try? await runner.run(["check-ignore", "-q", "--", rel], cwd: path), r.exitCode == 0 {
                 continue
             }
             let markerRel = rel + "/" + Self.emptyFolderMarker
-            if let r = try? await runner.run(["check-ignore", "-q", markerRel], cwd: path), r.exitCode == 0 {
+            if let r = try? await runner.run(["check-ignore", "-q", "--", markerRel], cwd: path), r.exitCode == 0 {
                 continue
             }
             let children = (try? fm.contentsOfDirectory(atPath: full)) ?? []
@@ -231,7 +321,7 @@ public final class RepoManager: @unchecked Sendable {
             var versionable = false
             for child in children {
                 let childRel = rel + "/" + child
-                if let r = try? await runner.run(["check-ignore", "-q", childRel], cwd: path), r.exitCode == 0 {
+                if let r = try? await runner.run(["check-ignore", "-q", "--", childRel], cwd: path), r.exitCode == 0 {
                     continue
                 }
                 versionable = true
@@ -257,16 +347,79 @@ public final class RepoManager: @unchecked Sendable {
             entries = try await status(path: path)
         }
         guard !entries.isEmpty else { return "" }
-        _ = try await runner.run(["add", "-A"], cwd: path)
+        // A failed add must surface its real reason (permission denied, index
+        // locked, disk full). It used to be ignored, and the following commit
+        // then failed with a misleading "nothing to commit" (v4.2.26).
+        var add = try await runner.run(["add", "-A"], cwd: path)
+        // A nested repo whose HEAD is unborn (fresh `git init`, no commits)
+        // cannot be staged as a gitlink: `add -A` exits 128 with "does not have
+        // a commit checked out", so auto-commit stopped for the WHOLE outer
+        // repo. Exclude it via info/exclude and retry once (v4.2.27).
+        if !add.succeeded, add.stderr.contains("does not have a commit checked out") {
+            var nested: String?
+            let parts = add.stderr.split(separator: "'")
+            if parts.count >= 2 { nested = String(parts[1]) }
+            if let dir = nested {
+                _ = appendExcludeRule(path: path, section: Self.nestedRepoMarkerComment,
+                                      rule: Self.escapedExcludeRule(dir))
+                add = try await runner.run(["add", "-A"], cwd: path)
+                onNestedRepoExcluded?(path, dir)
+            }
+        }
+        guard add.succeeded else {
+            throw GitCommandError(command: "add -A", exitCode: add.exitCode, stderr: add.stderr)
+        }
+        // A dirty nested repository (or a change that is entirely ignored) makes
+        // status report an entry while nothing can actually be staged. Committing
+        // that would fail with "nothing to commit" on every pipeline run, which
+        // the UI reported as a permanent auto-commit failure (v4.2.26).
+        var staged = try await runner.run(["diff", "--cached", "--name-only", "-z"], cwd: path)
+        // v4.2.27: a TRACKED file that grew past the remote's single-file
+        // ceiling would be staged by add -A and committed — that blob can never
+        // be pushed (GitHub rejects it permanently), and the deterministic
+        // rejection message cannot be remedied by moving the file out. Unstage
+        // oversized staged paths (the working-tree file stays untouched) when
+        // the remote has a known ceiling; the marker rule keeps the UI warning
+        // and the notification one-time (see excludeLargeFiles).
+        if staged.succeeded, !staged.stdout.isEmpty {
+            let threshold = GitHubLimits.effectiveThreshold(remoteURL: await remoteURL(path: path))
+            if threshold > 0 {
+                // Direct size check (not just marker rules): restore/rollback
+                // backup commits and any caller that skips excludeLargeFiles
+                // must not slip an oversized blob into history either.
+                let fm = FileManager.default
+                for p in staged.stdout.split(separator: "\0").map(String.init).filter({ !$0.isEmpty }) {
+                    let abs = (path as NSString).appendingPathComponent(p)
+                    guard fm.fileExists(atPath: abs),
+                          let attrs = try? fm.attributesOfItem(atPath: abs),
+                          let size = attrs[.size] as? UInt64, size > threshold else { continue }
+                    _ = try? await runner.run(["reset", "-q", "--", p], cwd: path)
+                    // Record it so the UI warning and one-time notification
+                    // apply here too (appendExcludeRule dedupes).
+                    _ = appendExcludeRule(path: path, section: Self.largeFileMarkerComment,
+                                          rule: Self.escapedExcludeRule(p))
+                }
+                staged = try await runner.run(["diff", "--cached", "--name-only", "-z"], cwd: path)
+            }
+        }
+        if staged.succeeded, staged.stdout.isEmpty { return "" }
         let stats = try await stagedStats(path: path)
         let msg = message ?? Self.buildCommitMessage(entries: entries, additions: stats.additions, deletions: stats.deletions)
-        var args = ["commit", "-m", msg]
+        // --no-verify: hooks are for commits a human initiates. A background
+        // snapshot commit must not be vetoed (auto-commit cannot be disabled by
+        // design) or blocked for 30 s by a lint hook (v4.2.27).
+        var args = ["commit", "--no-verify", "-m", msg]
         // Adopted repos may lack identity config; provide overrides on failure.
         let c = try await runner.run(args, cwd: path)
         if !c.succeeded, c.stderr.contains("tell me who you are") {
-            args = ["-c", "user.name=FileVault", "-c", "user.email=filevault@localhost", "commit", "-m", msg]
+            args = ["-c", "user.name=FileVault", "-c", "user.email=filevault@localhost",
+                    "commit", "--no-verify", "-m", msg]
             let retry = try await runner.run(args, cwd: path)
             if retry.succeeded { return try await resolveHeadAndReturn(path: path) }
+            // The retry failed for a DIFFERENT reason (hook, disk full, …):
+            // report THAT failure, not the identity error that triggered the
+            // retry (v4.2.27).
+            throw GitCommandError(command: "commit", exitCode: retry.exitCode, stderr: retry.stderr)
         }
         guard c.succeeded else {
             throw GitCommandError(command: "commit", exitCode: c.exitCode, stderr: c.stderr)
@@ -397,40 +550,67 @@ public final class RepoManager: @unchecked Sendable {
     /// new remote so the UI can ask the user how to reconcile.
     @discardableResult
     public func setRemote(path: String, url: String) async throws -> RemoteChange {
-        let old = try? await runner.run(["remote", "get-url", "origin"], cwd: path)
+        // Canonical remote is "origin" (README: the address lives in the standard
+        // remote.origin.url so terminal git stays compatible). When the repo has no
+        // origin but its branch upstream points at another remote, update THAT one:
+        // otherwise pull/push would keep using the old address while the UI says the
+        // new one was saved (v4.2.26).
+        let hasOrigin = (try? await runner.run(["remote", "get-url", "origin"], cwd: path))?.succeeded ?? false
+        let remote: String
+        if hasOrigin {
+            remote = "origin"
+        } else if let upstreamRemote = await upstreamRemoteName(path: path) {
+            remote = upstreamRemote
+        } else {
+            remote = "origin"
+        }
+        let old = try? await runner.run(["remote", "get-url", remote], cwd: path)
         let oldURL = old?.succeeded == true
             ? old?.stdout.trimmingCharacters(in: .whitespacesAndNewlines) : nil
         if let oldURL, oldURL == url {
-            // Same remote: report the current state without touching anything.
-            let info = await remoteBranchInfo(path: path)
+            // Same remote: still undo a previous "clear remote" (app-side sync
+            // disabled flag), otherwise re-saving the same address would leave
+            // the folder silently unsynced (v4.2.26).
+            await setRemoteDisabled(path: path, disabled: false)
+            let info = await remoteBranchInfo(path: path, remote: remote)
             return RemoteChange(changed: false, isReplacement: false, fetchSucceeded: true,
                                 remoteBranchExists: info.exists, remoteCommitCount: info.count,
                                 needsDecision: false)
         }
 
+        let write: GitResult
         if oldURL != nil {
-            _ = try await runner.run(["remote", "set-url", "origin", url], cwd: path)
+            write = try await runner.run(["remote", "set-url", remote, url], cwd: path)
         } else {
-            _ = try await runner.run(["remote", "add", "origin", url], cwd: path)
+            write = try await runner.run(["remote", "add", remote, url], cwd: path)
         }
+        // A swallowed git failure here made the UI say "saved" while the push
+        // kept going to the old URL (v4.2.26).
+        guard write.succeeded else {
+            throw GitCommandError(command: "remote " + (oldURL != nil ? "set-url" : "add"),
+                                  exitCode: write.exitCode, stderr: write.stderr)
+        }
+        // Saving an address is an explicit "sync this folder" intent: undo a
+        // previous "clear remote" (which only disables app-side syncing).
+        await setRemoteDisabled(path: path, disabled: false)
         // Guarantee the default fetch refspec: a hand-edited/imported remote may
         // lack it, which would keep remote-tracking refs empty and make pulls
         // look like "branch missing" forever (v4.1.7).
-        await ensureOriginFetchRefspec(path: path)
+        await ensureFetchRefspec(path: path, remote: remote)
 
         if oldURL != nil {
             // The old remote's refs and upstream are meaningless for the new one.
             _ = try? await runner.run(["branch", "--unset-upstream"], cwd: path)
-            await deleteRemoteTrackingRefs(path: path, remote: "origin")
+            await deleteRemoteTrackingRefs(path: path, remote: remote)
         }
 
         // Read the new remote (an empty repo fetches fine and has no refs).
-        let fetch = try? await runner.run(["fetch", "--prune", "origin"], cwd: path,
+        let fetch = try? await runner.run(["fetch", "--prune", remote], cwd: path,
                                           timeout: Self.networkTimeout)
-        let info = await remoteBranchInfo(path: path)
+        let info = await remoteBranchInfo(path: path, remote: remote)
         var needsDecision = false
         if info.exists {
-            let remoteRef = "refs/remotes/origin/" + info.branch
+            let remoteRef = "refs/remotes/\(remote)/" + info.branch
             // A fast-forward in either direction is safe to automate; only
             // diverged/unrelated histories need the user's choice.
             let remoteIsAncestor = await isAncestor(remoteRef, of: "HEAD", path: path)
@@ -471,12 +651,23 @@ public final class RepoManager: @unchecked Sendable {
         }
     }
 
-    /// (exists on origin, commit count, branch) for the checked-out branch.
-    private func remoteBranchInfo(path: String) async -> (exists: Bool, count: Int, branch: String) {
+    /// Remote name the current branch's upstream points at, if configured.
+    private func upstreamRemoteName(path: String) async -> String? {
+        guard let r = try? await runner.run(
+            ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"], cwd: path),
+            r.succeeded else { return nil }
+        let full = r.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let slash = full.firstIndex(of: "/") else { return nil }
+        let name = String(full[..<slash])
+        return name.isEmpty ? nil : name
+    }
+
+    /// (exists on the remote, commit count, branch) for the checked-out branch.
+    private func remoteBranchInfo(path: String, remote: String) async -> (exists: Bool, count: Int, branch: String) {
         let headRef = try? await runner.run(["symbolic-ref", "--quiet", "--short", "HEAD"], cwd: path)
         let branch = headRef?.stdout.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         guard !branch.isEmpty else { return (false, 0, "") }
-        let ref = "refs/remotes/origin/" + branch
+        let ref = "refs/remotes/" + remote + "/" + branch
         guard let r = try? await runner.run(["rev-list", "--count", ref], cwd: path), r.succeeded else {
             return (false, 0, branch)
         }
@@ -484,17 +675,18 @@ public final class RepoManager: @unchecked Sendable {
         return (count > 0, count, branch)
     }
 
-    /// Make sure origin has the standard fetch refspec (hand-edited remotes or
-    /// imported configs may lack it).
-    private func ensureOriginFetchRefspec(path: String) async {
-        let current = try? await runner.run(["config", "--local", "--get-all", "remote.origin.fetch"],
-                                            cwd: path)
+    /// Make sure a remote has the standard fetch refspec (hand-edited remotes
+    /// or imported configs may lack it).
+    private func ensureFetchRefspec(path: String, remote: String) async {
+        let current = try? await runner.run(["config", "--local", "--get-all",
+                                             "remote." + remote + ".fetch"], cwd: path)
         if current?.succeeded == true,
            !(current?.stdout.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true) {
             return
         }
-        _ = try? await runner.run(["config", "--local", "--add", "remote.origin.fetch",
-                                   "+refs/heads/*:refs/remotes/origin/*"], cwd: path)
+        _ = try? await runner.run(["config", "--local", "--add",
+                                   "remote." + remote + ".fetch",
+                                   "+refs/heads/*:refs/remotes/" + remote + "/*"], cwd: path)
     }
 
     /// Branch names available on a remote (fetches first, best effort).
@@ -530,10 +722,38 @@ public final class RepoManager: @unchecked Sendable {
         }
     }
 
+    /// Stored intent: the user pressed "clear remote" in the app. Deleting the
+    /// git remote itself would throw away config the user may rely on in a
+    /// terminal, so app-side syncing is disabled instead; saving an address or
+    /// choosing a sync remote clears the flag again (v4.2.26).
+    private static let remoteDisabledKey = "filevault.remotedisabled"
+
+    func remoteDisabled(path: String) async -> Bool {
+        let r = try? await runner.run(["config", "--local", "--get", Self.remoteDisabledKey],
+                                      cwd: path)
+        guard let r, r.succeeded else { return false }
+        return r.stdout.trimmingCharacters(in: .whitespacesAndNewlines) == "true"
+    }
+
+    @discardableResult
+    private func setRemoteDisabled(path: String, disabled: Bool) async -> Bool {
+        let r: GitResult?
+        if disabled {
+            r = try? await runner.run(["config", "--local", Self.remoteDisabledKey, "true"],
+                                      cwd: path)
+        } else {
+            r = try? await runner.run(["config", "--local", "--unset", Self.remoteDisabledKey],
+                                      cwd: path)
+        }
+        // --unset exits 5 when the key is absent: that is success for us.
+        return r?.succeeded == true || (!disabled && r?.exitCode == 5)
+    }
+
     /// Effective remote URL — the source of truth is the repo's OWN git config
     /// (v2.2.4): prefers `origin`, falls back to any remote the user configured
     /// in their own source-control tooling (terminal / VS Code / Xcode).
     public func remoteURL(path: String) async -> String? {
+        if await remoteDisabled(path: path) { return nil }
         if let r = try? await runner.run(["remote", "get-url", "origin"], cwd: path),
            r.succeeded {
             let url = r.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -560,9 +780,18 @@ public final class RepoManager: @unchecked Sendable {
         return nil
     }
 
-    /// Remove remote origin.
+    /// Stop syncing this folder from the app.
+    ///
+    /// v4.2.26: it used to delete only "origin", so when the repo's sync remote
+    /// had another name (or an upstream pointed elsewhere) `remoteURL` still
+    /// found a remote and the app kept pulling/pushing while the UI said "仅本地".
+    /// Deleting the user's remotes would break their terminal workflow, so the
+    /// intent is recorded and every sync path consults it.
     public func clearRemote(path: String) async throws {
-        _ = try await runner.run(["remote", "remove", "origin"], cwd: path)
+        guard await setRemoteDisabled(path: path, disabled: true) else {
+            throw GitCommandError(command: "config remote-disabled", exitCode: 1,
+                                  stderr: NSLocalizedString("无法更新本仓库的同步设置", comment: "git error"))
+        }
     }
 
     /// Toggle stored in the repo's own git config: filevault.autopush (terminal-visible).
@@ -582,9 +811,19 @@ public final class RepoManager: @unchecked Sendable {
     /// Fields are NUL-separated (%x00): a commit SUBJECT may contain "|" (user
     /// commits from terminal), which corrupted the old pipe-based parsing.
     /// Git itself never allows NUL inside a subject, so this separator is safe.
-    public func log(path: String, max: Int = 50) async throws -> [CommitInfo] {
-        let r = try await runner.run(["log", "--pretty=format:%H%x00%h%x00%s%x00%aI", "-n", String(max)], cwd: path)
-        guard r.succeeded else { return [] }
+    public func log(path: String, max: Int = 50, skip: Int = 0) async throws -> [CommitInfo] {
+        var args = ["log", "--pretty=format:%H%x00%h%x00%s%x00%aI", "-n", String(max)]
+        if skip > 0 { args.append("--skip=\(skip)") }
+        let r = try await runner.run(args, cwd: path)
+        // An unborn HEAD is genuinely empty; any OTHER failure (index.lock,
+        // corrupted .git, unreadable disk) used to render as "还没有提交历史"
+        // while data was actually there but unreadable (v4.2.27).
+        guard r.succeeded else {
+            if r.exitCode == 128, r.stderr.contains("does not have any commits yet") {
+                return []
+            }
+            throw GitCommandError(command: "log", exitCode: r.exitCode, stderr: r.stderr)
+        }
         return r.stdout.split(separator: "\n").compactMap { line in
             let parts = line.components(separatedBy: "\u{0}")
             guard parts.count == 4, !parts[0].isEmpty, !parts[3].isEmpty else { return nil }
@@ -608,6 +847,14 @@ public final class RepoManager: @unchecked Sendable {
         guard hash.range(of: "^[0-9a-fA-F]{4,40}$", options: .regularExpression) != nil else {
             throw HistoryError.commitNotFound(hash)
         }
+        // Serialize local mutations and stay out of a running pull/rebase: a
+        // restore that interleaved with the auto-commit pipeline or a rebase left
+        // the repo half-updated (checkout applied but commit failed) (v4.2.26).
+        try await acquireRemoteOp(path)
+        defer { releaseRemoteOp(path) }
+        try await acquireLocalOp(path)
+        defer { releaseLocalOp(path) }
+        guard !(await operationInProgress(path: path)) else { throw HistoryError.repositoryBusy }
         // The path must exist in that version, otherwise git checkout fails with
         // a generic "pathspec did not match" message.
         let exists = try await runner.run(["cat-file", "-e", "\(hash):\(file)"], cwd: path)
@@ -634,6 +881,14 @@ public final class RepoManager: @unchecked Sendable {
         if !dirty.isEmpty {
             _ = try await commitAll(path: path, message: "backup: 恢复前自动保存未提交改动")
         }
+        // Checkout silently overwrites a file that is currently ignored (its
+        // content lives in no commit, the "backup:" commit above cannot save it).
+        // Refuse so the user can move it aside instead of losing it (v4.2.26).
+        if try await isIgnoredUntracked(file: file, path: path) {
+            throw HistoryError.restoreWouldOverwriteIgnored(file: file)
+        }
+        // GitRunner runs with --literal-pathspecs: "a[1].txt" cannot also
+        // rewrite "a1.txt" (v4.2.26).
         let r = try await runner.run(["checkout", hash, "--", file], cwd: path)
         guard r.succeeded else {
             throw HistoryError.restoreFailed(stderr: r.stderr)
@@ -651,6 +906,12 @@ public final class RepoManager: @unchecked Sendable {
     /// HEAD is preserved in a hidden ref `refs/filevault/backup/<stamp>` so a
     /// mistaken rollback stays recoverable with plain git (`git log <ref>`).
     public func resetRepo(path: String, to hash: String) async throws {
+        // Serialize with pulls/rebases and local mutations (v4.2.26).
+        try await acquireRemoteOp(path)
+        defer { releaseRemoteOp(path) }
+        try await acquireLocalOp(path)
+        defer { releaseLocalOp(path) }
+        guard !(await operationInProgress(path: path)) else { throw HistoryError.repositoryBusy }
         let verify = try await runner.run(["rev-parse", "--verify", "\(hash)^{commit}"], cwd: path)
         guard verify.succeeded else {
             throw HistoryError.commitNotFound(hash)
@@ -659,17 +920,103 @@ public final class RepoManager: @unchecked Sendable {
         if !dirty.isEmpty {
             _ = try await commitAll(path: path, message: "backup: 回滚前自动保存未提交改动")
         }
-        if let head = try? await runner.run(["rev-parse", "HEAD"], cwd: path),
-           head.succeeded {
-            let headHash = head.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !headHash.isEmpty {
-                _ = try? await runner.run(["update-ref", "refs/filevault/backup/\(Self.backupStamp())", headHash], cwd: path)
-            }
+        // `git reset --hard` overwrites/deletes untracked files that sit where the
+        // target version has a tracked file. Ignored ones are in no commit, so the
+        // hidden backup ref could not recover their content: refuse instead of
+        // silently losing it (v4.2.26).
+        let conflicts = try await ignoredFilesInTheWay(ofTarget: hash, path: path)
+        if !conflicts.isEmpty {
+            throw HistoryError.rollbackWouldOverwriteIgnored(files: conflicts)
+        }
+        let head = try await runner.run(["rev-parse", "HEAD"], cwd: path)
+        guard head.succeeded else {
+            throw HistoryError.resetFailed(
+                stderr: NSLocalizedString("无法读取当前版本，回滚前的备份点未写入", comment: "reset error"))
+        }
+        let headHash = head.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !headHash.isEmpty else {
+            throw HistoryError.resetFailed(
+                stderr: NSLocalizedString("无法读取当前版本，回滚前的备份点未写入", comment: "reset error"))
+        }
+        // The promised safety net is only real if this ref exists: a swallowed
+        // failure made "找不回被回滚的版本" possible on a full disk / locked refs.
+        // A short random suffix keeps two rollbacks in the same second apart.
+        let backupRef = "refs/filevault/backup/\(Self.backupStamp())-(UUID().uuidString.prefix(4))"
+        let backup = try await runner.run(["update-ref", backupRef, headHash], cwd: path)
+        guard backup.succeeded else {
+            throw HistoryError.resetFailed(
+                stderr: NSLocalizedString("无法写入回滚前的备份点（refs/filevault/backup），本次回滚已取消",
+                                          comment: "reset error"))
         }
         let r = try await runner.run(["reset", "--hard", hash], cwd: path)
         guard r.succeeded else {
             throw HistoryError.resetFailed(stderr: r.stderr)
         }
+    }
+
+    /// Whether `file` currently exists as an ignored, untracked file.
+    func isIgnoredUntracked(file: String, path: String) async throws -> Bool {
+        let r = try await runner.run(["ls-files", "-z", "--others", "--ignored", "--exclude-standard",
+                                      "--", file], cwd: path)
+        // Fail closed: an unreadable index means "unknown", not "safe" —
+        // proceeding could overwrite content that exists in no commit (v4.2.27).
+        guard r.succeeded else {
+            throw GitCommandError(command: "ls-files --others --ignored",
+                                  exitCode: r.exitCode, stderr: r.stderr)
+        }
+        if !r.stdout.isEmpty { return true }
+        // ls-files pathspec matching is case-sensitive even on case-insensitive
+        // volumes, so an ignored "Notes.txt" on disk does not show up when asked
+        // for "notes.txt" — and `git checkout -- notes.txt` would silently
+        // overwrite it (its content exists in no commit). check-ignore folds
+        // case per gitignore rules, so use it as the case-variant signal, gated
+        // on the path existing on disk and not being tracked under its exact
+        // name (v4.2.27).
+        guard FileManager.default.fileExists(atPath: (path as NSString).appendingPathComponent(file)) else {
+            return false
+        }
+        let ignored = try await runner.run(["check-ignore", "-q", "--", file], cwd: path)
+        guard ignored.exitCode == 0 else { return false }
+        let tracked = try await runner.run(["ls-files", "-z", "--", file], cwd: path)
+        guard tracked.succeeded else { return true } // unknown → refuse, never risk it
+        return tracked.stdout.isEmpty
+    }
+
+    /// Files in the target commit's tree that currently exist on disk as
+    /// ignored/untracked files (directly or as a blocking path component).
+    /// `git reset --hard` would silently overwrite them (v4.2.26).
+    func ignoredFilesInTheWay(ofTarget hash: String, path: String) async throws -> [String] {
+        let tree = try await runner.run(["ls-tree", "-r", "--name-only", "-z", hash], cwd: path)
+        guard tree.succeeded else {
+            throw GitCommandError(command: "ls-tree", exitCode: tree.exitCode, stderr: tree.stderr)
+        }
+        let targets = tree.stdout.split(separator: "\0").map(String.init).filter { !$0.isEmpty }
+        return try await ignoredConflicts(targetPaths: targets, path: path)
+    }
+
+    /// Intersection of `targetPaths` with the currently ignored/untracked
+    /// files, compared case-insensitively: on case-insensitive volumes (macOS
+    /// default) "notes.txt" and "Notes.txt" name the same disk file, so the old
+    /// exact-match comparison missed case variants and reset/checkout silently
+    /// destroyed ignored content that exists in no commit (v4.2.27). Returns
+    /// disk names.
+    func ignoredConflicts(targetPaths: [String], path: String) async throws -> [String] {
+        let ignored = try await runner.run(["ls-files", "-z", "--others", "--ignored", "--exclude-standard"],
+                                           cwd: path)
+        guard ignored.succeeded else {
+            throw GitCommandError(command: "ls-files --others --ignored", exitCode: ignored.exitCode,
+                                  stderr: ignored.stderr)
+        }
+        let candidates = ignored.stdout.split(separator: "\0").map(String.init).filter { !$0.isEmpty }
+        guard !candidates.isEmpty, !targetPaths.isEmpty else { return [] }
+        let folded = Set(targetPaths.map { $0.lowercased() })
+        return candidates.filter { candidate in
+            let f = candidate.lowercased()
+            if folded.contains(f) { return true }
+            // An ignored FILE blocking a directory the target version needs.
+            let prefix = f + "/"
+            return folded.contains { $0.hasPrefix(prefix) }
+        }.sorted()
     }
 
     /// Reject absolute paths, empty names, NUL bytes and `..` traversal.
@@ -753,6 +1100,10 @@ public final class RepoManager: @unchecked Sendable {
         guard isRepo(at: path) else { throw PullError.notARepository }
         try await acquireRemoteOp(path)
         defer { releaseRemoteOp(path) }
+        // Pulls/merges/repairs also mutate the working tree and index: take the
+        // local-mutation slot so the auto-commit pipeline cannot interleave.
+        try await acquireLocalOp(path)
+        defer { releaseLocalOp(path) }
         let headRef = try await runner.run(["symbolic-ref", "--quiet", "--short", "HEAD"], cwd: path)
         let branch = headRef.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
         guard headRef.succeeded, !branch.isEmpty else { throw PullError.detachedHead }
@@ -881,6 +1232,10 @@ public final class RepoManager: @unchecked Sendable {
         guard isRepo(at: path) else { throw PullError.notARepository }
         try await acquireRemoteOp(path)
         defer { releaseRemoteOp(path) }
+        // Pulls/merges/repairs also mutate the working tree and index: take the
+        // local-mutation slot so the auto-commit pipeline cannot interleave.
+        try await acquireLocalOp(path)
+        defer { releaseLocalOp(path) }
         let headRef = try await runner.run(["symbolic-ref", "--quiet", "--short", "HEAD"], cwd: path)
         let branch = headRef.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
         guard headRef.succeeded, !branch.isEmpty else { throw PullError.detachedHead }
@@ -925,7 +1280,10 @@ public final class RepoManager: @unchecked Sendable {
         // a backup ref first.
         var backupRef: String?
         if let oldHead, oldHead != remoteTip {
-            let ref = "refs/filevault/backup/\(Self.backupStamp())"
+            // Same random suffix as resetRepo: two force-pulls in the same
+            // second would otherwise overwrite each other's backup ref, leaving
+            // the pushed-aside HEAD unreferenced and gc-able (v4.2.27).
+            let ref = "refs/filevault/backup/\(Self.backupStamp())-(UUID().uuidString.prefix(4))"
             let backup = try await runner.run(["update-ref", ref, oldHead], cwd: path)
             guard backup.succeeded else {
                 throw GitCommandError(command: "update-ref \(ref)", exitCode: backup.exitCode,
@@ -969,6 +1327,7 @@ public final class RepoManager: @unchecked Sendable {
     /// when there is one, otherwise the current branch on origin (the same pair
     /// `push -u origin HEAD` would establish).
     private func pullTarget(path: String, currentBranch: String) async throws -> (remote: String, branch: String) {
+        if await remoteDisabled(path: path) { throw PullError.noRemote }
         if let upstream = try? await runner.run(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"],
                                                 cwd: path),
            upstream.succeeded {
@@ -1009,6 +1368,10 @@ public final class RepoManager: @unchecked Sendable {
     /// Name of the remote a connectivity probe should use: the upstream's
     /// remote when configured, else origin, else the only/first remote.
     public func defaultRemoteName(path: String) async -> String? {
+        // App-side sync stop: probing a disabled remote would let "测试连接"
+        // report success for a repo the app no longer syncs, and could make
+        // AuthMonitor probe a remote the sync paths never use (v4.2.27).
+        if await remoteDisabled(path: path) { return nil }
         let names = await allRemotes(path: path).map(\.name)
         guard !names.isEmpty else { return nil }
         if let upstream = try? await runner.run(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"],
@@ -1021,7 +1384,11 @@ public final class RepoManager: @unchecked Sendable {
             }
         }
         if names.contains("origin") { return "origin" }
-        return names.count == 1 ? names[0] : names.sorted()[0]
+        // Multi-remote without upstream is ambiguous exactly like pullTarget:
+        // guessing sorted()[0] could probe a remote the app never syncs (v4.2.27).
+        return names.count == 1 ? names[0] : nil
+        // NOTE: callers that need *some* name must use pullTarget/pushTarget
+        // instead of guessing (v4.2.27).
     }
 
     /// Whether HEAD and the freshly fetched remote tip share a commit. Pull only
@@ -1308,6 +1675,10 @@ public final class RepoManager: @unchecked Sendable {
         guard isRepo(at: path) else { throw PullError.notARepository }
         try await acquireRemoteOp(path)
         defer { releaseRemoteOp(path) }
+        // Pulls/merges/repairs also mutate the working tree and index: take the
+        // local-mutation slot so the auto-commit pipeline cannot interleave.
+        try await acquireLocalOp(path)
+        defer { releaseLocalOp(path) }
         let headRef = try await runner.run(["symbolic-ref", "--quiet", "--short", "HEAD"], cwd: path)
         let branch = headRef.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
         guard headRef.succeeded, !branch.isEmpty else { throw PullError.detachedHead }
@@ -1454,7 +1825,14 @@ public final class RepoManager: @unchecked Sendable {
                 if let copyPath = Self.remoteCopyPath(for: file, exists: { relative in
                     FileManager.default.fileExists(atPath: (path as NSString).appendingPathComponent(relative))
                 }), await materializeStage(3, path: path, file: file, to: copyPath) {
-                    _ = try? await runner.run(["add", "--", copyPath], cwd: path)
+                    // This copy must reach the remote: if the file name happens to
+                    // match a .gitignore pattern (e.g. ".env"), a plain add fails
+                    // silently and the "remote version kept" promise is a lie
+                    // (v4.2.26). -f is deliberate: it is FileVault-generated data.
+                    let added = try await runner.run(["add", "-f", "--", copyPath], cwd: path)
+                    guard added.succeeded else {
+                        throw HistoryError.restoreFailed(stderr: added.stderr)
+                    }
                     copies.append(MergeSyncResult.RemoteCopy(path: file, copyPath: copyPath))
                 } else {
                     // Could not materialize the remote copy: never drop it, so
@@ -1476,7 +1854,7 @@ public final class RepoManager: @unchecked Sendable {
             }
         }
         _ = try? await runner.run(["add", "-A"], cwd: path)
-        let commit = try await runner.run(["commit", "-m", "sync: 同步远程文件到本地（保留本地文件）"], cwd: path)
+        let commit = try await runner.run(["commit", "--no-verify", "-m", "sync: 同步远程文件到本地（保留本地文件）"], cwd: path)
         guard commit.succeeded else {
             if await mergeInProgress(path: path) {
                 _ = try? await runner.run(["merge", "--abort"], cwd: path)
@@ -1560,6 +1938,8 @@ public final class RepoManager: @unchecked Sendable {
         guard r2.succeeded else {
             throw GitCommandError(command: "config branch.merge", exitCode: r2.exitCode, stderr: r2.stderr)
         }
+        // Choosing the sync remote is an explicit sync intent (v4.2.26).
+        await setRemoteDisabled(path: path, disabled: false)
     }
 
     /// Fetch the incoming branch, then protect ignored files it would overwrite.
@@ -1761,6 +2141,10 @@ public final class RepoManager: @unchecked Sendable {
     // MARK: - Large file protection (FR-12)
 
     public static let largeFileMarkerComment = "# filevault-excluded-large-file"
+    /// Section for nested repos excluded because they could not be staged
+    /// (unborn-HEAD gitlink staging exits 128): auto-commit of the outer repo
+    /// must keep working (v4.2.27).
+    public static let nestedRepoMarkerComment = "# filevault-excluded-nested-repo"
     /// Section for local copies preserved while syncing. They hold content the
     /// user deliberately ignored, so they must stay ignored (never committed to
     /// a remote) (v4.2.25).
@@ -1783,18 +2167,32 @@ public final class RepoManager: @unchecked Sendable {
             entries = fetched
         }
         var excluded: [String] = []
-        for e in entries where e.change == .added {
+        for e in entries where e.change != .deleted {
             let abs = (path as NSString).appendingPathComponent(e.path)
             if let attrs = try? fm.attributesOfItem(atPath: abs),
                let size = attrs[.size] as? UInt64, size > threshold {
-                // Escape glob characters and verify with git itself: a raw rule
+                // Escape glob characters and original rule and verify with git itself: a raw rule
                 // like "a[1].bin" matches nothing, so the file was still added,
                 // pushed (and rejected) while the user was told it was excluded.
                 let rule = Self.escapedExcludeRule(e.path)
+                // For tracked files the rule is bookkeeping only (gitignore
+                // never applies to tracked files; commitAll unstages them
+                // after add -A). Notify only when the rule is NEW, or a file
+                // that stays oversized would re-notify on every pipeline run.
+                let pre = try? await runner.run(["check-ignore", "-q", "--", e.path], cwd: path)
+                let alreadyIgnored = pre?.exitCode == 0
                 _ = appendExcludeRule(path: path, section: Self.largeFileMarkerComment, rule: rule)
-                if let check = try? await runner.run(["check-ignore", "-q", "--", e.path], cwd: path),
-                   check.exitCode == 0 {
-                    excluded.append(e.path)
+                if e.change == .added {
+                    if let check = try? await runner.run(["check-ignore", "-q", "--", e.path], cwd: path),
+                       check.exitCode == 0 {
+                        excluded.append(e.path)
+                    }
+                } else {
+                    // Tracked-oversized: notify only when the rule is NEW.
+                    if !alreadyIgnored, let check = try? await runner.run(["check-ignore", "-q", "--", e.path], cwd: path),
+                       check.exitCode == 0 {
+                        excluded.append(e.path)
+                    }
                 }
             }
         }
@@ -1819,7 +2217,12 @@ public final class RepoManager: @unchecked Sendable {
             }
             guard section == Self.largeFileMarkerComment,
                   !trimmed.isEmpty, !trimmed.hasPrefix("#") else { continue }
-            rules.append(Self.unescapedExcludeRule(trimmed))
+            let rule = Self.unescapedExcludeRule(trimmed)
+            // Only report rules whose file still exists: a deleted/moved file
+            // kept the warning "N 个大文件未同步" alive forever (v4.2.27).
+            if FileManager.default.fileExists(atPath: (path as NSString).appendingPathComponent(rule)) {
+                rules.append(rule)
+            }
         }
         return rules
     }

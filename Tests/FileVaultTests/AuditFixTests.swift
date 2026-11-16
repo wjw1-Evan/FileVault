@@ -162,6 +162,9 @@ final class AuditFixTests: XCTestCase {
         cfg.roots = [ManagedRoot(path: base)]
         XCTAssertTrue(store.save(cfg))
         try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: dir.path)
+        if geteuid() == 0 {
+            throw XCTSkip("filesystem ignores directory permissions (running as root?)")
+        }
         XCTAssertFalse(store.save(cfg), "a read-only folder must be reported, not silently ignored")
     }
 

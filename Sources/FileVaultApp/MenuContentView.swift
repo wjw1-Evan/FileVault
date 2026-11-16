@@ -7,9 +7,20 @@ import FileVaultCore
 /// folder name and its sync status — there are no sub-repo rows to announce.
 enum MenuLabels {
     /// Root label, e.g. "工作（已同步）".
-    static func root(_ name: String, status: SyncStatus) -> String {
-        String(format: NSLocalizedString("%@（%@）", comment: "menu root label"),
-               name, FVStatusMeta.forSync(status).label)
+    ///
+    /// v4.2.26: paused folders and folders that cannot be attached right now
+    /// are named explicitly instead of pretending to be "已同步".
+    static func root(_ name: String, status: SyncStatus,
+                     paused: Bool = false, unavailable: Bool = false) -> String {
+        let label: String
+        if unavailable {
+            label = NSLocalizedString("不可用", comment: "menu root label")
+        } else if paused {
+            label = NSLocalizedString("已暂停", comment: "menu root label")
+        } else {
+            label = FVStatusMeta.forSync(status).label
+        }
+        return String(format: NSLocalizedString("%@（%@）", comment: "menu root label"), name, label)
     }
 
     /// Overflow submenu title.
@@ -55,7 +66,8 @@ struct MenuContentView: View {
                     .lineLimit(1)
             }
             Spacer(minLength: 6)
-            MenuIconButton(symbol: "rectangle.on.rectangle", help: "打开主面板") {
+            MenuIconButton(symbol: "rectangle.on.rectangle", help: "打开主面板（⇧⌘D）",
+                           key: "d") {
                 app.open("dashboard")
             }
         }
@@ -80,6 +92,10 @@ struct MenuContentView: View {
             }
             .padding(.horizontal, 14)
             .padding(.bottom, 8)
+        } else if !app.envReady, let reason = app.gitSetupError, !reason.isEmpty {
+            // The reason the automatic git setup failed belongs in the menu:
+            // otherwise "Git 未就绪" is a dead end (v4.2.26).
+            noticeText(LocalizedStringKey(reason))
         } else if let notice = app.updateNotice {
             // Already-localized text from AppState: look up as a key, falls back
             // to the text itself.
@@ -125,7 +141,16 @@ struct MenuContentView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 1) {
                     ForEach(app.roots) { root in
-                        RootMenuRow(root: root) { app.openPath(root.path) }
+                        // An unavailable folder has nothing to open in
+                        // Finder (NSWorkspace.open just fails silently) — route
+                        // to Settings where 重新定位/移除 live (v4.2.27).
+                        RootMenuRow(root: root) {
+                            if root.unavailable {
+                                app.open("settings")
+                            } else {
+                                app.openPath(root.path)
+                            }
+                        }
                         if root.id != app.roots.last?.id {
                             Rectangle()
                                 .fill(FVTheme.hairline)
@@ -161,6 +186,13 @@ struct MenuContentView: View {
 
     private var primaryActions: some View {
         VStack(spacing: 0) {
+            // README promises 添加入口在「首启、菜单栏、主面板」三处；菜单只在
+            // 空状态才出现这一行，第二个文件夹就找不到入口了（v4.2.27 设计轮）。
+            MenuActionRow(symbol: "plus.circle",
+                          title: "添加文件夹…") {
+                app.quickAddRequested = true
+                app.open("dashboard")
+            }
             MenuActionRow(symbol: "clock.arrow.circlepath",
                           title: "历史与恢复…") { app.open("records") }
             MenuActionRow(symbol: "gearshape",
@@ -215,6 +247,12 @@ struct RootMenuRow: View {
 
     var body: some View {
         let meta = FVStatusMeta.forSync(root.status)
+        let label = root.unavailable
+            ? NSLocalizedString("不可用", comment: "menu root label")
+            : (root.paused ? NSLocalizedString("已暂停", comment: "menu root label") : meta.label)
+        let tint: Color = root.unavailable
+            ? Color.orange
+            : (root.paused ? Color.secondary : meta.tint)
         Button(action: action) {
             HStack(spacing: 8) {
                 Image(systemName: "folder.fill")
@@ -225,9 +263,9 @@ struct RootMenuRow: View {
                     .lineLimit(1)
                 Spacer(minLength: 4)
                 Circle()
-                    .fill(meta.tint)
+                    .fill(tint)
                     .frame(width: 6, height: 6)
-                Text(meta.label)
+                Text(label)
                     .font(.system(size: 9))
                     .foregroundStyle(.tertiary)
             }
@@ -242,8 +280,13 @@ struct RootMenuRow: View {
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
         .accessibilityElement(children: .combine)
-        .accessibilityLabel(MenuLabels.root(root.name, status: root.status))
-        .help("在 Finder 中打开 \(root.name)")
+        .accessibilityLabel(MenuLabels.root(root.name, status: root.status,
+                                             paused: root.paused,
+                                             unavailable: root.unavailable))
+        // LocalizedStringKey (not String): a String argument selects the
+        // verbatim overload and keeps the tooltip Chinese in English builds
+        // (v4.2.26).
+        .help(LocalizedStringKey("在 Finder 中打开 \(root.name)"))
     }
 }
 
@@ -297,9 +340,21 @@ struct MenuActionRow: View {
 /// Small borderless icon button used in the panel header.
 struct MenuIconButton: View {
     let symbol: String
-    let help: String
+    let help: LocalizedStringKey
+    /// Optional keyboard shortcut: the dashboard entry is icon-only in the
+    /// menu (zero discoverability), and README documents ⇧⌘D — wire it here so
+    /// the promise is real (v4.2.27 design round).
+    let key: KeyEquivalent?
     let action: () -> Void
     @State private var hovering = false
+
+    init(symbol: String, help: LocalizedStringKey,
+         key: KeyEquivalent? = nil, action: @escaping () -> Void) {
+        self.symbol = symbol
+        self.help = help
+        self.key = key
+        self.action = action
+    }
 
     var body: some View {
         Button(action: action) {
@@ -313,6 +368,7 @@ struct MenuIconButton: View {
                 )
         }
         .buttonStyle(.plain)
+        .modifier(OptionalShortcut(key: key, modifiers: [.command, .shift]))
         .onHover { hovering = $0 }
         .help(help)
     }

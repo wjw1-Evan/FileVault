@@ -27,9 +27,23 @@ public struct ReleaseInfo: Equatable, Sendable {
 public enum UpdateError: Error, LocalizedError, Equatable {
     case noRelease
     case noAsset
+    /// GitHub API 403/429: quota exhausted, not "no release" (v4.2.27).
+    case rateLimited
     case downloadFailed
+    /// Transport-level failure while downloading: carries the underlying
+    /// message (e.g. URLError.localizedDescription) so a user can tell a
+    /// missing network / proxy from a corrupt package (v4.2.26).
+    case downloadTransport(String)
+    /// The asset host answered with a non-2xx HTTP status (v4.2.26).
+    case httpStatus(Int)
     case checksumMismatch
+    /// The release has no usable sha256 digest. Installing unverified bytes is
+    /// fail-open, so we abort instead (v4.2.26).
+    case missingChecksum
     case notBundled
+    /// Extracting the downloaded zip failed (disk full, corrupt archive, …):
+    /// this is not a download failure (v4.2.26).
+    case extractFailed(String)
     /// The extracted bundle failed the code-signature / identity check (v3.3.0).
     case signatureRejected(String)
     /// Rotating the running bundle aside failed (permissions, read-only volume).
@@ -37,9 +51,17 @@ public enum UpdateError: Error, LocalizedError, Equatable {
 
     public static func == (lhs: UpdateError, rhs: UpdateError) -> Bool {
         switch (lhs, rhs) {
-        case (.noRelease, .noRelease), (.noAsset, .noAsset), (.downloadFailed, .downloadFailed),
-             (.checksumMismatch, .checksumMismatch), (.notBundled, .notBundled):
+        case (.noRelease, .noRelease), (.noAsset, .noAsset), (.rateLimited, .rateLimited),
+         (.downloadFailed, .downloadFailed),
+             (.checksumMismatch, .checksumMismatch), (.missingChecksum, .missingChecksum),
+             (.notBundled, .notBundled):
             return true
+        case (.downloadTransport(let a), .downloadTransport(let b)):
+            return a == b
+        case (.httpStatus(let a), .httpStatus(let b)):
+            return a == b
+        case (.extractFailed(let a), .extractFailed(let b)):
+            return a == b
         case (.signatureRejected(let a), .signatureRejected(let b)):
             return a == b
         case (.installFailed(let a), .installFailed(let b)):
@@ -55,12 +77,23 @@ public enum UpdateError: Error, LocalizedError, Equatable {
             return NSLocalizedString("未找到可用发布版本（网络不可达或 GitHub 受限）", comment: "update error")
         case .noAsset:
             return NSLocalizedString("发布版本缺少应用资产", comment: "update error")
+        case .rateLimited:
+            return NSLocalizedString("GitHub 访问受限（限流），将在后台自动重试", comment: "update error")
         case .downloadFailed:
             return NSLocalizedString("下载更新失败", comment: "update error")
+        case .downloadTransport(let detail):
+            return String(format: NSLocalizedString("下载更新失败：%@", comment: "update error"), detail)
+        case .httpStatus(let status):
+            return String(format: NSLocalizedString("下载更新失败：服务器返回 HTTP %d", comment: "update error"), status)
         case .checksumMismatch:
             return NSLocalizedString("更新包校验失败，已中止安装", comment: "update error")
+        case .missingChecksum:
+            return NSLocalizedString("更新包缺少 sha256 校验信息，已中止安装（可从 GitHub 手动下载安装）",
+                                     comment: "update error")
         case .notBundled:
             return NSLocalizedString("仅 .app 包内运行时支持自动更新", comment: "update error")
+        case .extractFailed(let detail):
+            return String(format: NSLocalizedString("更新包解压失败：%@", comment: "update error"), detail)
         case .signatureRejected(let detail):
             return String(format: NSLocalizedString("更新包签名校验未通过：%@", comment: "update error"), detail)
         case .installFailed(let detail):
@@ -96,6 +129,9 @@ public struct HttpReleaseFetcher: ReleaseFetching {
                 return try await fetchLatest()
             } catch {
                 lastError = error
+                // Rate limiting will not recover within seconds: further
+                // retries just burn more of the shared quota (v4.2.27).
+                if error is UpdateError && (error as? UpdateError) == .rateLimited { break }
                 if attempt < 3 {
                     try? await Task.sleep(nanoseconds: UInt64(attempt) * 2_000_000_000)
                 }
@@ -112,9 +148,14 @@ public struct HttpReleaseFetcher: ReleaseFetching {
         req.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
         req.setValue("FileVaultApp", forHTTPHeaderField: "User-Agent") // GitHub API requires a UA
         let (data, resp) = try await URLSession.shared.data(for: req)
-        guard let http = resp as? HTTPURLResponse, http.statusCode == 200 else {
-            throw UpdateError.noRelease
+        guard let http = resp as? HTTPURLResponse else { throw UpdateError.noRelease }
+        if http.statusCode == 403 || http.statusCode == 429 {
+            // Shared-IP rate limiting is not "no release": retrying burns the
+            // quota three more times and the message misled ("未找到可用发布
+            // 版本") (v4.2.27).
+            throw UpdateError.rateLimited
         }
+        guard http.statusCode == 200 else { throw UpdateError.noRelease }
         return try Self.parseRelease(data)
     }
 
@@ -125,13 +166,32 @@ public struct HttpReleaseFetcher: ReleaseFetching {
             throw UpdateError.noRelease
         }
         let assets = (obj["assets"] as? [[String: Any]]) ?? []
-        let asset = assets.first { (($0["name"] as? String)?.hasSuffix(".zip") ?? false) }
-        guard let name = asset?["name"] as? String else { throw UpdateError.noAsset }
+        // Pick the asset for THIS release: a stale re-uploaded zip used to win
+        // first-match and (self-consistently) pass its own sha256 (v4.2.27).
+        // Require the version in the filename when it is present; fall back to
+        // the single zip only when nothing matches (tolerates future naming).
+        let allZips = assets.filter { entry in
+            guard let n = entry["name"] as? String else { return false }
+            return n.hasSuffix(".zip") && !n.hasSuffix(".zip.old")
+        }
+        let ver = Self.version(fromTag: tag)
+        let matched = allZips.filter { (($0["name"] as? String)?.contains(ver) ?? false) }
+        let asset: [String: Any]
+        if matched.count == 1 {
+            asset = matched[0]
+        } else if matched.count > 1 {
+            throw UpdateError.noAsset // ambiguous: refuse rather than guess
+        } else if allZips.count == 1 {
+            asset = allZips[0]
+        } else {
+            throw UpdateError.noAsset
+        }
+        guard let name = asset["name"] as? String else { throw UpdateError.noAsset }
         let notes = (obj["body"] as? String) ?? ""
-        let digest = asset?["digest"] as? String
-        let assetID = (asset?["id"] as? NSNumber)?.int64Value ?? 0
-        let assetSize = (asset?["size"] as? NSNumber)?.int64Value ?? 0
-        let assetURL = (asset?["browser_download_url"] as? String) ?? ""
+        let digest = asset["digest"] as? String
+        let assetID = (asset["id"] as? NSNumber)?.int64Value ?? 0
+        let assetSize = (asset["size"] as? NSNumber)?.int64Value ?? 0
+        let assetURL = (asset["browser_download_url"] as? String) ?? ""
         return ReleaseInfo(
             version: Self.version(fromTag: tag),
             tagName: tag,

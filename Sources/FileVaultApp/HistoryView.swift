@@ -140,6 +140,10 @@ final class HistoryModel: ObservableObject {
     /// async loaders read naturally.
     @Published var selectedRepo: String?
     @Published var commits: [CommitInfo] = []
+    /// Timeline pagination (v4.2.27 design round): the default window is the
+    /// most recent 100 commits; 加载更多 appends the next page.
+    @Published var canLoadMore = false
+    @Published var loadingMore = false
     @Published var selectedCommitHash: String?
     @Published var files: [ChangedFile] = []
     /// "[changed | all]" selector in the detail pane.
@@ -187,6 +191,8 @@ final class HistoryModel: ObservableObject {
     private var currentCommit: CommitInfo?
     private var pendingStateReload: Task<Void, Never>?
     private var contentSearchTask: Task<Void, Never>?
+    /// Only the visible tab polls or reacts to state events (v4.2.26).
+    private(set) var isActive = true
     /// File to select after a commit switch finishes loading (file timeline).
     private var pendingFileSelection: String?
 
@@ -300,7 +306,12 @@ final class HistoryModel: ObservableObject {
         // stop after the first close).
         guard listenerToken == nil, let svc = app.service else { return }
         listenerToken = svc.addStateListener { [weak self] in
-            Task { @MainActor in self?.handleExternalStateChange() }
+            Task { @MainActor in
+                // The hidden tab keeps its loaded data but must not rescan; the
+                // host view refreshes it when the tab becomes visible (v4.2.26).
+                guard let self, self.isActive else { return }
+                self.handleExternalStateChange()
+            }
         }
     }
 
@@ -310,9 +321,22 @@ final class HistoryModel: ObservableObject {
         pendingStateReload?.cancel()
     }
 
+    /// The host view keeps this in sync with the visible records tab (v4.2.26).
+    func setActive(_ active: Bool) {
+        isActive = active
+    }
+
+    /// One cheap catch-up check when the tab becomes visible again; hidden tabs
+    /// do no polling, so an external commit made meanwhile is picked up here.
+    func refreshOnActivation() {
+        guard !commits.isEmpty else { return }
+        periodicRefresh()
+    }
+
     /// While visible, background auto-commits and folder add/remove refresh the
     /// lists too; rapid state flips coalesce through one debounced task (v2.6.5).
     private func handleExternalStateChange() {
+        guard isActive else { return }
         pendingStateReload?.cancel()
         pendingStateReload = Task { [weak self] in
             try? await Task.sleep(nanoseconds: 400_000_000)
@@ -322,6 +346,7 @@ final class HistoryModel: ObservableObject {
     }
 
     private func refreshAfterExternalChange() {
+        guard isActive else { return }
         guard let svc = app?.service else { return }
         let latest = svc.rootsSnapshot()
         if latest != roots {
@@ -355,6 +380,7 @@ final class HistoryModel: ObservableObject {
     /// Fallback poll for changes that produce no app event (e.g. a commit made
     /// from a terminal). Cheap no-op when HEAD did not move.
     func periodicRefresh() {
+        guard isActive else { return }
         refreshAfterExternalChange()
     }
 
@@ -412,7 +438,22 @@ final class HistoryModel: ObservableObject {
         }
         Task { [weak self] in
             guard let self else { return }
-            let raw = (try? await svc.history.commits(repoPath: repo, limit: 100)) ?? []
+            // A failed read used to render as "还没有提交历史" and even wipe the
+            // loaded timeline; it is an error state, not an empty state (v4.2.27).
+            let raw: [CommitInfo]
+            do {
+                raw = try await svc.history.commits(repoPath: repo, limit: 100)
+            } catch {
+                guard generation == self.loadGeneration else { return }
+                self.commits = []
+                self.files = []
+                self.selectedCommitHash = nil
+                self.selectedFile = nil
+                self.preview = .none
+                self.statusText = NSLocalizedString("提交历史读取失败",
+                                                    comment: "history status") + "：" + error.localizedDescription
+                return
+            }
             // Legacy commits may carry git's octal-escaped paths; decode once here
             // so the list, detail header and restore status all read clean.
             let list = raw.map { c in
@@ -422,6 +463,7 @@ final class HistoryModel: ObservableObject {
             guard generation == self.loadGeneration else { return }
             if list.isEmpty {
                 self.commits = []
+                self.canLoadMore = false
                 self.files = []
                 self.selectedCommitHash = nil
                 self.selectedFile = nil
@@ -432,6 +474,7 @@ final class HistoryModel: ObservableObject {
                 return
             }
             self.commits = list
+            self.canLoadMore = list.count >= 100
             self.refreshTags()
             // New commits do not change the content of the commit the user is
             // reading: keep the selection, its file list and the preview intact.
@@ -446,6 +489,37 @@ final class HistoryModel: ObservableObject {
             }
             self.selectedCommitHash = list[target].hash
             self.loadChangedFiles(preserveFile: preserveSelection)
+        }
+    }
+
+    /// Append the next 100-commit page (加载更多, v4.2.27 design round).
+    /// Search operates on the loaded window only — the button hides while a
+    /// search is active, so results never silently change scope.
+    func loadMoreCommits() {
+        guard let svc = app?.service, let repo = selectedRepo else { return }
+        guard !loadingMore, canLoadMore else { return }
+        loadingMore = true
+        loadGeneration += 1
+        let generation = loadGeneration
+        let offset = commits.count
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                let raw = try await svc.history.commits(repoPath: repo, limit: 100, offset: offset)
+                guard generation == self.loadGeneration else { return }
+                let list = raw.map { c in
+                    CommitInfo(hash: c.hash, shortHash: c.shortHash,
+                               subject: c.subject.fvDecodingGitEscapes, date: c.date)
+                }
+                self.commits += list
+                self.canLoadMore = raw.count >= 100
+                self.statusText = ""
+            } catch {
+                guard generation == self.loadGeneration else { return }
+                self.statusText = NSLocalizedString("提交历史读取失败",
+                                                    comment: "history status") + "：" + error.localizedDescription
+            }
+            self.loadingMore = false
         }
     }
 
@@ -820,9 +894,12 @@ final class HistoryModel: ObservableObject {
                                                               comment: "history status"), file, commit.shortHash)
                     }
                 }
+                // The restore commit bypasses the commit pipeline: tell the
+                // listeners so the recovery tab refreshes too (v4.2.26).
+                svc.notifyStateChanged()
                 reloadCommits()
             } catch {
-                statusText = String(format: NSLocalizedString("⚠️ 恢复失败: %@", comment: "history status"),
+                statusText = String(format: NSLocalizedString("⚠️ 恢复失败：%@", comment: "history status"),
                                     error.localizedDescription)
             }
         }
@@ -849,9 +926,10 @@ final class HistoryModel: ObservableObject {
                 _ = try await svc.history.restoreDirectory(repoPath: repo, directory: dir, to: commit.hash)
                 self.statusText = String(format: NSLocalizedString("✓ 已恢复文件夹 %@ 到 %@", comment: "history status"),
                                          dir, commit.shortHash)
+                svc.notifyStateChanged()
                 self.reloadCommits()
             } catch {
-                self.statusText = String(format: NSLocalizedString("⚠️ 恢复文件夹失败: %@", comment: "history status"),
+                self.statusText = String(format: NSLocalizedString("⚠️ 恢复失败：%@", comment: "history status"),
                                          error.localizedDescription)
             }
         }
@@ -882,18 +960,47 @@ final class HistoryModel: ObservableObject {
     }
 
     /// FR-10: hard rollback of the whole repo to the selected commit.
-    func rollback() {
+    /// Whether the selected repo has a remote bound: the rollback dialog
+    /// offers a 回退并暂停同步 choice only then (v4.2.27 design round).
+    @Published var rollbackRemoteBound = false
+    @Published var rollbackPauseSync = false
+
+    func prepareRollbackDialog() {
+        guard let svc = app?.service, let repo = selectedRepo else { return }
+        Task { [weak self] in
+            let bound = await svc.repoManager.remoteURL(path: repo) != nil
+            await MainActor.run {
+                self?.rollbackRemoteBound = bound
+                self?.rollbackPauseSync = false
+            }
+        }
+    }
+
+    /// Roll back, optionally pausing remote sync for this folder first: the
+    /// periodic sync would otherwise fast-forward the rollback away within
+    /// ~5 minutes, silently undoing the user's recovery (v4.2.27 design
+    /// round). Pausing keeps the rollback in place until the user resumes
+    /// sync from Settings (resuming may then pull the remote version back —
+    /// disclosed in the dialog and in Settings).
+    func rollback(thenPause: Bool) {
         guard let svc = app?.service, let repo = selectedRepo, let commit = currentCommit else { return }
         Task { [weak self] in
             guard let self else { return }
             statusText = NSLocalizedString("正在回滚…", comment: "history status")
             do {
+                if thenPause {
+                    await svc.setRootPaused(true, root: repo)
+                }
                 try await svc.history.resetRepo(repoPath: repo, to: commit.hash)
-                statusText = String(format: NSLocalizedString("✓ 已回滚到 %@", comment: "history status"),
+                statusText = String(format: thenPause
+                    ? NSLocalizedString("✓ 已回滚到 %@，并已暂停此文件夹的自动同步（设置里可恢复）",
+                                        comment: "history status")
+                    : NSLocalizedString("✓ 已回滚到 %@", comment: "history status"),
                                     commit.shortHash)
+                svc.notifyStateChanged()
                 reloadCommits()
             } catch {
-                statusText = String(format: NSLocalizedString("⚠️ 回滚失败: %@", comment: "history status"),
+                statusText = String(format: NSLocalizedString("⚠️ 回滚失败：%@", comment: "history status"),
                                     error.localizedDescription)
             }
         }
@@ -953,23 +1060,44 @@ struct HistoryView: View {
         }
         .frame(minWidth: 980, minHeight: 620)
         .fvCanvas()
-        .task {
+        .task(id: app.recordsTab) {
+            // Only the visible tab polls (v4.2.26): switching tabs cancels this
+            // task, so the hidden history page stops its 15 s refresh loop.
+            guard app.recordsTab == .history else {
+                model.setActive(false)
+                return
+            }
+            model.setActive(true)
             model.bind(app)
+            model.refreshOnActivation()
             // Fallback poll: catches commits made outside FileVault (terminal,
             // a fetch/pull, another tool) which fire no app event. The HEAD
             // comparison makes it a no-op when nothing changed.
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 15_000_000_000)
-                guard !Task.isCancelled else { break }
+                guard !Task.isCancelled, app.recordsTab == .history else { return }
                 model.periodicRefresh()
             }
         }
         .onDisappear { model.unbind() }
         .confirmationDialog("回滚确认", isPresented: $confirmRollback, titleVisibility: .visible) {
-            Button("回滚到该版本", role: .destructive) { model.rollback() }
+            if model.rollbackRemoteBound {
+                // The periodic sync fast-forwards a plain rollback away within
+                // ~5 minutes; offer the explicit 暂停同步 choice so the user
+                // decides (v4.2.27 design round; resuming sync later may pull
+                // the remote version back — force-push stays off the table).
+                Button("仅本地回退（自动同步可能把远程版本带回）", role: .destructive) {
+                    model.rollback(thenPause: false)
+                }
+                Button("回退并暂停此文件夹的自动同步", role: .destructive) {
+                    model.rollback(thenPause: true)
+                }
+            } else {
+                Button("回滚到该版本", role: .destructive) { model.rollback(thenPause: false) }
+            }
             Button("取消", role: .cancel) {}
         } message: {
-            Text("文件夹中受版本管理的内容会回到这个版本，其后的提交从当前分支移除。被忽略的文件、大文件和嵌套仓库保持原样；已绑定的远程仓库不会跟着回退（之后自动同步可能把版本带回来）。未提交的改动会先自动保存，回滚前的状态备份到隐藏 ref（refs/filevault/backup，可用 git 找回），不会永久丢失。")
+            Text("文件夹中受版本管理的内容会回到这个版本，其后的提交从当前分支移除。被忽略的文件、大文件和嵌套仓库保持原样。未提交的改动会先自动保存，回滚前的状态备份到隐藏 ref（refs/filevault/backup，可用 git 找回），不会永久丢失。")
         }
         .confirmationDialog("恢复文件夹？", isPresented: directoryRestoreBinding, titleVisibility: .visible) {
             Button("恢复文件夹", role: .destructive) { model.confirmDirectoryRestore() }
@@ -986,13 +1114,17 @@ struct HistoryView: View {
         }
         .sheet(isPresented: $showFileTimeline) {
             if let svc = app.service, let repo = model.selectedRepo, let file = model.selectedFile {
-                FileHistorySheet(service: svc.history, repoPath: repo, file: file,
+                FileHistorySheet(service: svc.history, recovery: svc.recovery,
+                                 repoPath: repo, file: file,
                                  currentHash: model.selectedCommitHash ?? "",
                                  onSelect: { hash in
                                      model.selectCommit(hash, file: file)
                                      showFileTimeline = false
                                  },
-                                 onRestored: { model.reloadCommits() })
+                                 onRestored: {
+                                     model.reloadCommits()
+                                     svc.notifyStateChanged()
+                                 })
             }
         }
         .sheet(isPresented: $showCompare) {
@@ -1007,6 +1139,7 @@ struct HistoryView: View {
                 RecoverySheet(service: svc.history, repoPath: repo,
                               onRestored: {
                                   model.reloadCommits()
+                                  svc.notifyStateChanged()
                                   showRecovery = false
                               })
             }
@@ -1047,7 +1180,10 @@ struct HistoryView: View {
                 .fixedSize()
                 .help("更多历史操作")
                 VStack(alignment: .trailing, spacing: 2) {
-                    Text(String(format: NSLocalizedString("%d 个提交", comment: "history caption"), model.commits.count))
+                    Text(model.canLoadMore
+                         ? String(format: NSLocalizedString("已加载 %d 个提交", comment: "history caption"),
+                                  model.commits.count)
+                         : String(format: NSLocalizedString("%d 个提交", comment: "history caption"), model.commits.count))
                         .font(.system(size: 11, weight: .medium))
                         .foregroundStyle(.secondary)
                         .monospacedDigit()
@@ -1198,6 +1334,26 @@ struct HistoryView: View {
                         }
                     }
                     .padding(.bottom, 12)
+                    if model.canLoadMore, model.searchText.isEmpty {
+                        // Older versions stay reachable in-app instead of
+                        // "only the last 100 exist" (v4.2.27 design round).
+                        Button {
+                            model.loadMoreCommits()
+                        } label: {
+                            HStack(spacing: 6) {
+                                if model.loadingMore {
+                                    ProgressView().controlSize(.mini)
+                                }
+                                Text(model.loadingMore ? "正在加载…" : "加载更早的提交")
+                            }
+                            .font(.system(size: 10.5))
+                            .foregroundStyle(Color.accentColor)
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(model.loadingMore)
+                        .padding(.top, 6)
+                        .padding(.bottom, 10)
+                    }
                 }
             }
         }
@@ -1759,17 +1915,22 @@ struct HistoryView: View {
     }
 
     private func footer(commit: CommitInfo?) -> some View {
-        HStack(spacing: 8) {
+        HStack(alignment: .top, spacing: 8) {
             Image(systemName: statusSymbol)
                 .font(.system(size: 10))
                 .foregroundStyle(.secondary)
+                .padding(.top, 1)
+            // Failure text carries the remedy; wrap it instead of cutting it to
+            // one line so the suggested next step stays visible (v4.2.26).
             Text(footerText)
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .truncationMode(.tail)
+                .lineLimit(3)
+                .fixedSize(horizontal: false, vertical: true)
+                .help(footerText)
             Spacer(minLength: 8)
             Button(role: .destructive) {
+                model.prepareRollbackDialog()
                 confirmRollback = true
             } label: {
                 HStack(spacing: 4) {

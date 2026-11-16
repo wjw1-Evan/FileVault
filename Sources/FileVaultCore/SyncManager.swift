@@ -81,6 +81,16 @@ public actor SyncManager {
         states[repoPath]?.task = nil
         let change = try await repoManager.setRemote(path: repoPath, url: url)
         await repoManager.setAutoPush(path: repoPath, enabled: autoPush)
+        // The single-file ceiling only became known NOW for folders added
+        // without a remote: a >100 MiB file committed before the bind would
+        // poison every later push (v4.2.26 only covered the one-step path).
+        // Exclude still-untracked oversized files going forward; already
+        // committed oversized blobs need a history rewrite the app will not do
+        // (the push rejection message explains that).
+        let threshold = GitHubLimits.effectiveThreshold(remoteURL: url)
+        if threshold > 0 {
+            _ = await repoManager.excludeLargeFiles(path: repoPath, threshold: threshold)
+        }
         let stillPending = await repoManager.remoteSwitchPending(path: repoPath)
         if change.needsDecision || stillPending {
             // Best effort: the push below reports the real git error when the
@@ -101,6 +111,18 @@ public actor SyncManager {
     public func clearRemote(repoPath: String) async throws {
         try await repoManager.clearRemote(path: repoPath)
         setState(repoPath, .noRemote)
+    }
+
+    /// Forget all runtime state for a folder that was removed or relocated.
+    /// A push loop, a backoff retry or a "failed" status for a folder that no
+    /// longer exists kept pushing/notifying and reappeared after re-adding the
+    /// same path (v4.2.26).
+    public func reset(repoPath: String) async {
+        states[repoPath]?.task?.cancel()
+        states[repoPath] = nil
+        pushGenerations[repoPath] = nil
+        manualPushes.remove(repoPath)
+        clearFailureStreak(repoPath: repoPath)
     }
 
     /// Enable/disable auto-push at runtime.
@@ -185,13 +207,32 @@ public actor SyncManager {
         states[repoPath]?.task = nil
         if states[repoPath]?.needsPushAgain == true {
             states[repoPath]?.needsPushAgain = false
-            startPushLoop(repoPath: repoPath)
+            // Small delay before the follow-up loop: an immediate restart
+            // flipped the status back to .pushing right after a failure, so
+            // observers (and the menu) could never see the settled .failed
+            // state, and a failing remote was hammered without pause (v4.2.26).
+            Task.detached { [weak self] in
+                try? await Task.sleep(nanoseconds: 300_000_000)
+                guard let self else { return }
+                // The repo may have been removed during the 300 ms window
+                // (reset() clears states/generations): reviving the loop would
+                // push for an unprotected repo and leak state (v4.2.27).
+                guard await self.stillOwnsPushSlot(repoPath, generation) else { return }
+                await self.startPushLoop(repoPath: repoPath)
+            }
         }
     }
 
     /// Test/diagnostic hook: whether a push loop is registered for a repo.
     func hasActivePushLoop(repoPath: String) -> Bool {
         states[repoPath]?.task != nil
+    }
+
+    /// Whether this (repo, generation) still owns the push slot: guards the
+    /// delayed restart in finishPushLoop against a folder removed in the
+    /// 300 ms window (v4.2.27).
+    private func stillOwnsPushSlot(_ repoPath: String, _ generation: Int) -> Bool {
+        pushGenerations[repoPath] == generation && states[repoPath] != nil
     }
 
     /// Serial per-repo push loop with exponential backoff retries.
@@ -201,10 +242,25 @@ public actor SyncManager {
         }
         defer { finishPushLoop(repoPath: repoPath, generation: generation) }
         var attempt = 0
+        var waitedForOperation: TimeInterval = 0
         while true {
             // A cancelled loop (pushNow superseded it) must not race the
             // manual push with a concurrent `git push` of its own.
             if Task.isCancelled { return }
+            // A pull's auto-rebase detaches HEAD for a moment; pushing then
+            // failed with "not a full refname" and produced a bogus failure
+            // notification during the periodic sync (v4.2.26). Wait for the
+            // remote operation to finish instead.
+            if await repoManager.operationInProgress(path: repoPath) {
+                if waitedForOperation >= 240 {
+                    setState(repoPath, .pendingPush)
+                    return
+                }
+                try? await Task.sleep(nanoseconds: 500_000_000)
+                waitedForOperation += 0.5
+                continue
+            }
+            waitedForOperation = 0
             let url = await repoManager.remoteURL(path: repoPath)
             guard url != nil else {
                 setState(repoPath, .noRemote)
@@ -229,17 +285,22 @@ public actor SyncManager {
                 // Branch protection / hooks / size limits cannot be fixed by
                 // retrying: report once with guidance and stop (v4.1.7).
                 if let rejection = Self.deterministicPushRejection(error) {
-                    onPushFailure(repoPath, rejection)
-                    clearFailureStreak(repoPath: repoPath)
+                    // Report ONCE per failure episode: clearing the streak here
+                    // made every new commit notify again, so continuous editing
+                    // produced a notification every few seconds (v4.2.26). The
+                    // marker is cleared by the next successful push.
                     setState(repoPath, .failed)
+                    self.noteFailureStreak(repoPath: repoPath, message: rejection, finalAttempt: false)
                     return
                 }
+                // Publish the failed state BEFORE the notification: a listener that
+                // reacts to onPushFailure must observe the settled status (v4.2.26).
+                setState(repoPath, .failed)
                 // Notify once per failure episode: retrying a flaky network no
                 // longer spams one notification per attempt (v4.2.3).
                 self.noteFailureStreak(repoPath: repoPath,
                                        message: Self.pushFailureMessage(error),
                                        finalAttempt: false)
-                setState(repoPath, .failed)
                 // A merge conflict / unrelated history needs a human decision;
                 // retrying on a timer cannot fix it.
                 if let pull = error as? PullError, Self.isDeterministic(pull) {
@@ -295,6 +356,13 @@ public actor SyncManager {
     }
 
     private func push(repoPath: String, timeout: TimeInterval) async throws {
+        // An unborn HEAD (adopted empty repo, or an initial commit that failed)
+        // has nothing to push: `git push` fails with "src refspec HEAD does not
+        // match any", which used to leave a permanent bogus .failed status plus
+        // a spurious notification on every sweep (v4.2.27). Skip quietly — the
+        // first real commit enqueues a push anyway.
+        let unborn = try await repoManager.runner.run(["rev-parse", "--verify", "-q", "HEAD"], cwd: repoPath)
+        guard unborn.succeeded else { return }
         let headRef = try await repoManager.runner.run(["symbolic-ref", "--quiet", "--short", "HEAD"],
                                                        cwd: repoPath)
         let branch = headRef.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -313,7 +381,11 @@ public actor SyncManager {
             targetRemote = "origin"
             refspec = "HEAD"
         }
-        let r = try await repoManager.runner.run(["push", "-u", targetRemote, refspec], cwd: repoPath,
+        // --no-verify: pre-push hooks exist for human-initiated pushes; a
+        // background sync must not be vetoed by one (auto-sync is always on by
+        // design) (v4.2.27).
+        let r = try await repoManager.runner.run(["push", "--no-verify", "-u", targetRemote, refspec],
+                                                 cwd: repoPath,
                                                  timeout: timeout)
         guard r.succeeded else {
             throw GitCommandError(command: "push " + targetRemote, exitCode: r.exitCode, stderr: r.stderr)
@@ -351,8 +423,8 @@ public actor SyncManager {
             return true
         } catch {
             let message = Self.deterministicPushRejection(error) ?? Self.pushFailureMessage(error)
-            onPushFailure(repoPath, message)
             setState(repoPath, .failed)
+            onPushFailure(repoPath, message)
             return false
         }
     }
@@ -411,9 +483,20 @@ public actor SyncManager {
             } catch {
                 return
             }
+        } catch let error as PullError {
+            // An EMPTY remote (no branch yet, e.g. the first push never
+            // succeeded) is not a dead end: there is nothing to pull, but the
+            // local commits still have to be pushed. Returning here used to
+            // leave the first push failure unrecovered forever, breaking the
+            // "network recovers → auto push" promise (v4.2.26).
+            if case .remoteBranchMissing = error {
+                // fall through to push
+            } else {
+                return
+            }
         } catch {
-            // Auth / network / missing branch: the push loop and auth monitor
-            // already report these; a periodic check must stay quiet.
+            // Auth / network: the push loop and auth monitor already report
+            // these; a periodic check must stay quiet.
             return
         }
         // Push anything local is ahead with (including a merge/rebased commit).
@@ -465,7 +548,7 @@ public actor SyncManager {
         }
         if text.contains("file is too large") || text.contains("exceeds github's file size limit")
             || (text.contains("push was rejected") && (text.contains("mb") || text.contains("limit"))) {
-            var message = NSLocalizedString("远程仓库因为文件过大拒绝了这次推送。请检查大文件排除规则，或把大文件移出受保护文件夹后再试。",
+            var message = NSLocalizedString("远程仓库因为文件过大拒绝了这次推送。新加入的超限文件会被自动排除；若历史提交里已包含超限文件，推送会被永久拒绝，需要整理提交历史（如重新开始版本历史）或更换远程后才能恢复同步。",
                                             comment: "push rejected")
             let files = Self.oversizedFiles(in: e.stderr)
             if !files.isEmpty {

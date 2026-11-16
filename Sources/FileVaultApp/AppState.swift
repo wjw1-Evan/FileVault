@@ -10,7 +10,13 @@ struct RootMenuEntry: Identifiable, Equatable {
     let id: String       // path
     let name: String
     let path: String
+    /// Sync status; meaningless (but harmless) when `unavailable` is true.
     let status: SyncStatus
+    /// Folder is configured but not attached right now (disk unplugged, folder
+    /// moved, another instance owns it) (v4.2.26).
+    let unavailable: Bool
+    /// Auto-commit is paused for this folder (v4.2.26).
+    let paused: Bool
 }
 
 /// Root observable state: menu bar data, window actions, update flow and
@@ -57,6 +63,12 @@ final class AppState: ObservableObject {
     private var statusCache: [String: SyncStatus] = [:]
     private var timer: Timer?
     private var updateCheckStarted = false
+    /// True while the one-time git download/install is running: the 15 s
+    /// refresh fallback must not overwrite the progress line in the menu with
+    /// "Git 未就绪" for minutes (v4.2.26).
+    private var gitInstalling = false
+    /// A folder that is configured but currently cannot be attached.
+    private var unavailableCount = 0
 
     // Internal for unit tests; the app uses `shared`.
     init(service: FileVaultService? = nil) {
@@ -70,8 +82,12 @@ final class AppState: ObservableObject {
     /// was performed (the caller must stop starting services).
     private func recoverFromFailedUpdateIfNeeded() -> Bool {
         let configDirectory = ConfigStore.defaultDirectory
+        // Only roll back when the running bundle is still the version the
+        // marker was written for: a user who manually reinstalled another
+        // (working) build must not have it replaced by the stale .old copy
+        // (v4.2.26).
         guard let marker = UpdateGuard.consumeLaunch(configDirectory: configDirectory),
-              UpdateGuard.shouldRollback(marker) else {
+              UpdateGuard.shouldRollback(marker, currentVersion: Self.bundleVersion) else {
             return false
         }
         guard let source = UpdateGuard.rollbackSource(for: Bundle.main.bundleURL) else {
@@ -103,13 +119,52 @@ final class AppState: ObservableObject {
         relaunch.executableURL = URL(fileURLWithPath: "/bin/sh")
         relaunch.arguments = ["-c", "sleep 1 && /usr/bin/open " + SelfUpdater.shellQuoted(bundle.path)]
         try? relaunch.run()
-        notificationService.notifyFailure(
-            NSLocalizedString("已回滚到上一版本", comment: "update notification"),
-            String(format: NSLocalizedString("新版本连续 3 次未能正常启动，已自动恢复到 v%@",
-                                             comment: "update notification"),
-                   marker.previousVersion))
+        // The rollback notice cannot be posted from THIS process: the
+        // notification service has not been set up yet and the process exits
+        // immediately, so the user never saw it (v4.2.26). Persist it and let
+        // the restored version post it on its next launch.
+        writeRollbackNotice(previousVersion: marker.previousVersion)
+        // The rolled-back bundle is worthless (it failed to start 3+ times)
+        // and used to stay in /Applications forever as an unexplained
+        // "FileVault.app.failed" folder. The rollback notice + config already
+        // preserve what happened (v4.2.27).
+        try? fm.removeItem(at: failed)
+        // Orphaned staging dirs from a killed process (power loss during
+        // extract) used to stay in /Applications forever (v4.2.27).
+        SelfUpdater.sweepOrphanStagingDirs(in: bundle.deletingLastPathComponent())
         NSApp.terminate(nil)
         return true
+    }
+
+    // MARK: - Rollback notice (v4.2.26)
+
+    private struct RollbackNotice: Codable {
+        let previousVersion: String
+    }
+
+    private var rollbackNoticeURL: URL {
+        ConfigStore.defaultDirectory.appendingPathComponent("update-rollback-notice.json")
+    }
+
+    /// Persist "we rolled back" so the restored build can tell the user once it
+    /// has a running notification service.
+    private func writeRollbackNotice(previousVersion: String) {
+        let url = rollbackNoticeURL
+        try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(),
+                                                 withIntermediateDirectories: true)
+        if let data = try? JSONEncoder().encode(RollbackNotice(previousVersion: previousVersion)) {
+            try? data.write(to: url, options: .atomic)
+        }
+    }
+
+    /// Read-and-remove the pending rollback notice (nil when there is none).
+    private func consumeRollbackNotice() -> String? {
+        let url = rollbackNoticeURL
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        try? FileManager.default.removeItem(at: url)
+        guard let notice = try? JSONDecoder().decode(RollbackNotice.self, from: data),
+              !notice.previousVersion.isEmpty else { return nil }
+        return notice.previousVersion
     }
 
     func start() {
@@ -120,6 +175,21 @@ final class AppState: ObservableObject {
         let svc = FileVaultService()
         service = svc
         notificationService.setup()
+        // Sync the preference BEFORE anything can enqueue: the authorization
+        // callback can beat the first refresh() (git probe takes 0.5-2 s), and
+        // setAuthorized() flushes the queue without re-checking `enabled`, so a
+        // switched-off preference was ignored for every startup notification
+        // (unmounted disk, corrupted repo, rollback notice) (v4.2.27).
+        notificationService.enabled = svc.configStore.load().general.notificationsEnabled
+        // A rollback performed by the PREVIOUS process could not notify (see
+        // writeRollbackNotice); report it now that a notification service exists.
+        if let rolledBackFrom = consumeRollbackNotice() {
+            notificationService.notifyFailure(
+                NSLocalizedString("已回滚到上一版本", comment: "update notification"),
+                String(format: NSLocalizedString("新版本连续 3 次未能正常启动，已自动恢复到 v%@",
+                                                 comment: "update notification"),
+                       rolledBackFrom))
+        }
         svc.onFailure.handler = { [weak self] title, body in
             self?.notificationService.notifyFailure(title, body)
         }
@@ -127,6 +197,9 @@ final class AppState: ObservableObject {
         // 用户能看到"正在下载 git（ghfast.top 加速）…"而不是干等。
         svc.envGuard.onInstallProgress = { [weak self] stage, _, mirror in
             let text: String
+            // While this is true the 15 s refresh fallback must not replace the
+            // progress line or the menu icon (v4.2.26).
+            let installing = stage != .ready
             switch stage {
             case .resolving:
                 text = NSLocalizedString("准备下载 git…", comment: "git install status")
@@ -142,12 +215,17 @@ final class AppState: ObservableObject {
             case .ready:
                 text = NSLocalizedString("git 已就绪", comment: "git install status")
             }
-            Task { @MainActor in self?.statusLine = text }
+            Task { @MainActor in
+                self?.gitInstalling = installing
+                self?.statusLine = text
+            }
         }
         Task { [weak self] in
             do {
                 try await svc.startWithAutoInstall(installer: svc.envGuard)
+                self?.gitInstalling = false
             } catch {
+                self?.gitInstalling = false
                 // Surface the real reason (which mirrors failed, timeouts) instead of a
                 // generic "install failed" — FR-01 must never dead-end the user.
                 let detail = error.localizedDescription
@@ -221,6 +299,10 @@ final class AppState: ObservableObject {
             try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
             guard let self, let svc = service else { return }
             let enabled = svc.configStore.load().general.autoCheckUpdates
+            // Turning auto-check off must also clear the standing "failure,
+            // will retry in the background" menu line: nothing will retry
+            // (v4.2.26).
+            if !enabled { lastUpdateCheckFailed = false }
             if UpdateCheckSchedule.shouldCheck(autoCheckEnabled: enabled) {
                 await checkForUpdate(silent: true)
             }
@@ -234,30 +316,52 @@ final class AppState: ObservableObject {
 
     func refresh() async {
         guard let svc = service else { return }
+        notificationService.enabled = svc.configStore.load().general.notificationsEnabled
+        // List the CONFIGURED folders, not only the attached ones (v4.2.26): a
+        // folder whose external disk is unplugged, that was moved, or that another
+        // FileVault instance owns used to vanish from the menu/dashboard/settings
+        // with no way to relocate or remove it — exactly what the docs promise
+        // the app shows.
+        let configured = svc.configuredRoots()
         var newRoots: [RootMenuEntry] = []
         // Rebuild the cache every pass: a removed folder used to leave its old
         // .failed state behind, so the menu bar kept a warning icon and the
         // status line kept "推送失败" for a folder that no longer exists.
         var newStatusCache: [String: SyncStatus] = [:]
-        let rootPaths = svc.rootsSnapshot()
-        notificationService.enabled = svc.configStore.load().general.notificationsEnabled
-        for root in rootPaths {
-            // v4.0: one repo per protected folder — no subfolder enumeration.
-            let st = await svc.sync.status(for: root)
-            newStatusCache[root] = st
+        var unavailable = 0
+        var anyFailed = false
+        for cfgRoot in configured {
+            let root = cfgRoot.path
+            let attached = svc.isAttached(root: root)
+            var st: SyncStatus = .noRemote
+            if attached {
+                st = await svc.sync.status(for: root)
+                newStatusCache[root] = st
+                if st == .failed { anyFailed = true }
+            } else {
+                unavailable += 1
+            }
             newRoots.append(RootMenuEntry(id: root,
                                           name: (root as NSString).lastPathComponent,
                                           path: root,
-                                          status: st))
+                                          status: st,
+                                          unavailable: !attached,
+                                          paused: cfgRoot.paused))
         }
         roots = newRoots
         statusCache = newStatusCache
-        rootCount = rootPaths.count
+        unavailableCount = unavailable
+        rootCount = configured.count
         envReady = svc.detection != nil
-        let failed = newStatusCache.values.contains(.failed)
+        // The installer owns the status line while a download runs: the old
+        // code let this 15 s fallback replace "正在下载 git（…）" with
+        // "Git 未就绪" for the whole download (v4.2.26).
+        if gitInstalling { return }
         let state: String
-        if failed {
+        if anyFailed {
             state = NSLocalizedString("推送失败", comment: "menu state")
+        } else if unavailable > 0 {
+            state = NSLocalizedString("文件夹不可用", comment: "menu state")
         } else if !envReady {
             state = NSLocalizedString("Git 未就绪", comment: "menu state")
         } else {
@@ -270,14 +374,20 @@ final class AppState: ObservableObject {
     }
 
     /// SF Symbol for the overall state (FR-08). Always a visible glyph.
-    nonisolated static func statusSymbol(envReady: Bool, statuses: [SyncStatus]) -> String {
-        if !envReady || statuses.contains(.failed) { return "exclamationmark.triangle" }
+    nonisolated static func statusSymbol(envReady: Bool, statuses: [SyncStatus],
+                                        hasUnavailable: Bool = false) -> String {
+        if !envReady || hasUnavailable || statuses.contains(.failed) {
+            return "exclamationmark.triangle"
+        }
         if statuses.contains(.pendingPush) || statuses.contains(.pushing) { return "arrow.up.arrow.down.circle" }
         return "clock.arrow.circlepath"
     }
 
     var menuIcon: String {
-        Self.statusSymbol(envReady: envReady, statuses: Array(statusCache.values))
+        if gitInstalling { return "arrow.down.circle" }
+        return Self.statusSymbol(envReady: envReady,
+                                 statuses: Array(statusCache.values),
+                                 hasUnavailable: unavailableCount > 0)
     }
 
     /// Menu identity data (replaces the former AppDelegate.menuSignature).
@@ -337,6 +447,8 @@ final class AppState: ObservableObject {
     /// Last silent check failed → surfaced in the menu so flaky networks are
     /// visible instead of silently starving updates (v3.1.2).
     @Published var lastUpdateCheckFailed = false
+    /// Offer version already announced via notification (dedupe; v4.2.27).
+    @Published var lastNotifiedUpdateVersion: String?
     /// Set by the menu bar to open the dashboard's quick-add sheet (v4.2.18).
     @Published var quickAddRequested = false
     /// Shared 历史与恢复 window: which tab to show (v4.2.20).
@@ -377,10 +489,16 @@ final class AppState: ObservableObject {
             return
         }
         // v2.4.0: automatic install — silent self-updating with menu progress.
-        notificationService.notifyFailure(
-            NSLocalizedString("发现新版本", comment: "update notification"),
-            String(format: NSLocalizedString("FileVault %@ 正在自动更新，完成后将自动重启。",
-                                             comment: "update notification"), offer.version))
+        // A persistently failing install re-offered the same version every
+        // hour: same banner, same ~22 MB download, over and over. Notify once
+        // per version; the menu keeps showing the failure reason (v4.2.27).
+        if lastNotifiedUpdateVersion != offer.version {
+            lastNotifiedUpdateVersion = offer.version
+            notificationService.notifyFailure(
+                NSLocalizedString("发现新版本", comment: "update notification"),
+                String(format: NSLocalizedString("FileVault %@ 正在自动更新，完成后将自动重启。",
+                                                 comment: "update notification"), offer.version))
+        }
         await installUpdate(offer: offer)
     }
 
@@ -393,6 +511,13 @@ final class AppState: ObservableObject {
             return
         }
         updateActivity = UpdateActivity(phase: .downloading)
+        // One cleanup point for every failure path: a failed install used to
+        // leave the ~22 MB zip in /tmp, and the hourly retry accumulated them
+        // (v4.2.26).
+        var downloadedZip: URL?
+        defer {
+            if let z = downloadedZip { try? FileManager.default.removeItem(at: z) }
+        }
         do {
             let zip = try await UpdateDownloader.download(info: offer) { [weak self] fraction, received, total in
                 Task { @MainActor in
@@ -402,24 +527,44 @@ final class AppState: ObservableObject {
                             + " / " + ByteCountFormatter.string(fromByteCount: total, countStyle: .file))
                 }
             }
+            // Hand the temp file to the cleanup above BEFORE any later throw
+            // (verify/replace failures used to leave ~22 MB in /tmp).
+            downloadedZip = zip
             updateActivity = UpdateActivity(phase: .verifying)
-            do {
+            // Hashing a ~22 MB zip and the ditto/codesign work of replace() used
+            // to run synchronously on the MainActor: the menu froze for seconds
+            // with no progress updates (v4.2.26).
+            try await Task.detached(priority: .userInitiated) {
                 try SelfUpdater.verify(zipURL: zip, expectedSHA256: offer.sha256)
+            }.value
+            updateActivity = UpdateActivity(phase: .installing)
+            // Arm crash-loop detection BEFORE swapping the bundles: when the
+            // marker could not be written (disk full / read-only config dir),
+            // a half-broken new build would have no way back (v4.2.26).
+            let configDirectory = ConfigStore.defaultDirectory
+            guard UpdateGuard.beginUpdate(configDirectory: configDirectory,
+                                          previousVersion: version,
+                                          newVersion: offer.version) else {
+                throw UpdateError.installFailed(
+                    NSLocalizedString("无法写入更新状态文件（配置目录不可写），已取消安装",
+                                      comment: "update error"))
+            }
+            let bundleURL = Bundle.main.bundleURL
+            do {
+                try await Task.detached(priority: .userInitiated) {
+                    try SelfUpdater.replace(bundleURL: bundleURL, newZipURL: zip, relaunch: false)
+                }.value
             } catch {
-                try? FileManager.default.removeItem(at: zip)
+                // The swap did not happen: clear the marker so the next launch
+                // does not count this as a failed startup.
+                UpdateGuard.cancelUpdate(configDirectory: configDirectory)
                 throw error
             }
-            updateActivity = UpdateActivity(phase: .installing)
-            try SelfUpdater.replace(bundleURL: Bundle.main.bundleURL, newZipURL: zip, relaunch: false)
-            // The extracted bundle is in place; the zip is no longer needed
-            // (each successful update used to leave ~22 MB in /tmp).
-            try? FileManager.default.removeItem(at: zip)
-            // Arm crash-loop detection: the marker is cleared once the new
-            // build reaches a working startup (see start()).
-            UpdateGuard.beginUpdate(configDirectory: ConfigStore.defaultDirectory,
-                                    previousVersion: version,
-                                    newVersion: offer.version)
             updateActivity = UpdateActivity(phase: .restarting)
+            // Remove the zip NOW: the success path ends in exit(0), which does
+            // NOT run `defer` — the ~22 MB zip stayed in /tmp forever (v4.2.27).
+            if let z = downloadedZip { try? FileManager.default.removeItem(at: z) }
+            downloadedZip = nil
             // Relaunch via a detached helper AFTER we exit: open issued while
             // the old instance is still alive would only activate it (v2.6.6).
             let bundlePath = Bundle.main.bundleURL.path

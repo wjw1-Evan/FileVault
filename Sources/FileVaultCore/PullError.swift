@@ -263,12 +263,18 @@ public enum PullError: Error, LocalizedError, Equatable {
     }
 
     /// Unambiguous connectivity failures — checked before auth on purpose.
+    ///
+    /// v4.2.26: these used to include bare substrings ("ssl", "tls",
+    /// "proxy"). A remote URL or branch name containing them made an expired
+    /// token look like a network outage and sent the user hunting a proxy; only
+    /// specific phrases count now.
     private static let explicitNetworkMarkers = [
         "could not resolve host", "connection refused", "connection timed out",
         "operation timed out", "network is unreachable", "connection reset",
         "failed to connect", "could not connect", "no route to host",
-        "connection closed", "early eof", "rpc failed", "ssl", "tls",
-        "proxy", "ssh: connect to host",
+        "connection closed", "early eof", "rpc failed", "ssh: connect to host",
+        "ssl certificate", "certificate problem", "tls handshake", "gnutls",
+        "schannel", "proxy connect", "proxy authentication",
     ]
 
     /// "unable to access" also wraps HTTP authentication errors, so it is only

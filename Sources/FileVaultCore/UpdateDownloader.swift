@@ -14,13 +14,31 @@ public enum UpdateDownloader {
             do {
                 return try await downloadOnce(info: info, progress: progress)
             } catch {
-                lastError = error
+                // Normalise so the retry ranking always compares UpdateErrors.
+                lastError = Self.moreSpecific(Self.transportError(error), than: lastError)
                 if attempt < attempts {
                     try? await Task.sleep(nanoseconds: UInt64(attempt) * 1_500_000_000)
                 }
             }
         }
         throw lastError
+    }
+
+    /// Keep the most diagnosable failure across retries: an HTTP status or a
+    /// transport message beats the generic `.downloadFailed` (v4.2.26). The old
+    /// code just kept the last attempt's error, which was often the generic one,
+    /// so users could not tell "no network / proxy" from "bad package".
+    static func moreSpecific(_ candidate: Error, than current: Error) -> Error {
+        func rank(_ error: Error) -> Int {
+            guard let updateError = error as? UpdateError else { return 0 }
+            switch updateError {
+            case .httpStatus: return 3
+            case .downloadTransport, .checksumMismatch, .missingChecksum: return 2
+            case .downloadFailed: return 0
+            default: return 1
+            }
+        }
+        return rank(candidate) >= rank(current) ? candidate : current
     }
 
     /// One download attempt: stream `browser_download_url` to a temp file.
@@ -31,11 +49,19 @@ public enum UpdateDownloader {
         }
         var req = URLRequest(url: url, timeoutInterval: 60)
         req.setValue("FileVaultApp", forHTTPHeaderField: "User-Agent")
-        let (bytes, response) = try await URLSession.shared.bytes(for: req)
+        let bytes: URLSession.AsyncBytes
+        let response: URLResponse
+        do {
+            (bytes, response) = try await URLSession.shared.bytes(for: req)
+        } catch {
+            // Preserve the transport diagnosis (offline, DNS, proxy, TLS, …)
+            // instead of collapsing it into the generic .downloadFailed.
+            throw Self.transportError(error)
+        }
         // Only HTTP responses carry a failure status; non-HTTP schemes (file://,
         // used by tests and offline mirrors) with no transport error are fine.
         if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
-            throw UpdateError.downloadFailed
+            throw UpdateError.httpStatus(http.statusCode)
         }
         let total = info.assetSize > 0 ? info.assetSize : response.expectedContentLength
         // The asset name comes from the GitHub API: never let it add path
@@ -47,36 +73,64 @@ public enum UpdateDownloader {
         let dest = FileManager.default.temporaryDirectory
             .appendingPathComponent("fv-update-\(UUID().uuidString.prefix(8))-\(name)")
         try? FileManager.default.removeItem(at: dest)
-        FileManager.default.createFile(atPath: dest.path, contents: nil)
-        let handle = try FileHandle(forWritingTo: dest)
+        guard FileManager.default.createFile(atPath: dest.path, contents: nil) else {
+            throw UpdateError.downloadFailed
+        }
+        let handle: FileHandle
+        do {
+            handle = try FileHandle(forWritingTo: dest)
+        } catch {
+            try? FileManager.default.removeItem(at: dest)
+            throw UpdateError.downloadTransport(error.localizedDescription)
+        }
+        // Any throw below — including a size mismatch or a mid-stream transport
+        // error — must remove the partial file: retries used to leave one
+        // half-written ~22 MB zip per attempt in /tmp forever (v4.2.26).
+        var completed = false
+        defer {
+            try? handle.close()
+            if !completed {
+                try? FileManager.default.removeItem(at: dest)
+            }
+        }
         try handle.truncate(atOffset: 0)
-        defer { try? handle.close() }
         var buffer = Data()
         var received: Int64 = 0
         var lastReported = 0.0
-        for try await byte in bytes {
-            buffer.append(byte)
-            if buffer.count >= 64 * 1024 {
-                try handle.write(contentsOf: buffer)
-                received += Int64(buffer.count)
-                buffer.removeAll(keepingCapacity: true)
-                if total > 0 {
-                    let fraction = Double(received) / Double(total)
-                    if fraction - lastReported >= 0.01 {
-                        lastReported = fraction
-                        progress?(fraction, received, total)
+        do {
+            for try await byte in bytes {
+                buffer.append(byte)
+                if buffer.count >= 64 * 1024 {
+                    try handle.write(contentsOf: buffer)
+                    received += Int64(buffer.count)
+                    buffer.removeAll(keepingCapacity: true)
+                    if total > 0 {
+                        let fraction = Double(received) / Double(total)
+                        if fraction - lastReported >= 0.01 {
+                            lastReported = fraction
+                            progress?(fraction, received, total)
+                        }
                     }
                 }
             }
-        }
-        if !buffer.isEmpty {
-            try handle.write(contentsOf: buffer)
-            received += Int64(buffer.count)
+            if !buffer.isEmpty {
+                try handle.write(contentsOf: buffer)
+                received += Int64(buffer.count)
+            }
+        } catch {
+            throw Self.transportError(error)
         }
         if total > 0, received != total {
             throw UpdateError.downloadFailed
         }
         progress?(1.0, received, total)
+        completed = true
         return dest
+    }
+
+    /// Map a thrown error to the most readable download error.
+    static func transportError(_ error: Error) -> UpdateError {
+        if let updateError = error as? UpdateError { return updateError }
+        return UpdateError.downloadTransport(error.localizedDescription)
     }
 }

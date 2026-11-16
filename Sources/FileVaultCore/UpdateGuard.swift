@@ -15,16 +15,35 @@ public enum UpdateGuard {
     static let markerFileName = "update-attempt.json"
 
     public struct Marker: Codable, Equatable, Sendable {
+        /// Schema version for FUTURE evolution: a hand-written decoder keeps
+        /// old markers loadable when non-optional fields are added later — a
+        /// synthesized decoder would fail the whole marker and silently
+        /// disable the crash-loop protection (v4.2.27).
+        public var version: Int
         public var previousVersion: String
         public var newVersion: String
         public var attempts: Int
         public var startedAt: Date
 
+        enum CodingKeys: String, CodingKey {
+            case version, previousVersion, newVersion, attempts, startedAt
+        }
+
         public init(previousVersion: String, newVersion: String, attempts: Int = 0, startedAt: Date = Date()) {
+            self.version = 1
             self.previousVersion = previousVersion
             self.newVersion = newVersion
             self.attempts = attempts
             self.startedAt = startedAt
+        }
+
+        public init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            version = try c.decodeIfPresent(Int.self, forKey: .version) ?? 1
+            previousVersion = try c.decode(String.self, forKey: .previousVersion)
+            newVersion = try c.decode(String.self, forKey: .newVersion)
+            attempts = try c.decode(Int.self, forKey: .attempts)
+            startedAt = try c.decodeIfPresent(Date.self, forKey: .startedAt) ?? Date()
         }
     }
 
@@ -40,9 +59,22 @@ public enum UpdateGuard {
     }
 
     /// Record that an update is about to be installed (called before relaunch).
-    public static func beginUpdate(configDirectory: URL, previousVersion: String, newVersion: String) {
+    ///
+    /// Returns false when the marker could not be persisted (read-only config
+    /// dir, disk full, …). Without a marker a broken new build can never be
+    /// rolled back, so the caller must abort the install instead of silently
+    /// losing the crash-loop protection (v4.2.26).
+    @discardableResult
+    public static func beginUpdate(configDirectory: URL, previousVersion: String, newVersion: String) -> Bool {
         let marker = Marker(previousVersion: previousVersion, newVersion: newVersion, attempts: 0)
-        write(marker, configDirectory: configDirectory)
+        return write(marker, configDirectory: configDirectory)
+    }
+
+    /// Remove a pending marker: called when the update is aborted after
+    /// `beginUpdate` armed it (e.g. the new package could not be moved into
+    /// place), so the next launch does not treat it as a crash loop (v4.2.26).
+    public static func cancelUpdate(configDirectory: URL) {
+        try? FileManager.default.removeItem(at: markerURL(configDirectory: configDirectory))
     }
 
     /// Called on every launch: bumps the attempt counter and returns the marker
@@ -61,6 +93,23 @@ public enum UpdateGuard {
     }
 
     /// More attempts than allowed → the bundle is presumed broken.
+    ///
+    /// Also requires that the running bundle is still the version the marker
+    /// was written for: if the user manually reinstalled another (working)
+    /// build after a couple of failed launches, rolling back to the stale
+    /// `.old` copy would destroy their recovery (v4.2.26).
+    public static func shouldRollback(_ marker: Marker, currentVersion: String) -> Bool {
+        // Semantic comparison instead of exact string equality: a release zip
+        // whose bundled version differs from its tag used to silently DISABLE
+        // the rollback guard for that update (v4.2.27).
+        marker.attempts >= maxLaunchAttempts
+            && HttpReleaseFetcher.compare(marker.newVersion, currentVersion) == 0
+    }
+
+    /// Legacy overload without the running version. Kept for source
+    /// compatibility with callers that only have the marker; new code should
+    /// pass `currentVersion` so a manual reinstall is never rolled back.
+    @available(*, deprecated, message: "Pass the running version: shouldRollback(_:currentVersion:)")
     public static func shouldRollback(_ marker: Marker) -> Bool {
         marker.attempts >= maxLaunchAttempts
     }
@@ -73,13 +122,29 @@ public enum UpdateGuard {
         return candidate
     }
 
-    static func write(_ marker: Marker, configDirectory: URL) {
+    /// Persist the marker; returns false when the directory or file could not
+    /// be written. The old version used `try?` everywhere, so a failed marker
+    /// write left the app updated but without crash-loop protection (v4.2.26).
+    @discardableResult
+    static func write(_ marker: Marker, configDirectory: URL) -> Bool {
         let fm = FileManager.default
-        try? fm.createDirectory(at: configDirectory, withIntermediateDirectories: true)
+        do {
+            try fm.createDirectory(at: configDirectory, withIntermediateDirectories: true)
+        } catch {
+            return false
+        }
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
-        guard let data = try? encoder.encode(marker) else { return }
-        try? data.write(to: markerURL(configDirectory: configDirectory), options: .atomic)
+        guard let data = try? encoder.encode(marker) else { return false }
+        let url = markerURL(configDirectory: configDirectory)
+        do {
+            try data.write(to: url, options: .atomic)
+        } catch {
+            return false
+        }
+        // Verify the marker really landed: a silent write failure would leave
+        // the freshly updated app without crash-loop protection.
+        return fm.fileExists(atPath: url.path)
     }
 }
 

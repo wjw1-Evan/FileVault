@@ -24,6 +24,12 @@ struct RepoSection: Identifiable, Equatable {
     var remoteNames: [String] = []
     var message: String = ""
     var messageIsError: Bool = false
+    /// False for a configured folder that is not attached right now (external
+    /// disk unplugged, folder moved, another live instance): the card then
+    /// shows why and only offers relocate/remove (v4.2.26 audit M8).
+    var available: Bool = true
+    /// Shown in SSH mode when ~/.ssh has no public key (v4.2.26 audit M8).
+    var authGuidance: String = ""
 }
 
 struct RootCard: Identifiable, Equatable {
@@ -69,24 +75,76 @@ final class SettingsModel: ObservableObject {
 
     /// Paths the user typed into — async refill must not wipe them.
     private var editedPaths: Set<String> = []
-    /// Folders with a remote pull/sync already running (reentrancy guard).
+    /// Paths whose auth mode / account fields the user changed but not saved yet;
+    /// background refills must not snap them back (v4.2.26 audit M8).
+    private var editedAuthModes: Set<String> = []
+    /// Username field touched but not saved: background refreshes must not
+    /// snap it back to the stored credential's username mid-typing (v4.2.27).
+    private var editedAuthUsers: Set<String> = []
+    /// Folders with a save/test operation already running (reentrancy guard).
     private var busyRepos: Set<String> = []
     private var generalCommitted = false
     private var app: AppState?
+    /// Service state-change subscription (v4.2.26 audits M8/M9).
+    private var listenerToken: UUID?
+    /// Debounced reload triggered by a state change while the page is visible.
+    private var pendingReload: Task<Void, Never>?
+    /// Startup readiness poll; cancelled when the window closes.
+    private var startupTask: Task<Void, Never>?
+    /// False between onDisappear and the next bind.
+    private var bound = false
 
     func bind(_ app: AppState) {
-        guard self.app == nil else { return }
         self.app = app
+        bound = true
         reload()
+        startListening()
+        if service?.isReady == true { return }
         // A window opened during startup (login launch, or --open-ui) can appear
-        // before FileVaultService exists. Without this the page stays stuck on
-        // "还没有受保护的目录" with default preferences forever.
-        guard service == nil else { return }
-        Task { @MainActor [weak self] in
-            for _ in 0..<50 where self?.service == nil {
-                try? await Task.sleep(nanoseconds: 200_000_000)
+        // before FileVaultService exists, and even once it exists the git-backed
+        // services are built asynchronously (a first launch may download git
+        // first). Wait for readiness, then reload — otherwise the page stays
+        // stuck on "还没有受保护的文件夹" with default preferences (v4.2.26 M8/M9).
+        startupTask?.cancel()
+        startupTask = Task { @MainActor [weak self] in
+            while true {
+                guard let self, self.bound else { return }
+                if let svc = self.service, svc.isReady { break }
+                try? await Task.sleep(nanoseconds: 500_000_000)
+                if Task.isCancelled { return }
             }
-            guard let self, self.service != nil else { return }
+            guard let self, self.bound else { return }
+            self.reload()
+            self.startListening()
+        }
+    }
+
+    /// Refresh when folders are added/removed or a sync/commit transition lands,
+    /// while the settings window is open (v4.2.26 audit M8).
+    private func startListening() {
+        guard bound, listenerToken == nil, let svc = service else { return }
+        listenerToken = svc.addStateListener { [weak self] in
+            Task { @MainActor in self?.scheduleReload() }
+        }
+    }
+
+    /// The window went away: stop listening and cancel pending refreshes.
+    func unbind() {
+        bound = false
+        startupTask?.cancel()
+        startupTask = nil
+        pendingReload?.cancel()
+        pendingReload = nil
+        if let token = listenerToken { app?.service?.removeStateListener(token) }
+        listenerToken = nil
+    }
+
+    /// Rapid state flips coalesce into one reload (v4.2.26 audit M8).
+    private func scheduleReload() {
+        pendingReload?.cancel()
+        pendingReload = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            guard !Task.isCancelled, let self, self.bound else { return }
             self.reload()
         }
     }
@@ -97,7 +155,8 @@ final class SettingsModel: ObservableObject {
 
     func reload() {
         guard let svc = service else { return }
-        let general = svc.configStore.load().general
+        let config = svc.configStore.load()
+        let general = config.general
         loginIntent = general.launchAtLoginRequested || LaunchAtLogin.isEnabled
         notificationsEnabled = general.notificationsEnabled
         autoCheckUpdates = general.autoCheckUpdates
@@ -105,27 +164,75 @@ final class SettingsModel: ObservableObject {
         language = general.language
         generalCommitted = true
 
-        rootCards = svc.rootsSnapshot().map { root in
-            let cfgRoot = svc.configStore.load().roots.first { $0.path == root }
-            let name = (root as NSString).lastPathComponent
-            return RootCard(id: root, name: name,
-                            path: root, paused: cfgRoot?.paused ?? false,
-                            repo: RepoSection(id: root, name: name))
+        // A background state change can reload at any time: carry half-typed
+        // drafts and inline results over so they are never wiped mid-edit.
+        let previous = Dictionary(rootCards.map { ($0.id, $0.repo) },
+                                  uniquingKeysWith: { first, _ in first })
+        let ready = svc.isReady
+        // configuredRoots() (not rootsSnapshot()) so a folder that failed to
+        // attach still gets a card the user can relocate or remove; it used to
+        // vanish from Settings entirely (v4.2.26 audits M8/M9).
+        rootCards = svc.configuredRoots().map { managed in
+            let path = managed.path
+            let name = (path as NSString).lastPathComponent
+            var repo = RepoSection(id: path, name: name)
+            if let old = previous[path] {
+                repo.urlText = old.urlText
+                repo.authMode = old.authMode
+                repo.authUser = old.authUser
+                repo.authToken = old.authToken
+                repo.message = old.message
+                repo.messageIsError = old.messageIsError
+            }
+            if !ready {
+                repo.health = NSLocalizedString("正在加载…", comment: "settings status")
+            } else if !svc.isAttached(root: path) {
+                repo.available = false
+                repo.statusGlyph = "exclamationmark.triangle"
+                repo.statusColor = Color(nsColor: .systemRed)
+                repo.statusLabel = NSLocalizedString("不可用", comment: "settings status")
+                repo.health = Self.unavailableReason(path: path, svc: svc)
+            }
+            return RootCard(id: path, name: name, path: path,
+                            paused: managed.paused, repo: repo)
         }
-        for card in rootCards {
+        // Typed text for a folder that no longer exists is meaningless, and it
+        // used to survive remove→re-add so the remote field stayed empty.
+        let cardPaths = Set(rootCards.map(\.id))
+        editedPaths.formIntersection(cardPaths)
+        editedAuthModes.formIntersection(cardPaths)
+        for card in rootCards where card.repo.available && ready {
             fillRepoDetails(id: card.repo.id)
         }
     }
 
+    /// Why a configured folder is not attached, in user terms (v4.2.26 M8/M9).
+    static func unavailableReason(path: String, svc: FileVaultService) -> String {
+        if let reason = svc.attachError(root: path), !reason.isEmpty {
+            return reason.hasPrefix("⚠️") ? reason : "⚠️ " + reason
+        }
+        if !FileManager.default.fileExists(atPath: path) {
+            return NSLocalizedString("⚠️ 文件夹当前不可用（可能被移动或外置盘未挂载）",
+                                     comment: "repo health")
+        }
+        return NSLocalizedString("⚠️ 启动时未能挂载", comment: "repo health")
+    }
+
     /// Async fill: url/toggle/health/status/auth.
     private func fillRepoDetails(id: String) {
-        guard let svc = service else { return }
+        // repoManager is implicitly unwrapped until start() finishes: never ask
+        // for git facts before the service is ready (v4.2.26).
+        guard let svc = service, svc.isReady else { return }
         Task { [weak self] in
             let url = await svc.repoManager.remoteURL(path: id)
             let healthInfo = await svc.repoManager.health(path: id)
             let foreignInstancePID = svc.repoManager.foreignInstancePID(path: id)
             let st = await svc.sync.status(for: id)
             let mode = await svc.repoManager.authMode(path: id)
+            // SshKeyChecker.guidance is nil when a public key exists; it used to
+            // be dead code, so SSH setups failed with a raw git error and no
+            // explanation (v4.2.26 audit M8).
+            let sshGuidance = svc.sshChecker.guidance
             let remoteNames = await svc.repoManager.remoteNames(path: id)
             // The remote is the only authority on the single-file ceiling, so
             // the UI just mirrors it (v3.1.3: no local threshold setting).
@@ -149,7 +256,7 @@ final class SettingsModel: ObservableObject {
                 }
                 if let foreignInstancePID {
                     self.rootCards[idx].repo.health = String(
-                        format: NSLocalizedString("⚠️ 另一个 FileVault 实例正在管理（pid %d）",
+                        format: NSLocalizedString("⚠️ 另一个 FileVault 实例正在管理这个文件夹（pid %d）；退出那个实例后这里会自动接管",
                                                   comment: "repo health"), foreignInstancePID)
                 } else if let provider = CloudFolderAdvice.provider(for: id) {
                     self.rootCards[idx].repo.health = healthInfo.summary + String(
@@ -162,14 +269,21 @@ final class SettingsModel: ObservableObject {
                 self.rootCards[idx].repo.statusGlyph = glyph.symbol
                 self.rootCards[idx].repo.statusColor = glyph.color
                 self.rootCards[idx].repo.statusLabel = FVStatusMeta.forSync(st).label
-                self.rootCards[idx].repo.authMode = mode
+                self.rootCards[idx].repo.authGuidance = sshGuidance ?? ""
                 self.rootCards[idx].repo.remoteLimit = limitText
                 self.rootCards[idx].repo.remoteNames = remoteNames
-                if let stored {
-                    self.rootCards[idx].repo.authUser = stored.username
-                    self.rootCards[idx].repo.authTokenSaved = !stored.password.isEmpty
-                } else {
-                    self.rootCards[idx].repo.authTokenSaved = false
+                // An unsaved auth-mode/account edit must survive a background
+                // refresh instead of snapping back to the stored values.
+                if !self.editedAuthModes.contains(id) {
+                    self.rootCards[idx].repo.authMode = mode
+                    if let stored {
+                        if !self.editedAuthUsers.contains(id) {
+                            self.rootCards[idx].repo.authUser = stored.username
+                        }
+                        self.rootCards[idx].repo.authTokenSaved = !stored.password.isEmpty
+                    } else {
+                        self.rootCards[idx].repo.authTokenSaved = false
+                    }
                 }
             }
         }
@@ -306,7 +420,13 @@ final class SettingsModel: ObservableObject {
         guard let svc = service else { return }
         Task { [weak self] in
             await svc.removeRoot(path: card.path)
-            await MainActor.run { self?.reload() }
+            await MainActor.run {
+                // Drop the "user typed here" mark so re-adding the same path
+                // refills its remote field instead of showing it empty (M8/P3).
+                self?.editedPaths.remove(card.id)
+                self?.editedAuthModes.remove(card.id)
+                self?.reload()
+            }
         }
     }
 
@@ -341,6 +461,7 @@ final class SettingsModel: ObservableObject {
                 set: { [weak self] text in
                     guard let self, let idx = self.indexOf(id) else { return }
                     self.rootCards[idx].repo.authUser = text
+                    self.editedAuthUsers.insert(id)
                 })
     }
 
@@ -358,6 +479,7 @@ final class SettingsModel: ObservableObject {
                 set: { [weak self] v in
                     guard let self, let idx = self.indexOf(id) else { return }
                     self.rootCards[idx].repo.authMode = v
+                    self.editedAuthModes.insert(id)
                 })
     }
 
@@ -391,6 +513,17 @@ final class SettingsModel: ObservableObject {
     /// Shared save path: persist auth mode, configure + test + inline feedback (FR-06).
     func saveRepo(_ id: String) {
         guard let svc = service, let idx = indexOf(id) else { return }
+        // git not ready yet: repoManager/sync are implicit unwraps until
+        // start() finishes — these repo actions used to trap (v4.2.26 fixed
+        // only some entries; these were missed) (v4.2.27).
+        guard svc.isReady else {
+            setMessage(id, NSLocalizedString("Git 环境尚未就绪，请稍后重试（可在主面板查看原因）。", comment: "settings status"))
+            return
+        }
+        // A double click / repeated Return must not run two overlapping saves:
+        // two configureRemote/mergeSync/push chains race on index.lock and
+        // overwrite each other's status (v4.2.26 audit M8).
+        guard beginRepoOp(id) else { return }
         let section = rootCards[idx].repo
         let url = section.urlText.trimmingCharacters(in: .whitespacesAndNewlines)
         let mode = section.authMode
@@ -398,6 +531,7 @@ final class SettingsModel: ObservableObject {
         let token = section.authToken.trimmingCharacters(in: .whitespacesAndNewlines)
         Task { [weak self] in
             guard let self else { return }
+            defer { self.endRepoOp(id) }
             await MainActor.run { self.setMessage(id, NSLocalizedString("正在保存…", comment: "settings status")) }
             do {
                 if url.isEmpty {
@@ -406,6 +540,9 @@ final class SettingsModel: ObservableObject {
                         self.setMessage(id, NSLocalizedString("已清除远程仓库（仅本地模式）", comment: "settings status"))
                         self.fillRepoDetails(id: id)   // refresh the remote-derived limit
                     }
+                    self.editedPaths.remove(id)
+                    self.editedAuthModes.remove(id)
+                    self.editedAuthUsers.remove(id)
                     return
                 }
                 // Persist the picker selection and put the token in place BEFORE the
@@ -441,7 +578,7 @@ final class SettingsModel: ObservableObject {
                     break
                 case .auto:
                     if url.contains("github.com") && url.hasPrefix("https://") {
-                        _ = try? await GitRunner.ghAuthSetupGit()
+                        await GitRunner.ghAuthSetupGit()
                     }
                 }
 
@@ -449,6 +586,11 @@ final class SettingsModel: ObservableObject {
                 // v4.2: syncing is not optional — saving a remote makes this folder
                 // an automatically synced one, so auto-push is always on.
                 let change = try await svc.sync.configureRemote(repoPath: id, url: url, autoPush: true)
+                // The address is persisted now, so background refills may mirror
+                // it again without wiping the user's typing (v4.2.26 M8/P3).
+                self.editedPaths.remove(id)
+                self.editedAuthModes.remove(id)
+                    self.editedAuthUsers.remove(id)
                 if needsToken {
                     await MainActor.run {
                         self.setMessage(id, NSLocalizedString("已保存地址，但「用户名 + 访问令牌」还需要填写访问令牌（令牌只写进本机凭证库，不写进 git 配置）",
@@ -459,7 +601,6 @@ final class SettingsModel: ObservableObject {
                 await MainActor.run { self.setMessage(id, NSLocalizedString("已保存，正在测试连接…", comment: "settings status")) }
                 await MainActor.run { self.fillRepoDetails(id: id) }   // remote limit may have changed
                 let conn = await svc.sync.testConnectivity(repoPath: id)
-                self.editedPaths.remove(id)
                 let status: String
                 if change.changed && !change.fetchSucceeded {
                     status = String(format: NSLocalizedString("⚠️ 已保存新远程地址，但暂时读不到这个远程（检查地址或认证）：%@",
@@ -491,7 +632,18 @@ final class SettingsModel: ObservableObject {
 
     func testConnection(_ id: String) {
         guard let svc = service else { return }
+        // git not ready yet: repoManager/sync are implicit unwraps until
+        // start() finishes — these repo actions used to trap (v4.2.26 fixed
+        // only some entries; these were missed) (v4.2.27).
+        guard svc.isReady else {
+            setMessage(id, NSLocalizedString("Git 环境尚未就绪，请稍后重试（可在主面板查看原因）。", comment: "settings status"))
+            return
+        }
+        // Same reentrancy guard as save: a second click while ls-remote is in
+        // flight must not stack another git process (v4.2.26 audit M8).
+        guard beginRepoOp(id) else { return }
         Task { [weak self] in
+            defer { self?.endRepoOp(id) }
             let result = await svc.sync.testConnectivity(repoPath: id)
             await MainActor.run {
                 self?.connectionAlert = ConnectionAlert(ok: result.ok, detail: result.detail)
@@ -502,6 +654,13 @@ final class SettingsModel: ObservableObject {
     /// v4.0.5: read-only repository integrity check (git fsck --full).
     func checkIntegrity(_ id: String) {
         guard let svc = service else { return }
+        // git not ready yet: repoManager/sync are implicit unwraps until
+        // start() finishes — these repo actions used to trap (v4.2.26 fixed
+        // only some entries; these were missed) (v4.2.27).
+        guard svc.isReady else {
+            setMessage(id, NSLocalizedString("Git 环境尚未就绪，请稍后重试（可在主面板查看原因）。", comment: "settings status"))
+            return
+        }
         setMessage(id, NSLocalizedString("正在检查仓库完整性…", comment: "settings status"))
         Task { [weak self] in
             do {
@@ -556,6 +715,13 @@ final class SettingsModel: ObservableObject {
     /// v4.2.1: several remotes exist — pick which one the automatic sync uses.
     func setUpstreamRemote(_ id: String, remote: String) {
         guard let svc = service else { return }
+        // git not ready yet: repoManager/sync are implicit unwraps until
+        // start() finishes — these repo actions used to trap (v4.2.26 fixed
+        // only some entries; these were missed) (v4.2.27).
+        guard svc.isReady else {
+            setMessage(id, NSLocalizedString("Git 环境尚未就绪，请稍后重试（可在主面板查看原因）。", comment: "settings status"))
+            return
+        }
         setMessage(id, String(format: NSLocalizedString("正在把同步远程设为 %@…", comment: "settings status"), remote))
         Task { [weak self] in
             do {
@@ -578,6 +744,13 @@ final class SettingsModel: ObservableObject {
     /// blocks auto-commits and pulls. Offer a one-click cleanup.
     func repairInterruptedOperation(_ id: String) {
         guard let svc = service else { return }
+        // git not ready yet: repoManager/sync are implicit unwraps until
+        // start() finishes — these repo actions used to trap (v4.2.26 fixed
+        // only some entries; these were missed) (v4.2.27).
+        guard svc.isReady else {
+            setMessage(id, NSLocalizedString("Git 环境尚未就绪，请稍后重试（可在主面板查看原因）。", comment: "settings status"))
+            return
+        }
         Task { [weak self] in
             guard let self else { return }
             let state = await svc.repoManager.interruptedOperation(path: id)
@@ -612,14 +785,41 @@ final class SettingsModel: ObservableObject {
     }
 
     func openGitignoreEditor(_ id: String) {
-        guard let repos = service?.repoManager else { return }
+        guard let svc = service, svc.isReady else { return }
         let name = (id as NSString).lastPathComponent
-        gitignoreEditor = GitignoreEditorState(repoPath: id, repoName: name, draft: repos.gitignore(path: id))
+        do {
+            let draft = try svc.repoManager.readGitignore(path: id)
+            gitignoreEditor = GitignoreEditorState(repoPath: id, repoName: name, draft: draft)
+        } catch {
+            // Never open an empty editor when the rules could not be read:
+            // saving that blank draft would overwrite the user's .gitignore
+            // (e.g. a non-UTF-8 file or a permission error) — M8 data loss.
+            Task { await alert(NSLocalizedString("无法读取忽略规则", comment: "settings alert"),
+                               String(format: NSLocalizedString("读取 .gitignore 失败：%@。为避免覆盖已有规则，编辑器未打开。",
+                                                                comment: "settings alert"),
+                                      error.localizedDescription)) }
+        }
     }
 
-    func saveGitignore(_ state: GitignoreEditorState) {
-        service?.repoManager.saveGitignore(path: state.repoPath, content: state.draft)
+    /// Persist the .gitignore draft.
+    ///
+    /// Returns a readable failure message instead of throwing (the sheet shows
+    /// it and stays open, so a failed write never looks like a save); nil means
+    /// the rules were written and the editor can close (v4.2.26 audit M8).
+    @discardableResult
+    func saveGitignore(_ state: GitignoreEditorState) -> String? {
+        guard let svc = service, svc.isReady else {
+            return NSLocalizedString("Git 环境尚未就绪，请稍后重试（可在主面板查看原因）。",
+                                     comment: "quick add")
+        }
+        do {
+            try svc.repoManager.saveGitignore(path: state.repoPath, content: state.draft)
+        } catch {
+            return String(format: NSLocalizedString("⚠️ 保存失败：%@", comment: "settings status"),
+                          error.localizedDescription)
+        }
         gitignoreEditor = nil
+        return nil
     }
 
     func createRepoAndBind(target: String, name: String) {
@@ -694,6 +894,10 @@ struct SettingsView: View {
     @Environment(\.openWindow) private var openWindow
     @StateObject private var model = SettingsModel()
     @State private var removeTarget: RootCard?
+    /// Pause needs a confirmation: paused = edits generate NO versions while
+    /// paused, which fights the product's core promise — the user must see
+    /// that before the click lands (v4.2.27 design round).
+    @State private var pauseTarget: RootCard?
     /// Folded root cards (v3.4.2); persisted so the layout survives reopening.
     @State private var collapse = RootCollapseState.load()
 
@@ -702,7 +906,9 @@ struct SettingsView: View {
             VStack(alignment: .leading, spacing: 18) {
                 header
                 generalCard
-                supportCard
+                // Folder cards are the main content of this page; the static
+                // support card pushed them to the second screen (v4.2.27
+                // design round IA fix).
                 ForEach(model.rootCards) { card in
                     rootCard(card)
                 }
@@ -711,12 +917,14 @@ struct SettingsView: View {
                 } else {
                     addRootButton
                 }
+                supportCard
             }
             .padding(24)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .fvCanvas()
         .task { model.bind(app) }
+        .onDisappear { model.unbind() }
         .fileImporter(isPresented: $model.showFileImporter, allowedContentTypes: [.folder]) { result in
             if case .success(let url) = result {
                 model.addRoot(at: url)
@@ -729,6 +937,7 @@ struct SettingsView: View {
         }
         .sheet(item: $model.gitignoreEditor) { editor in
             GitignoreSheet(state: editor) { draft in
+                // Non-nil = the write failed: the sheet shows why and stays open.
                 model.saveGitignore(GitignoreEditorState(repoPath: editor.repoPath,
                                                          repoName: editor.repoName, draft: draft))
             }
@@ -759,6 +968,20 @@ struct SettingsView: View {
             Button("取消", role: .cancel) { removeTarget = nil }
         } message: {
             Text("FileVault 只是不再守卫这个文件夹，已经生成的 .git 历史不会被删除。")
+        }
+        .confirmationDialog("暂停自动提交？", isPresented: Binding(
+            get: { pauseTarget != nil },
+            set: { if !$0 { pauseTarget = nil } }), titleVisibility: .visible) {
+            Button(String(format: NSLocalizedString("暂停「%@」", comment: "pause confirm"),
+                          pauseTarget?.name ?? ""), role: .destructive) {
+                if let target = pauseTarget {
+                    model.pauseRoot(target, to: true)
+                }
+                pauseTarget = nil
+            }
+            Button("取消", role: .cancel) { pauseTarget = nil }
+        } message: {
+            Text("暂停期间的新改动不会生成版本、也不受保护；恢复暂停时会自动补交一次改动。请只用于搬运/整理文件夹等短时操作。")
         }
     }
 
@@ -796,17 +1019,19 @@ struct SettingsView: View {
                         .labelsHidden()
                         .toggleStyle(.switch)
                         .controlSize(.small)
+                        .accessibilityLabel(Text("登录时启动"))
                 }
                 FVHairline(leading: 16)
             }
-            settingRow(title: "推送失败通知",
-                       detail: "认证失效或网络异常时提醒一次") {
+            settingRow(title: "问题提醒通知",
+                       detail: "提交/推送失败、大文件未备份等一次性提醒") {
                 Toggle("", isOn: Binding(
                     get: { model.notificationsEnabled },
                     set: { model.notificationsEnabled = $0; model.commitGeneral() }))
                     .labelsHidden()
                     .toggleStyle(.switch)
                     .controlSize(.small)
+                    .accessibilityLabel(Text("问题提醒通知"))
             }
             FVHairline(leading: 16)
             settingRow(title: "自动检查更新",
@@ -817,6 +1042,7 @@ struct SettingsView: View {
                     .labelsHidden()
                     .toggleStyle(.switch)
                     .controlSize(.small)
+                    .accessibilityLabel(Text("自动检查更新"))
             }
             FVHairline(leading: 16)
             settingRow(title: "自动提交延迟",
@@ -829,6 +1055,7 @@ struct SettingsView: View {
                     }
                 }
                 .labelsHidden()
+                .accessibilityLabel(Text("自动提交延迟"))
                 .frame(width: 92)
             }
             FVHairline(leading: 16)
@@ -842,6 +1069,7 @@ struct SettingsView: View {
                     }
                 }
                 .labelsHidden()
+                .accessibilityLabel(Text("语言"))
                 .frame(width: 150)
             }
             FVHairline(leading: 16)
@@ -955,8 +1183,18 @@ struct SettingsView: View {
                 .help(isCollapsed ? "展开文件夹" : "折叠文件夹")
                 Menu {
                     Button("在 Finder 中打开") { app.openPath(card.path) }
-                    Button(card.paused ? "恢复自动提交" : "暂停自动提交") {
-                        model.pauseRoot(card, to: !card.paused)
+                    // Pausing an unavailable folder is meaningless: there is no
+                    // watcher/commit pipeline for it right now (v4.2.26 M8).
+                    if card.repo.available {
+                        // Pause = edits generate no versions while paused: confirm
+                        // first. Resume is safe and stays one-click (v4.2.27).
+                        Button(card.paused ? "恢复自动提交" : "暂停自动提交") {
+                            if card.paused {
+                                model.pauseRoot(card, to: false)
+                            } else {
+                                pauseTarget = card
+                            }
+                        }
                     }
                     Divider()
                     Button("移除文件夹…", role: .destructive) { removeTarget = card }
@@ -975,15 +1213,16 @@ struct SettingsView: View {
 
             if !isCollapsed {
                 FVHairline(leading: 0)
-                repoBlock(card.repo)
+                repoBlock(card)
             }
         }
         .fvCard()
     }
 
     /// One repo: identity + status, remote field, then a calm row of controls.
-    private func repoBlock(_ repo: RepoSection) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
+    private func repoBlock(_ card: RootCard) -> some View {
+        let repo = card.repo
+        return VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .center, spacing: 7) {
                 // The status glyph already sits in the folder header; here the
                 // same state is spelled out once (v4.2.21).
@@ -994,53 +1233,72 @@ struct SettingsView: View {
                 Text(repo.health)
                     .font(.system(size: 10))
                     .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                    .lineLimit(repo.available ? 1 : 2)
             }
 
-            HStack(spacing: 8) {
-                TextField("远程仓库地址（留空 = 仅本地）", text: model.urlBinding(repo.id))
-                    .textFieldStyle(.roundedBorder)
-                    .controlSize(.small)
-                    .font(.system(size: 11))
-                    .onSubmit { model.saveRepo(repo.id) }
-                Button("保存") { model.saveRepo(repo.id) }
-                    .controlSize(.small)
-                Button("测试") { model.testConnection(repo.id) }
-                    .controlSize(.small)
-            }
-
-            HStack(spacing: 12) {
-                // Authentication is "auto" for almost everyone; keep the
-                // controls folded so a folder card reads as a URL + status.
-                RepoAuthSection(repo: repo,
-                                mode: model.authModeBinding(repo.id),
-                                user: model.authUserBinding(repo.id),
-                                token: model.authTokenBinding(repo.id),
-                                save: { model.saveRepo(repo.id) })
-                Text(repo.remoteLimit)
-                    .font(.system(size: 10))
-                    .foregroundStyle(.tertiary)
-                    .lineLimit(1)
-                Spacer(minLength: 4)
-                Menu("更多") {
-                    if repo.remoteNames.count > 1 {
-                        Menu("同步使用的远程") {
-                            ForEach(repo.remoteNames, id: \.self) { name in
-                                Button(name) { model.setUpstreamRemote(repo.id, remote: name) }
-                            }
-                        }
-                        Divider()
-                    }
-                    Button("编辑忽略规则…") { model.openGitignoreEditor(repo.id) }
-                    Button("重新定位（文件夹被移动/改名）…") { model.relocateRoot(repo.id) }
-                    Button("在 GitHub 建仓并绑定…") { model.createRepoTarget = repo.id }
-                    Divider()
-                    Button("检查仓库完整性…") { model.checkIntegrity(repo.id) }
-                    Button("修复未完成的合并/变基…") { model.repairInterruptedOperation(repo.id) }
+            if repo.available {
+                HStack(spacing: 8) {
+                    TextField("远程仓库地址（留空 = 仅本地）", text: model.urlBinding(repo.id))
+                        .textFieldStyle(.roundedBorder)
+                        .controlSize(.small)
+                        .font(.system(size: 11))
+                        .onSubmit { model.saveRepo(repo.id) }
+                    Button("保存") { model.saveRepo(repo.id) }
+                        .controlSize(.small)
+                    Button("测试") { model.testConnection(repo.id) }
+                        .controlSize(.small)
                 }
-                .controlSize(.small)
-                .menuStyle(.borderlessButton)
-                .fixedSize()
+
+                HStack(spacing: 12) {
+                    // Authentication is "auto" for almost everyone; keep the
+                    // controls folded so a folder card reads as a URL + status.
+                    RepoAuthSection(repo: repo,
+                                    mode: model.authModeBinding(repo.id),
+                                    user: model.authUserBinding(repo.id),
+                                    token: model.authTokenBinding(repo.id),
+                                    save: { model.saveRepo(repo.id) })
+                    Text(repo.remoteLimit)
+                        .font(.system(size: 10))
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                    Spacer(minLength: 4)
+                    Text("自动同步：本地改动立即推送，每约 5 分钟检查远端")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                        .help("绑定远程的文件夹：本地改动防抖提交后立即推送；此外每约 5 分钟检查一次远端，有新提交就自动拉取合并。")
+                    Menu("更多") {
+                        if repo.remoteNames.count > 1 {
+                            Menu("同步使用的远程") {
+                                ForEach(repo.remoteNames, id: \.self) { name in
+                                    Button(name) { model.setUpstreamRemote(repo.id, remote: name) }
+                                }
+                            }
+                            Divider()
+                        }
+                        Button("编辑忽略规则…") { model.openGitignoreEditor(repo.id) }
+                        Button("重新定位（文件夹被移动/改名）…") { model.relocateRoot(repo.id) }
+                        Button("在 GitHub 建仓并绑定…") { model.createRepoTarget = repo.id }
+                        Divider()
+                        Button("检查仓库完整性…") { model.checkIntegrity(repo.id) }
+                        Button("修复未完成的合并/变基…") { model.repairInterruptedOperation(repo.id) }
+                    }
+                    .controlSize(.small)
+                    .menuStyle(.borderlessButton)
+                    .fixedSize()
+                }
+            } else {
+                // Configured but not attached right now (disk unplugged, folder
+                // moved, another live instance): the reason is already spelled
+                // out above, so just offer a way back — removal stays in the
+                // header menu (v4.2.26 audits M8/M9).
+                HStack(spacing: 8) {
+                    Button("重新定位（文件夹被移动/改名）…") { model.relocateRoot(repo.id) }
+                        .controlSize(.small)
+                    Spacer(minLength: 4)
+                    Button("移除文件夹…", role: .destructive) { removeTarget = card }
+                        .controlSize(.small)
+                }
             }
 
             if let msg = model.message(repo.id) {
@@ -1098,11 +1356,14 @@ struct SettingsView: View {
 /// Gitignore editor sheet (FR-14).
 struct GitignoreSheet: View {
     let state: GitignoreEditorState
-    let onSave: (String) -> Void
+    /// Returns a failure message when the file could not be written; the sheet
+    /// then stays open. nil = saved.
+    let onSave: (String) -> String?
     @State private var draft: String
+    @State private var errorText: String?
     @Environment(\.dismiss) private var dismiss
 
-    init(state: GitignoreEditorState, onSave: @escaping (String) -> Void) {
+    init(state: GitignoreEditorState, onSave: @escaping (String) -> String?) {
         self.state = state
         self.onSave = onSave
         _draft = State(initialValue: state.draft)
@@ -1134,6 +1395,12 @@ struct GitignoreSheet: View {
                         .strokeBorder(FVTheme.cardStroke, lineWidth: 1)
                 )
                 .frame(minHeight: 240)
+            if let errorText {
+                Text(errorText)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.red)
+                    .lineLimit(3)
+            }
             HStack {
                 Text("保存后改动会被自动提交")
                     .font(.system(size: 10))
@@ -1141,8 +1408,13 @@ struct GitignoreSheet: View {
                 Spacer()
                 Button("取消") { dismiss() }
                 Button("保存") {
-                    onSave(draft)
-                    dismiss()
+                    // Keep the sheet open on failure: closing it made the user
+                    // believe the rules had been saved (v4.2.26 audit M8).
+                    if let failure = onSave(draft) {
+                        errorText = failure
+                    } else {
+                        dismiss()
+                    }
                 }
                 .keyboardShortcut(.defaultAction)
             }
@@ -1196,6 +1468,7 @@ struct RepoAuthSection: View {
                                user: $user,
                                token: $token,
                                tokenSaved: repo.authTokenSaved,
+                               guidance: repo.authGuidance,
                                save: save)
             }
             .padding(.top, 6)
@@ -1209,6 +1482,12 @@ struct RepoAuthSection: View {
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
             }
+        }
+        .onChange(of: mode) { _, newMode in
+            // The persisted mode arrives asynchronously after the card is built,
+            // so @State's initial value cannot know it: PAT/SSH folders used to
+            // stay collapsed until clicked (v4.2.26 audit M8/P3).
+            if newMode != .auto { expanded = true }
         }
     }
 
@@ -1226,6 +1505,8 @@ struct RepoAuthFields: View {
     @Binding var user: String
     @Binding var token: String
     let tokenSaved: Bool
+    /// Non-empty when SSH mode is selected but ~/.ssh has no public key.
+    var guidance: String = ""
     let save: () -> Void
 
     var body: some View {
@@ -1255,9 +1536,19 @@ struct RepoAuthFields: View {
                     .foregroundStyle(.tertiary)
             }
         case .ssh:
-            Text("使用 ~/.ssh 里的密钥；需要先把公钥添加到托管平台。")
-                .font(.system(size: 10))
-                .foregroundStyle(.tertiary)
+            VStack(alignment: .leading, spacing: 4) {
+                Text("使用 ~/.ssh 里的密钥；需要先把公钥添加到托管平台。")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.tertiary)
+                // SshKeyChecker.guidance was never rendered: SSH setups without a
+                // key only showed a raw "Permission denied (publickey)" from git
+                // (v4.2.26 audit M8, README item 14).
+                if !guidance.isEmpty {
+                    Text(guidance)
+                        .font(.system(size: 10))
+                        .foregroundStyle(Color(nsColor: .systemOrange))
+                }
+            }
         case .auto:
             EmptyView()
         }

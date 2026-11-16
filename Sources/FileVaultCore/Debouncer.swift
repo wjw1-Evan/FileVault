@@ -88,4 +88,14 @@ public final class Debouncer: @unchecked Sendable {
         timers.removeAll()
         firstTouch.removeAll()
     }
+
+    /// Drop pending timers for ONE key: forgetting/relocating a root must not
+    /// leave a queued commit firing seconds later (it re-enqueued pushes for a
+    /// removed repo or notified about a forgotten folder) (v4.2.27).
+    public func cancel(key: String) {
+        lock.lock(); defer { lock.unlock() }
+        timers[key]?.cancel()
+        timers[key] = nil
+        firstTouch[key] = nil
+    }
 }

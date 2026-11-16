@@ -37,11 +37,20 @@ struct QuickAddSheet: View {
                 Image(systemName: "folder")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
-                Text(folderPath.isEmpty ? "尚未选择文件夹" : folderPath)
-                    .font(.system(size: 11))
-                    .foregroundStyle(folderPath.isEmpty ? .secondary : .primary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
+                // v4.2.26 audit M12: a ternary whose branches are String makes
+                // SwiftUI pick the verbatim Text initialiser, so the placeholder
+                // bypassed the localisation table and stayed Chinese in English.
+                Group {
+                    if folderPath.isEmpty {
+                        Text("尚未选择文件夹")
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Text(folderPath)
+                    }
+                }
+                .font(.system(size: 11))
+                .lineLimit(1)
+                .truncationMode(.middle)
                 Spacer(minLength: 8)
                 Button("选择…") { chooseFolder() }
                     .controlSize(.small)
@@ -58,7 +67,7 @@ struct QuickAddSheet: View {
                     .disabled(busy)
                 Text(detectedRemote
                      ? "已检测到该文件夹已有的远程地址，将直接使用。"
-                     : "现在不填也可以：之后在设置里随时能加，本地版本管理已经生效。")
+                     : "留空 = 仅本地保存版本（暂不上云）。绑定 GitHub 私有仓库后会自动上云、换电脑不丢；之后在设置里随时能加。")
                     .font(.system(size: 10))
                     .foregroundStyle(.tertiary)
             }
@@ -94,8 +103,15 @@ struct QuickAddSheet: View {
             detectedRemote = false
             remoteURL = ""
             Task { @MainActor in
-                guard let svc = app.service else { return }
-                if let existing = await svc.repoManager.remoteURL(path: url.path) {
+                // Git setup can still be running (or have failed): never touch
+                // the implicitly-unwrapped repoManager before it exists (v4.2.26).
+                guard let svc = app.service, svc.isReady else { return }
+                let existing = await svc.repoManager.remoteURL(path: url.path)
+                // The probe is async: if the user picked another folder (or
+                // typed another address) meanwhile, never let the stale result
+                // overwrite the current choice (v4.2.26 audit M8).
+                guard folderPath == url.path, remoteURL.isEmpty else { return }
+                if let existing {
                     remoteURL = existing
                     detectedRemote = true
                 }
@@ -104,13 +120,33 @@ struct QuickAddSheet: View {
     }
 
     private func add() {
-        guard let svc = app.service else { return }
+        // A double click can deliver two actions before SwiftUI repaints the
+        // button as disabled; never run two add/configure passes (v4.2.26).
+        guard !busy else { return }
+        guard let svc = app.service else {
+            errorText = NSLocalizedString("Git 环境尚未就绪，请稍后重试（可在主面板查看原因）。",
+                                          comment: "quick add")
+            return
+        }
+        guard svc.isReady else {
+            errorText = app.gitSetupError.flatMap { $0.isEmpty ? nil : $0 }
+                ?? NSLocalizedString("Git 环境尚未就绪，请稍后重试（可在主面板查看原因）。",
+                                     comment: "quick add")
+            return
+        }
         busy = true
         errorText = nil
         Task { @MainActor in
             do {
-                try await svc.addRoot(path: folderPath)
                 let trimmed = remoteURL.trimmingCharacters(in: .whitespacesAndNewlines)
+                // v4.2.26: bind the remote in the same step as the first commit.
+                // A brand-new repo then knows the remote's single-file ceiling
+                // before its initial version is written, so an oversized file is
+                // excluded instead of entering history forever. An already
+                // existing remote still goes through configureRemote below to
+                // fetch/merge.
+                try await svc.addRoot(path: folderPath,
+                                      remoteURL: trimmed.isEmpty ? nil : trimmed)
                 if !trimmed.isEmpty {
                     do {
                         try await svc.sync.configureRemote(repoPath: folderPath,

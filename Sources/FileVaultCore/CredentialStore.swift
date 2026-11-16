@@ -81,9 +81,15 @@ public enum CredentialStore {
                 .filter { !$0.isEmpty }
             if let value = values.last {
                 if value.contains("store") {
-                    return .file(storePath(fromHelperValue: value) ?? "")
+                    // Only claim the private-file backend when the path is really
+                    // parseable; ".file("")" looked private in the UI but saved
+                    // nothing (v4.2.26). Otherwise fall through and install ours.
+                    if let path = storePath(fromHelperValue: value) {
+                        return .file(path)
+                    }
+                } else {
+                    return .keychain
                 }
-                return .keychain
             }
         }
 
@@ -91,8 +97,13 @@ public enum CredentialStore {
         // take over the helper chain so an inherited gh/custom helper cannot
         // shadow (or swallow) the token. An empty value resets the inherited list.
         if await isAvailable(runner: runner) {
-            await installHelper(["", "osxkeychain"], runner: runner, repoPath: repoPath)
-            return .keychain
+            // Only claim the keychain backend when the helper list was really
+            // written: a failed `git config` used to leave PAT mode "configured"
+            // with no helper, so every later store silently dropped the token
+            // (v4.2.26). On failure fall through to the private-file helper.
+            if await installHelper(["", "osxkeychain"], runner: runner, repoPath: repoPath) {
+                return .keychain
+            }
         }
 
         // No keychain helper on this Mac: private file via git's own store helper.
@@ -123,11 +134,19 @@ public enum CredentialStore {
         let r = try await runner.run(["credential", "approve"], timeout: 10, stdin: input)
         guard r.succeeded else { throw CredentialError.storeFailed(r.stderr) }
         // `approve` exits 0 even when no helper is configured (nothing is
-        // stored), so confirm the value is actually retrievable. A helper that
-        // cannot read back returns nil; that is not treated as a failure here.
-        if let stored = await fill(runner: runner, url: url), stored.password != password {
+        // stored), so confirm the value is actually retrievable. A nil read-back
+        // means the token was NOT saved (helper missing/misconfigured) and must
+        // be reported, otherwise the UI says "saved" and the first push fails
+        // with an auth error (v4.2.25 fixed only the mismatched-password case).
+        guard let stored = await fill(runner: runner, url: url) else {
             throw CredentialError.storeFailed(
-                NSLocalizedString("写入后无法读回同一凭证（凭证助手异常）", comment: "credential error"))
+                NSLocalizedString("写入后无法从本机凭证库读回（凭证助手没有保存它）；请确认钥匙串已解锁或改用其他认证方式",
+                                  comment: "credential error"))
+        }
+        if stored.password != password {
+            throw CredentialError.storeFailed(
+                NSLocalizedString("写入后读回了不同的凭证（凭证助手异常或同一主机存在多个账号）",
+                                  comment: "credential error"))
         }
     }
 
@@ -135,8 +154,13 @@ public enum CredentialStore {
     public static func fill(runner: GitRunner, url: String) async -> (username: String, password: String)? {
         let input = "url=" + url + "\n"
         // GIT_TERMINAL_PROMPT=0: never hang on an interactive username prompt.
+        // GIT_ASKPASS=/usr/bin/true: with `echo`, a missing stored credential
+        // made git feed the PROMPT TEXT back as username/password (exit 0), so
+        // the "请填令牌" prompt never showed and the UI claimed a token was
+        // saved (v4.2.27). `true` outputs nothing → fill fails → nil = "no
+        // stored credential".
         guard let r = try? await runner.run(["credential", "fill"], timeout: 15, stdin: input,
-                                            env: ["GIT_TERMINAL_PROMPT": "0", "GIT_ASKPASS": "echo", "SSH_ASKPASS": "echo"]),
+                                            env: ["GIT_TERMINAL_PROMPT": "0", "GIT_ASKPASS": "/usr/bin/true", "SSH_ASKPASS": "/usr/bin/true"]),
               r.succeeded else { return nil }
         var user: String?
         var pass: String?
@@ -145,6 +169,10 @@ public enum CredentialStore {
             if line.hasPrefix("password=") { pass = String(line.dropFirst(9)) }
         }
         guard let user, let pass else { return nil }
+        // Belt and suspenders: empty or prompt-echo values are not a credential.
+        if user.isEmpty || pass.isEmpty || user.contains(" for '") || pass.contains(" for '") {
+            return nil
+        }
         return (user, pass)
     }
 

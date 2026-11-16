@@ -417,7 +417,11 @@ final class SyncManagerTests: XCTestCase {
         try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
         let counter = dir + "/count"
         let script = dir + "/fake-git"
+        // Count PUSH invocations only (v4.2.27 push() also runs rev-parse and
+        // symbolic-ref): the first push sleeps past the 3 s budget and must be
+        // retried once with the 8 s budget.
         let content = "#!/bin/sh\n"
+            + "case \"$*\" in *push*) ;; *) exit 0;; esac\n"
             + "c=$(cat " + counter + " 2>/dev/null || echo 0)\n"
             + "c=$((c+1))\n"
             + "echo $c > " + counter + "\n"

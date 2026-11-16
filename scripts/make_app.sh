@@ -47,7 +47,41 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </dict>
 </plist>
 PLIST
-cp build/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
+# The icon is a generated artifact (build/ is gitignored), so a clean clone has
+# no AppIcon.icns. Generate it on demand instead of failing the whole packaging
+# step; if generation is impossible (no GUI session), ship without an icon but
+# say so loudly (v4.2.26).
+if [ ! -f build/AppIcon.icns ]; then
+  echo "build/AppIcon.icns 不存在，正在生成…"
+  mkdir -p build
+  # make_icon.swift emits a PNG; convert it to a real multi-size .icns via
+  # iconutil — naming PNG bytes .icns relied on ImageIO leniency and scaled
+  # poorly at small Dock sizes (v4.2.27).
+  if swift scripts/make_icon.swift build/AppIcon-1024.png; then
+    rm -rf build/AppIcon.iconset
+    mkdir -p build/AppIcon.iconset
+    for spec in "16 32" "32 64" "128 256" "256 512" "512 1024"; do
+      set -- $spec
+      # $1 = point size, $2 = pixel size (@2x variants cover all slugs).
+      sips -z "$2" "$2" --resampleWidth "$2" build/AppIcon-1024.png \
+        --out "build/AppIcon.iconset/icon_${1}x${1}@2x.png" >/dev/null 2>&1 || true
+    done
+    if iconutil -c icns build/AppIcon.iconset -o build/AppIcon.icns 2>/dev/null; then
+      rm -rf build/AppIcon.iconset build/AppIcon-1024.png
+    else
+      echo "⚠️ iconutil 转换失败；使用单分辨率 PNG 兜底" >&2
+      cp build/AppIcon-1024.png build/AppIcon.icns
+      rm -f build/AppIcon-1024.png
+    fi
+  else
+    echo "⚠️ 未能生成 AppIcon.icns（可能没有图形会话）；将不带图标打包" >&2
+  fi
+fi
+if [ -f build/AppIcon.icns ]; then
+  cp build/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
+else
+  echo "⚠️ Info.plist 引用了 AppIcon.icns，但该文件不存在" >&2
+fi
 # Localisations (v3.4.0): zh-Hans literals are the keys, en.lproj holds English.
 if [ -d "Sources/FileVaultApp/Resources" ]; then
   for lproj in Sources/FileVaultApp/Resources/*.lproj; do
@@ -75,6 +109,9 @@ else
   echo "签名：ad-hoc（本地验证；对外分发请设置 CODESIGN_IDENTITY）"
   codesign --force --deep -s - "$APP" 2>/dev/null || codesign --force -s - "$APP"
 fi
+if [ -n "${CODESIGN_IDENTITY:-}" ] && [ -z "${NOTARY_PROFILE:-}" ]; then
+  echo "⚠️ 已用 Developer ID 签名但未公证（设置 NOTARY_PROFILE 才会提交公证并 staple）" >&2
+fi
 
 codesign --verify --deep --strict "$APP" && echo "签名校验通过"
 
@@ -88,9 +125,15 @@ if [ -n "${NOTARY_PROFILE:-}" ]; then
   echo "公证：${NOTARY_PROFILE}"
   NOTARIZE_ZIP="build/${PRODUCT_NAME}-notarize.zip"
   ditto -c -k --keepParent "$APP" "$NOTARIZE_ZIP"
-  xcrun notarytool submit "$NOTARIZE_ZIP" --keychain-profile "${NOTARY_PROFILE}" --wait
-  xcrun stapler staple "$APP"
+  # Always remove the intermediate zip, even when notarization fails (it used
+  # to be left behind on failures, v4.2.26).
+  if ! xcrun notarytool submit "$NOTARIZE_ZIP" --keychain-profile "${NOTARY_PROFILE}" --wait; then
+    rm -f "$NOTARIZE_ZIP"
+    echo "✗ 公证失败（检查 NOTARY_PROFILE 与 Apple 账号凭据）" >&2
+    exit 1
+  fi
   rm -f "$NOTARIZE_ZIP"
+  xcrun stapler staple "$APP"
   # Fail the build: shipping a package Gatekeeper rejects is worse than a red CI.
   spctl -a -vv "$APP" || { echo "✗ spctl 未通过（确认 Developer ID 证书与公证状态）" >&2; exit 1; }
 fi

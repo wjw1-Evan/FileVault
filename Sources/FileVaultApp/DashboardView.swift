@@ -14,6 +14,10 @@ struct RootRow: Identifiable, Equatable {
     let name: String
     let path: String
     let status: SyncStatus
+    /// Configured but not attached right now (v4.2.26).
+    let unavailable: Bool
+    /// Auto-commit paused for this folder (v4.2.26).
+    let paused: Bool
 }
 
 enum DashboardOverall {
@@ -52,11 +56,18 @@ final class DashboardModel: ObservableObject {
     @Published var rootCount = 0
     @Published var failedCount = 0
     @Published var pendingCount = 0
+    /// Attached folders with NO remote: "云端已最新" was a lie for them —
+    /// their versions exist only on this Mac (v4.2.27 design round).
+    @Published var noRemoteCount = 0
     @Published var overall: DashboardOverall = .ok
     @Published var lastActivity: Date?
     @Published var lastRootName = ""
     @Published var rootsEmpty = false
-    @Published var stateLine = "正在加载…"
+    @Published var stateLine = NSLocalizedString("正在加载…", comment: "dashboard state")
+    /// Unreadable history, shown instead of a cheerful empty state (v4.2.26).
+    @Published var activityError: String?
+    /// Guards against an older refresh pass overwriting a newer snapshot.
+    private var generation = 0
 
     private var app: AppState?
     private var timer: Timer?
@@ -77,6 +88,18 @@ final class DashboardModel: ObservableObject {
                 Task { @MainActor in await self?.refresh() }
             }
         }
+        // A window restored at login (or --open-ui) can appear before the
+        // service exists; without this retry it never registered the listener and
+        // fell back to 10 s polling forever (v4.2.26).
+        if app.service == nil {
+            Task { @MainActor [weak self] in
+                for _ in 0..<50 where self?.app?.service == nil {
+                    try? await Task.sleep(nanoseconds: 200_000_000)
+                }
+                guard let self, let a = self.app, a.service != nil else { return }
+                self.bind(a)
+            }
+        }
         Task { @MainActor in await refresh() }
     }
 
@@ -89,34 +112,59 @@ final class DashboardModel: ObservableObject {
 
     func refresh() async {
         guard let app = app, let svc = app.service else { return }
+        generation += 1
+        let pass = generation
         var items: [ActivityItem] = []
         var rows: [RootRow] = []
         var failed = 0
         var pending = 0
-        let roots = svc.rootsSnapshot()
-        for root in roots {
+        var unavailable = 0
+        var noRemote = 0
+        var readError: String?
+        // Configured folders (not just attached ones): an unplugged disk must
+        // stay visible with a reason instead of disappearing (v4.2.26).
+        let configured = svc.configuredRoots()
+        for cfg in configured {
             // v4.0: one repo per protected folder — no subfolder enumeration.
+            let root = cfg.path
             let name = (root as NSString).lastPathComponent
-            let st = await svc.sync.status(for: root)
-            if st == .failed { failed += 1 }
-            if st == .pendingPush || st == .pushing { pending += 1 }
-            rows.append(RootRow(id: root, name: name, path: root, status: st))
-            if let log = try? await svc.history.commits(repoPath: root, limit: 3) {
+            let attached = svc.isAttached(root: root)
+            var st: SyncStatus = .noRemote
+            if attached {
+                st = await svc.sync.status(for: root)
+                if st == .failed { failed += 1 }
+                if st == .pendingPush || st == .pushing { pending += 1 }
+                if st == .noRemote { noRemote += 1 }
+            } else {
+                unavailable += 1
+            }
+            rows.append(RootRow(id: root, name: name, path: root, status: st,
+                                unavailable: !attached, paused: cfg.paused))
+            guard attached else { continue }
+            do {
+                let log = try await svc.history.commits(repoPath: root, limit: 3)
                 for c in log {
                     items.append(ActivityItem(id: root + c.hash,
                                               rootName: name,
                                               subject: c.subject.fvDecodingGitEscapes,
                                               date: c.date))
                 }
+            } catch {
+                // "can't read history" must not render as "no commits yet".
+                if readError == nil { readError = error.localizedDescription }
             }
         }
+        // A slow older pass must not overwrite the newer snapshot.
+        guard pass == generation else { return }
         items.sort { $0.date > $1.date }
         activity = Array(items.prefix(6))
         rootRows = rows
-        rootCount = roots.count
+        rootCount = configured.count
         failedCount = failed
         pendingCount = pending
-        rootsEmpty = roots.isEmpty
+        noRemoteCount = noRemote
+        rootsEmpty = configured.isEmpty
+        activityError = readError
         lastActivity = items.first?.date
         lastRootName = items.first?.rootName ?? ""
 
@@ -124,6 +172,10 @@ final class DashboardModel: ObservableObject {
             overall = .attention
             stateLine = String(format: NSLocalizedString("%d 个文件夹推送失败，点击菜单查看",
                                                          comment: "dashboard state"), failed)
+        } else if unavailable > 0 {
+            overall = .attention
+            stateLine = String(format: NSLocalizedString("%d 个文件夹当前不可用（外置盘未挂载或被移动）",
+                                                         comment: "dashboard state"), unavailable)
         } else if svc.detection == nil {
             overall = .setup
             if let reason = app.gitSetupError, !reason.isEmpty {
@@ -241,18 +293,35 @@ struct DashboardView: View {
                        caption: model.lastRootName.isEmpty
                            ? NSLocalizedString("等待第一次记录", comment: "dashboard tile")
                            : model.lastRootName)
-            FVStatTile(symbol: model.failedCount > 0
-                          ? "exclamationmark.triangle.fill"
-                          : (model.pendingCount > 0 ? "arrow.up.circle.fill" : "checkmark.icloud.fill"),
-                       tint: model.failedCount > 0 ? .red : (model.pendingCount > 0 ? .orange : .green),
-                       value: "\(model.failedCount > 0 ? model.failedCount : model.pendingCount)",
-                       label: model.failedCount > 0 ? "推送失败" : "待推送",
-                       caption: model.failedCount > 0
-                           ? NSLocalizedString("本地版本已保留", comment: "dashboard tile")
-                           : (model.pendingCount > 0
-                              ? NSLocalizedString("正在等待上传", comment: "dashboard tile")
-                              : NSLocalizedString("云端已最新", comment: "dashboard tile")))
+            syncTile
         }
+    }
+
+    /// The sync-status tile: "云端已最新" must not display when nothing is on
+    /// the remote — folders without a remote show 仅本地 instead (v4.2.27
+    /// design round).
+    @ViewBuilder
+    private var syncTile: some View {
+        let hasFailure = model.failedCount > 0
+        let hasPending = model.pendingCount > 0
+        let localOnly = model.noRemoteCount > 0
+        let valueText = hasFailure ? String(model.failedCount)
+            : (hasPending ? String(model.pendingCount) : String(model.noRemoteCount))
+        FVStatTile(symbol: hasFailure
+                       ? "exclamationmark.triangle.fill"
+                       : (hasPending ? "arrow.up.circle.fill"
+                                     : (localOnly ? "internaldrive.fill" : "checkmark.icloud.fill")),
+                   tint: hasFailure ? .red : (hasPending ? .orange : (localOnly ? .gray : .green)),
+                   value: valueText,
+                   label: hasFailure ? "推送失败" : (hasPending ? "待推送" : (localOnly ? "仅本地" : "待推送")),
+                   caption: hasFailure
+                       ? NSLocalizedString("本地版本已保留", comment: "dashboard tile")
+                       : (hasPending
+                          ? NSLocalizedString("正在等待上传", comment: "dashboard tile")
+                          : (localOnly
+                             ? NSLocalizedString("版本只保存在本机，绑定远程后自动上云", comment: "dashboard tile")
+                             : NSLocalizedString("云端已最新", comment: "dashboard tile")))
+        )
     }
 
     // MARK: Activity
@@ -274,9 +343,17 @@ struct DashboardView: View {
             }
             FVHairline(leading: 0)
             if model.activity.isEmpty {
-                FVEmptyState(symbol: "clock",
-                             title: "还没有提交记录",
-                             message: "向受保护的文件夹写入文件，几秒后就会自动记录第一个版本。")
+                if let readError = model.activityError {
+                    // Never present "repository unreadable" as "no commits yet"
+                    // (v4.2.26).
+                    FVEmptyState(symbol: "exclamationmark.triangle",
+                                 title: "读不到提交历史",
+                                 message: LocalizedStringKey(readError))
+                } else {
+                    FVEmptyState(symbol: "clock",
+                                 title: "还没有提交记录",
+                                 message: "向受保护的文件夹写入文件，几秒后就会自动记录第一个版本。")
+                }
             } else {
                 VStack(spacing: 0) {
                     ForEach(Array(model.activity.enumerated()), id: \.element.id) { index, item in
@@ -391,14 +468,18 @@ struct DashboardView: View {
 
     private func rootRow(_ row: RootRow) -> some View {
         let meta = FVStatusMeta.forSync(row.status)
+        let label = row.unavailable
+            ? NSLocalizedString("不可用", comment: "dashboard root")
+            : (row.paused ? NSLocalizedString("已暂停", comment: "dashboard root") : meta.label)
+        let tint: Color = row.unavailable ? .orange : (row.paused ? .secondary : meta.tint)
         return HStack(spacing: 10) {
-            FVIconBadge(symbol: "folder.fill", tint: .orange, size: 28)
+            FVIconBadge(symbol: "folder.fill", tint: tint, size: 28)
             VStack(alignment: .leading, spacing: 1) {
                 Text(row.name)
                     .font(.system(size: 12, weight: .medium))
                     .lineLimit(1)
                     .truncationMode(.middle)
-                Text(meta.label)
+                Text(label)
                     .font(.system(size: 10))
                     .foregroundStyle(.tertiary)
             }
@@ -410,7 +491,7 @@ struct DashboardView: View {
                     .font(.system(size: 11, weight: .medium))
             }
             .buttonStyle(.borderless)
-            .help("在 Finder 中打开：\(row.path)")
+            .help(LocalizedStringKey("在 Finder 中打开：\(row.path)"))
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 9)

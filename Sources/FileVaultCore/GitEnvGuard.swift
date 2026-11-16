@@ -7,6 +7,12 @@ public protocol GitLocator: Sendable {
 
 /// Locates git from candidate paths, verifying each candidate actually runs.
 public final class SystemGitLocator: GitLocator, @unchecked Sendable {
+    /// Apple's `/usr/bin/git` is a tool shim (`com.apple.dt.xcode_select.tool-shim-public`):
+    /// executing it without the Command Line Tools installed opens the ~1.5 GB
+    /// CLT installer dialog. Probing it before the mirror ladder would violate
+    /// FR-01 ("能自己下载的绝不弹 Apple 大包", docs/07 §2) (v4.2.26).
+    static let systemGitToolShimPath = "/usr/bin/git"
+
     public init() {}
 
     public func locate() -> String? {
@@ -34,13 +40,45 @@ public final class SystemGitLocator: GitLocator, @unchecked Sendable {
             "/opt/homebrew/bin/git",
             "/usr/local/bin/git",
         ])
+        // Never probe Apple's CLT tool shim unless the tools are installed:
+        // it may pop the system installer before we ever try the mirrors.
+        let usable = Self.filteredCandidates(candidates,
+                                             commandLineToolsInstalled: Self.commandLineToolsInstalled())
 
-        for c in candidates {
+        for c in usable {
             if isExecutable(c) && verify(path: c) {
                 return c
             }
         }
         return nil
+    }
+
+    /// Read-only check whether the Command Line Tools (or a full Xcode) are
+    /// installed. `xcode-select -p` merely prints the active developer
+    /// directory; it never opens the CLT install dialog.
+    static func commandLineToolsInstalled(xcodeSelectPath: String = "/usr/bin/xcode-select") -> Bool {
+        guard FileManager.default.isExecutableFile(atPath: xcodeSelectPath) else { return false }
+        let probe = Process()
+        probe.executableURL = URL(fileURLWithPath: xcodeSelectPath)
+        probe.arguments = ["-p"]
+        probe.standardOutput = FileHandle.nullDevice
+        probe.standardError = FileHandle.nullDevice
+        do {
+            try probe.run()
+        } catch {
+            return false
+        }
+        probe.waitUntilExit()
+        return probe.terminationStatus == 0
+    }
+
+    /// Drop Apple's CLT tool shim from the candidate list when the Command Line
+    /// Tools are not installed. `which git` also resolves to the same shim, so
+    /// filtering by path covers both sources. Extracted for unit tests (v4.2.26).
+    static func filteredCandidates(_ candidates: [String], commandLineToolsInstalled: Bool) -> [String] {
+        guard !commandLineToolsInstalled else { return candidates }
+        let shimPath = URL(fileURLWithPath: systemGitToolShimPath).standardizedFileURL.path
+        return candidates.filter { URL(fileURLWithPath: $0).standardizedFileURL.path != shimPath }
     }
 
     private func runWhich() throws -> String? {

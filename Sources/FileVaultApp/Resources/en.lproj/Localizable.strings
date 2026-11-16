@@ -115,7 +115,7 @@
 "等几秒后重试；若一直失败，确认没有其他 Git 工具在操作这个文件夹后，可在终端删除 .git/index.lock 再重试。" = "Try again in a few seconds; if it keeps failing, make sure no other Git tool is using this folder, then delete .git/index.lock in Terminal and retry.";
 "操作超时（网络较慢或仓库较大，已等待 120 秒）" = "The operation timed out (slow network or a large repository; waited 120 seconds)";
 "远程仓库拒绝了这次推送（分支保护或仓库规则）。请在托管平台调整分支保护/权限后再试。" = "The remote refused this push (branch protection or repository rules). Adjust the branch protection/permissions on the hosting platform and try again.";
-"远程仓库因为文件过大拒绝了这次推送。请检查大文件排除规则，或把大文件移出受保护文件夹后再试。" = "The remote refused this push because a file is too large. Check the large-file exclusion rules, or move the large file out of the protected folder and try again.";
+"远程仓库因为文件过大拒绝了这次推送。新加入的超限文件会被自动排除；若历史提交里已包含超限文件，推送会被永久拒绝，需要整理提交历史（如重新开始版本历史）或更换远程后才能恢复同步。" = "The remote refused this push because a file is too large. Newly added oversized files are excluded automatically; if an oversized file is already in history, pushes are refused permanently until the history is cleaned up (e.g. start a fresh version history) or the remote is changed.";
 "推送超时（网络较慢或仓库较大），稍后会自动重试" = "Push timed out (slow network or a large repository); it will retry automatically";
 " (本地副本)" = " (local copy)";
 " (本地副本 %d)" = " (local copy %d)";
@@ -712,5 +712,80 @@
 "安装更新失败：%@" = "Could not install the update: %@";
 "写入后无法读回同一凭证（凭证助手异常）" = "The credential could not be read back after saving (credential helper failed)";
 "配置未能保存" = "Could not save settings";
+"Git 环境尚未就绪：等自动安装完成后再试；若一直失败，可在主面板查看原因。" = "Git isn't ready yet: wait for the automatic setup to finish, or check the dashboard for the reason if it keeps failing.";
+"Git 环境尚未就绪，请稍后重试（可在主面板查看原因）。" = "Git isn't ready yet. Try again in a moment (the dashboard explains why if setup keeps failing).";
 "设置已在本次运行中生效，但配置文件无法写入（磁盘已满或没有写入权限），重启后可能丢失这次修改。" = "The change is active for this session, but the config file could not be written (disk full or no permission) and may be lost after a restart.";
 
+/* v4.2.26 audit fixes */
+"受保护文件夹暂时无法打开" = "A protected folder couldn't be opened";
+"%@：%@；它仍在受保护列表中，可从设置里重新定位或移除。" = "%@: %@. It is still in the protected list — relocate or remove it in Settings.";
+"这个文件夹与已受保护的「%@」重叠：不能嵌套保护，请只保留外层或里层其中一个" = "This folder overlaps the protected “%@”. Nested protection isn't supported — keep only one of them.";
+"无法以 UTF-8 读取 %@；为避免覆盖原有规则，已取消编辑，请用文本编辑器处理。" = "Couldn't read %@ as UTF-8. Editing was cancelled to avoid overwriting the existing rules — use a text editor instead.";
+"读取 %@ 失败：%@" = "Couldn't read %@: %@";
+"保存 %@ 失败：%@（规则未改动）" = "Couldn't save %@: %@ (rules unchanged)";
+"文件不可读" = "The file isn't readable";
+"「%@」现在是一个文件夹，请先把它改名或移走再恢复" = "“%@” is now a folder — rename or move it before restoring.";
+"正在与远程同步（拉取/合并）或执行另一个恢复操作，请稍后再试" = "A remote sync (pull/merge) or another restore is running — try again in a moment.";
+"回滚会覆盖未纳入版本管理（被忽略）的文件：%@%@；请先把它们移走或改名后再回滚" = "Rolling back would overwrite ignored files that aren't under version control: %@%@. Move or rename them first.";
+"「%@」当前是被忽略、未纳入版本管理的文件，恢复会覆盖它；请先把它改名或移走再恢复" = "“%@” is currently an ignored file that isn't under version control; restoring would overwrite it. Rename or move it first.";
+"无法读取当前版本，回滚前的备份点未写入" = "Couldn't read the current version, so the pre-rollback backup point wasn't written.";
+"无法写入回滚前的备份点（refs/filevault/backup），本次回滚已取消" = "Couldn't write the pre-rollback backup point (refs/filevault/backup); the rollback was cancelled.";
+"文件夹不可用" = "Folder unavailable";
+"不可用" = "Unavailable";
+"读不到提交历史" = "Couldn't read commit history";
+"%d 个文件夹当前不可用（外置盘未挂载或被移动）" = "%d folder(s) unavailable (external disk unplugged or folder moved)";
+"无法写入更新状态文件（配置目录不可写），已取消安装" = "Couldn't write the update state file (config directory isn't writable); install cancelled.";
+"下载更新失败：%@" = "Update download failed: %@";
+"下载更新失败：服务器返回 HTTP %d" = "Update download failed: server returned HTTP %d";
+"更新包缺少 sha256 校验信息，已中止安装（可从 GitHub 手动下载安装）" = "The update package has no sha256 digest; install aborted (you can download it manually from GitHub).";
+"更新包解压失败：%@" = "Couldn't extract the update package: %@";
+"无法读取备份：%@" = "Couldn't read the backups: %@";
+"无法比较：%@" = "Couldn't compare: %@";
+"重试" = "Retry";
+"没有匹配「%@」的文件" = "No files match “%@”";
+"清除搜索" = "Clear search";
+"选择一个版本，查看它与当前文件的差异" = "Select a version to see how it differs from the current file";
+"⚠️ 回滚失败：%@" = "⚠️ Rollback failed: %@";
+"⚠️ 文件夹当前不可用（可能被移动或外置盘未挂载）" = "⚠️ This folder is currently unavailable (it may have been moved, or its external disk isn't mounted)";
+"## 受保护的文件夹" = "## Protected folders";
+"写入后无法从本机凭证库读回（凭证助手没有保存它）；请确认钥匙串已解锁或改用其他认证方式" = "The credential could not be read back from the local credential store (the helper didn't save it). Make sure the keychain is unlocked or use another authentication method.";
+"写入后读回了不同的凭证（凭证助手异常或同一主机存在多个账号）" = "A different credential was read back (helper misbehaving, or multiple accounts on the same host).";
+"无法更新本仓库的同步设置" = "Couldn't update this repository's sync settings";
+"本报告不含任何文件内容、远程地址或账号；家目录路径已替换为 ~，受保护文件夹的名称会保留以便排查。" = "This report contains no file contents, remote URLs or accounts; home paths are collapsed to ~, and protected folder names are kept to help diagnose the problem.";
+"⚠️ 启动时未能挂载" = "⚠️ Could not be mounted at startup";
+"无法读取忽略规则" = "Could not read the ignore rules";
+"读取 .gitignore 失败：%@。为避免覆盖已有规则，编辑器未打开。" = "Could not read .gitignore: %@. The editor was not opened so the existing rules aren't overwritten.";
+
+
+// v4.2.27 audit round
+"提交历史读取失败" = "Failed to read commit history";
+"⚠️ 读取历史失败：%@" = "Failed to read history: %@";
+"该版本里此文件是改名前的旧路径，无法按当前文件名恢复" = "This version predates a rename: the file had a different path, so it cannot be restored under the current name";
+"改名前的版本不能按当前文件名恢复；请到「找回与还原」按当时的文件名找回。" = "Versions from before a rename cannot be restored under the current file name; use 找回与还原 to recover them under the name they had then.";
+"差异读取失败" = "Failed to load diff";
+"⚠️ 仓库读取失败" = "⚠️ Failed to read repository";
+"GitHub 访问受限（限流），将在后台自动重试" = "GitHub is rate limiting requests; will retry automatically in the background";
+"嵌套仓库未纳入版本管理" = "Nested repository not versioned";
+"%@：%@ 是没有提交的独立 Git 仓库，已跳过；请先在里面完成首次提交" = "%1$@: %2$@ is an independent Git repository without commits and was skipped; make its first commit inside it first";
+
+// v4.2.27 design round
+"打开主面板（⇧⌘D）" = "Open dashboard (⇧⌘D)";
+"暂停自动提交？" = "Pause auto-commit?";
+"暂停「%@」" = "Pause \"%@\"";
+"暂停期间的新改动不会生成版本、也不受保护；恢复暂停时会自动补交一次改动。请只用于搬运/整理文件夹等短时操作。" = "Changes made while paused generate NO versions and are unprotected; resuming commits them once automatically. Use only for short operations like moving or reorganizing the folder.";
+"已加载 %d 个提交" = "Loaded %d commits";
+"加载更早的提交" = "Load earlier commits";
+
+// v4.2.27 design round (part 2)
+"仅本地回退（自动同步可能把远程版本带回）" = "Roll back locally only (auto-sync may bring the remote version back)";
+"回退并暂停此文件夹的自动同步" = "Roll back and pause auto-sync for this folder";
+"✓ 已回滚到 %@，并已暂停此文件夹的自动同步（设置里可恢复）" = "Rolled back to %@ and paused auto-sync for this folder (resume it in Settings)";
+"问题提醒通知" = "Issue notifications";
+"提交/推送失败、大文件未备份等一次性提醒" = "One-time alerts: commit/push failures, unbacked large files, and similar issues";
+"⚠️ 另一个 FileVault 实例正在管理这个文件夹（pid %d）；退出那个实例后这里会自动接管" = "⚠️ Another FileVault instance is managing this folder (pid %d); quit that one and this instance takes over automatically";
+"留空 = 仅本地保存版本（暂不上云）。绑定 GitHub 私有仓库后会自动上云、换电脑不丢；之后在设置里随时能加。" = "Leave empty = local versions only (no cloud backup yet). A GitHub private repo syncs automatically and survives a new computer; you can add one later in Settings.";
+"自动同步：本地改动立即推送，每约 5 分钟检查远端" = "Auto-sync: local changes push immediately; remote checked every ~5 min";
+"绑定远程的文件夹：本地改动防抖提交后立即推送；此外每约 5 分钟检查一次远端，有新提交就自动拉取合并。" = "Folders with a remote: local changes are committed (debounced) and pushed immediately; the remote is also checked every ~5 minutes and new commits are pulled and merged automatically.";
+"版本只保存在本机，绑定远程后自动上云" = "Versions exist only on this Mac; bind a remote to back them up to the cloud";
+
+"文件夹中受版本管理的内容会回到这个版本，其后的提交从当前分支移除。被忽略的文件、大文件和嵌套仓库保持原样。未提交的改动会先自动保存，回滚前的状态备份到隐藏 ref（refs/filevault/backup，可用 git 找回），不会永久丢失。" = "Versioned content returns to this version; later commits are removed from the current branch. Ignored files, large files and nested repos stay untouched. Uncommitted changes are committed first, and the pre-rollback state is backed up to a hidden ref (refs/filevault/backup, recoverable with git) — nothing is lost for good.";

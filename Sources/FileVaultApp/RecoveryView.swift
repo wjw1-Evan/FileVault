@@ -56,9 +56,20 @@ final class RecoveryModel: ObservableObject {
     @Published var selectedVersionHash: String?
     @Published var preview: FilePreviewState = .none
     @Published var workingDiff: FileDiff?
+    /// "与当前对比" must distinguish "no differences" from "could not read":
+    /// a nil `workingDiff` alone used to mean both (v4.2.26).
+    @Published var workingDiffLoading = false
+    @Published var workingDiffError: String?
     @Published var detailMode: VersionDetailMode = .content
     @Published var busy = false
-    @Published var statusText = NSLocalizedString("选择一个文件，查看它的历史版本", comment: "recovery status")
+    @Published var statusText = NSLocalizedString("选择一个文件，查看它的历史版本",
+                                                  comment: "recovery status")
+
+    /// Neutral footer text, reused when a folder switch invalidates the
+    /// previous folder's ✓ / ⚠️ result (v4.2.26).
+    static var idleStatusText: String {
+        NSLocalizedString("选择一个文件，查看它的历史版本", comment: "recovery status")
+    }
 
     init() {
         #if DEBUG
@@ -79,7 +90,11 @@ final class RecoveryModel: ObservableObject {
     private var loadGeneration = 0
     private var versionsGeneration = 0
     private var previewGeneration = 0
+    private var diffGeneration = 0
     private var pendingReload: Task<Void, Never>?
+    /// Only the visible tab polls or reacts to state events (v4.2.26); the
+    /// window keeps this in sync with `app.recordsTab`.
+    private(set) var isActive = true
     /// The first scan picks a useful starting scope: deleted files if any,
     /// otherwise recently changed ones (an empty first screen reads as "broken").
     private var didAutoPickScope = false
@@ -107,9 +122,14 @@ final class RecoveryModel: ObservableObject {
         !busy && selectedVersion?.exists == true
     }
 
+    /// Trimmed search text; empty means "no filter".
+    var searchQuery: String {
+        searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     var visibleFiles: [RecoverableFile] {
         let all = snapshot?.files ?? []
-        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let query = searchQuery
         return all.filter { file in
             let inScope: Bool
             switch scope {
@@ -164,7 +184,12 @@ final class RecoveryModel: ObservableObject {
         // edits): refresh quietly instead of making the user hit reload.
         guard listenerToken == nil, let svc = app.service else { return }
         listenerToken = svc.addStateListener { [weak self] in
-            Task { @MainActor in self?.scheduleReload() }
+            Task { @MainActor in
+                // A hidden tab keeps its loaded data but does no pointless
+                // rescans; the host view refreshes it when it becomes visible.
+                guard let self, self.isActive else { return }
+                self.scheduleReload()
+            }
         }
     }
 
@@ -174,18 +199,32 @@ final class RecoveryModel: ObservableObject {
         pendingReload?.cancel()
     }
 
+    /// The host view keeps this in sync with the visible records tab (v4.2.26).
+    func setActive(_ active: Bool) {
+        isActive = active
+    }
+
+    /// One catch-up refresh when the tab becomes visible again: hidden tabs do
+    /// no scanning, so changes made meanwhile are picked up here.
+    func refreshOnActivation() {
+        guard snapshot != nil, !loading else { return }
+        periodicRefresh()
+    }
+
     private func scheduleReload() {
+        guard isActive else { return }
         pendingReload?.cancel()
         pendingReload = Task { [weak self] in
             try? await Task.sleep(nanoseconds: 600_000_000)
-            guard !Task.isCancelled else { return }
-            self?.reload(preserveSelection: true)
+            guard !Task.isCancelled, let self, self.isActive else { return }
+            self.reload(preserveSelection: true)
         }
     }
 
     /// Fallback poll: catches commits made outside the app (terminal, another
     /// tool) and roots that finished attaching after the window opened.
     func periodicRefresh() {
+        guard isActive else { return }
         guard let app, let svc = app.service else { return }
         // The window can open before the service finished starting; pick up the
         // listener and roots on the next tick instead of staying empty.
@@ -195,6 +234,7 @@ final class RecoveryModel: ObservableObject {
             roots = latest
             if selectedRoot == nil || !latest.contains(selectedRoot!) {
                 selectedRoot = latest.first
+                statusText = Self.idleStatusText
             }
             reload(preserveSelection: false)
             return
@@ -208,6 +248,7 @@ final class RecoveryModel: ObservableObject {
         roots = svc.rootsSnapshot()
         if selectedRoot == nil || !roots.contains(selectedRoot!) {
             selectedRoot = roots.first
+            statusText = Self.idleStatusText
         }
         reload(preserveSelection: false)
     }
@@ -215,6 +256,9 @@ final class RecoveryModel: ObservableObject {
     func rootChanged(_ newRoot: String) {
         guard newRoot != selectedRoot else { return }
         selectedRoot = newRoot
+        // Switching folders must not keep the previous folder's ✓ / ⚠️ result;
+        // results stay only while the same folder is selected (v4.2.26).
+        statusText = Self.idleStatusText
         clearSelection()
         reload(preserveSelection: false)
     }
@@ -292,11 +336,14 @@ final class RecoveryModel: ObservableObject {
     private func clearSelection() {
         versionsGeneration += 1
         previewGeneration += 1
+        diffGeneration += 1
         selectedPath = nil
         versions = []
         selectedVersionHash = nil
         preview = .none
         workingDiff = nil
+        workingDiffLoading = false
+        workingDiffError = nil
     }
 
     // MARK: - One file's versions
@@ -307,11 +354,14 @@ final class RecoveryModel: ObservableObject {
         selectedPath = path
         versionsGeneration += 1
         previewGeneration += 1
+        diffGeneration += 1
         let generation = versionsGeneration
         versions = []
         selectedVersionHash = nil
         preview = .none
         workingDiff = nil
+        workingDiffLoading = false
+        workingDiffError = nil
         guard let path, let svc = app?.service, let root = selectedRoot else { return }
         // Operation feedback (✓ / ⚠️) stays until the next action; otherwise the
         // footer follows the selection.
@@ -346,14 +396,20 @@ final class RecoveryModel: ObservableObject {
         selectedVersionHash = hash
         previewGeneration += 1
         let generation = previewGeneration
+        diffGeneration += 1
+        let diffGenerationAtStart = diffGeneration
         workingDiff = nil
+        workingDiffLoading = true
+        workingDiffError = nil
         guard let path = selectedPath, let root = selectedRoot,
               let svc = app?.service,
               let version = versions.first(where: { $0.hash == hash }) else {
+            workingDiffLoading = false
             preview = .none
             return
         }
         guard version.exists else {
+            workingDiffLoading = false
             preview = .deleted
             return
         }
@@ -361,10 +417,22 @@ final class RecoveryModel: ObservableObject {
         preview = .loading
         Task { [weak self] in
             guard let self else { return }
-            let diff = try? await svc.recovery.workingDiff(repoPath: root, file: path, version: hash)
+            // A failed read must not look like "the files are identical": keep
+            // the reason so the UI can offer a retry (v4.2.26).
+            var loadedDiff: FileDiff?
+            var diffError: String?
+            do {
+                loadedDiff = try await svc.recovery.workingDiff(repoPath: root, file: path, version: hash)
+            } catch {
+                diffError = error.localizedDescription
+            }
             let size = (try? await svc.history.fileSize(repoPath: root, hash: hash, file: path)) ?? 0
+            if diffGenerationAtStart == self.diffGeneration {
+                self.workingDiff = loadedDiff
+                self.workingDiffError = diffError
+                self.workingDiffLoading = false
+            }
             guard generation == self.previewGeneration else { return }
-            self.workingDiff = diff
             switch kind {
             case .binary:
                 self.preview = .binary(size)
@@ -398,6 +466,34 @@ final class RecoveryModel: ObservableObject {
         }
     }
 
+    /// Retry the "compare with current" diff after a read failure (v4.2.26).
+    func retryWorkingDiff() {
+        guard let hash = selectedVersionHash,
+              let path = selectedPath, let root = selectedRoot,
+              let svc = app?.service,
+              let version = versions.first(where: { $0.hash == hash }),
+              version.exists else { return }
+        diffGeneration += 1
+        let diffGenerationAtStart = diffGeneration
+        workingDiff = nil
+        workingDiffLoading = true
+        workingDiffError = nil
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                let diff = try await svc.recovery.workingDiff(repoPath: root,
+                                                              file: path, version: hash)
+                guard diffGenerationAtStart == self.diffGeneration else { return }
+                self.workingDiff = diff
+                self.workingDiffLoading = false
+            } catch {
+                guard diffGenerationAtStart == self.diffGeneration else { return }
+                self.workingDiffError = error.localizedDescription
+                self.workingDiffLoading = false
+            }
+        }
+    }
+
     // MARK: - Actions
 
     /// Restore the selected file to the selected version.
@@ -421,6 +517,9 @@ final class RecoveryModel: ObservableObject {
                                                           comment: "recovery status"), path, version.shortHash)
                         : String(format: NSLocalizedString("✓ 已把 %@ 还原到 %@",
                                                           comment: "recovery status"), path, version.shortHash)
+                    // The restore commit bypasses the commit pipeline: notify
+                    // listeners so the history tab refreshes immediately (v4.2.26).
+                    svc.notifyStateChanged()
                 }
                 self.busy = false
                 // The restored file usually leaves the current scope: move the
@@ -503,13 +602,23 @@ struct RecoveryView: View {
         .frame(minWidth: 1000, minHeight: 620)
         .fvCanvas()
         .onChange(of: app.roots.count) { _, _ in
+            // Hidden tabs keep their loaded data; the next activation catches up.
+            guard app.recordsTab == .recover else { return }
             model.reloadRoots()
         }
-        .task {
+        .task(id: app.recordsTab) {
+            // Only the visible tab polls (v4.2.26): switching tabs cancels this
+            // task, so the hidden recovery page does no 15 s scans.
+            guard app.recordsTab == .recover else {
+                model.setActive(false)
+                return
+            }
+            model.setActive(true)
             model.bind(app)
+            model.refreshOnActivation()
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 15_000_000_000)
-                guard !Task.isCancelled else { break }
+                guard !Task.isCancelled, app.recordsTab == .recover else { return }
                 model.periodicRefresh()
             }
         }
@@ -567,9 +676,9 @@ struct RecoveryView: View {
     }
 
     private var recoverySummary: String {
-        if model.deletedCount == 0 && model.modifiedCount == 0 {
-            return NSLocalizedString("没有需要恢复的文件", comment: "recovery caption")
-        }
+        // Same口径 as the 最近修改 tab: a lone "没有需要恢复的文件" next to a
+        // "最近修改 20" tab read as a contradiction to anxious users (v4.2.27
+        // design round).
         return String(format: NSLocalizedString("已删除 %d · 未保存 %d", comment: "recovery caption"),
                       model.deletedCount, model.modifiedCount)
     }
@@ -738,7 +847,13 @@ struct RecoveryView: View {
             .padding(.vertical, 12)
             Spacer(minLength: 0)
         } else if model.visibleFiles.isEmpty {
-            emptyListState
+            // An empty search result is not the same as "nothing to recover":
+            // keep the scope story only when the box is actually empty (v4.2.26).
+            if model.searchQuery.isEmpty {
+                emptyListState
+            } else {
+                searchEmptyState
+            }
             Spacer(minLength: 0)
         } else {
             ScrollView {
@@ -775,6 +890,28 @@ struct RecoveryView: View {
                          message: "这个文件夹被保护后，每次改动都会留下一个版本，可以在这里找回或还原。")
                 .padding(.top, 12)
         }
+    }
+
+    /// "No search results" state: distinct from the scope empty states above so
+    /// a filtered list never reads as "there is nothing to recover" (v4.2.26).
+    private var searchEmptyState: some View {
+        VStack(spacing: 9) {
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: 26, weight: .light))
+                .foregroundStyle(.tertiary)
+            Text(String(format: NSLocalizedString("没有匹配「%@」的文件", comment: "recovery search empty"),
+                        model.searchQuery))
+                .font(.system(size: 13, weight: .medium))
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+            Button("清除搜索") { model.searchText = "" }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .padding(.top, 2)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 30)
+        .padding(.horizontal, 16)
     }
 
     // MARK: - Detail pane
@@ -988,14 +1125,39 @@ struct RecoveryView: View {
     private var diffBody: some View {
         if let version = model.selectedVersion, !version.exists {
             noteBlock(symbol: "trash", title: "这个版本删除了该文件", detail: "选择更早的版本可以看到内容。")
+        } else if model.workingDiffLoading {
+            loadingBlock
+        } else if let diffError = model.workingDiffError {
+            // A failed read is NOT "no differences": say so and let the user
+            // retry instead of implying the file is already up to date (v4.2.26).
+            diffErrorBlock(diffError)
         } else if let diff = model.workingDiff {
             RecoveryDiffView(diff: diff)
         } else if model.preview == .loading {
             loadingBlock
         } else {
-            noteBlock(symbol: "doc.text.magnifyingglass", title: "没有可显示的差异",
-                      detail: "当前文件和这个版本的内容相同，或者内容无法按文本比较。")
+            placeholder("选择一个版本，查看它与当前文件的差异")
         }
+    }
+
+    /// "Could not compare" block with a retry button (v4.2.26).
+    private func diffErrorBlock(_ message: String) -> some View {
+        VStack(spacing: 8) {
+            Image(systemName: "exclamationmark.triangle")
+                .font(.system(size: 24, weight: .light))
+                .foregroundStyle(.tertiary)
+            Text(String(format: NSLocalizedString("无法比较：%@", comment: "recovery diff"),
+                        message))
+                .font(.system(size: 11))
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
+            Button("重试") { model.retryWorkingDiff() }
+                .controlSize(.small)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 22)
+        .padding(.horizontal, 18)
     }
 
     @ViewBuilder
@@ -1111,15 +1273,19 @@ struct RecoveryView: View {
     }
 
     private var footer: some View {
-        HStack(spacing: 8) {
+        HStack(alignment: .top, spacing: 8) {
             Image(systemName: statusSymbol)
                 .font(.system(size: 10))
                 .foregroundStyle(.secondary)
+                .padding(.top, 1)
+            // Failure text carries the remedy ("请先把它改名或移走…"); it must
+            // wrap instead of being cut to one line (v4.2.26).
             Text(model.statusText)
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .truncationMode(.tail)
+                .lineLimit(3)
+                .fixedSize(horizontal: false, vertical: true)
+                .help(model.statusText)
             Spacer(minLength: 8)
             Button {
                 model.revealInFinder()

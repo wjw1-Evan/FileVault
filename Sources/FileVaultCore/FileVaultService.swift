@@ -31,6 +31,10 @@ public final class FileVaultService: @unchecked Sendable {
     public let remoteSyncInterval: TimeInterval
     private var lastRemoteSync: [String: Date] = [:]
     private let remoteSyncLock = NSLock()
+    /// Startup attach failures (see attachError(root:)) (v4.2.26).
+    private var attachErrors: [String: String] = [:]
+    private let attachErrorLock = NSLock()
+    private var authMonitorTask: Task<Void, Never>?
 
     public init(configDirectory: URL? = nil, locator: GitLocator = SystemGitLocator(),
                 sweepInterval: TimeInterval = 120,
@@ -43,6 +47,56 @@ public final class FileVaultService: @unchecked Sendable {
 
     deinit {
         sweepTask?.cancel()
+        authMonitorTask?.cancel()
+    }
+
+    /// True once `start()` has built the git-backed services. The UI must not
+    /// touch `repoManager`/`history`/… before this is true: a failed git setup
+    /// (offline first launch) leaves them nil, and an implicitly-unwrapped nil
+    /// used to crash the app as soon as someone opened "添加文件夹" (v4.2.26).
+    public var isReady: Bool {
+        repoManager != nil && commitEngine != nil && sync != nil
+            && history != nil && recovery != nil
+    }
+
+    /// The folders the user configured, INCLUDING ones that are not attached
+    /// right now (external disk unplugged, folder moved, another live instance
+    /// owns it). The UI lists these so a protected folder never seems to
+    /// disappear, and so it can be relocated/removed from Settings (v4.2.26).
+    public func configuredRoots() -> [ManagedRoot] {
+        configStore.load().roots
+    }
+
+    /// Whether the folder currently has a live watcher (attached successfully).
+    public func isAttached(root: String) -> Bool {
+        let p = resolved(root)
+        lock.lock(); defer { lock.unlock() }
+        return watchers[p] != nil
+    }
+
+    /// Readable reason why a configured folder could not be attached, if any.
+    /// Cleared on a successful attach so a replugged disk heals silently.
+    public func attachError(root: String) -> String? {
+        let p = resolved(root)
+        attachErrorLock.lock(); defer { attachErrorLock.unlock() }
+        return attachErrors[p]
+    }
+
+    private func setAttachError(_ message: String?, for root: String) {
+        let p = resolved(root)
+        attachErrorLock.lock()
+        if let message {
+            attachErrors[p] = message
+        } else {
+            attachErrors.removeValue(forKey: p)
+        }
+        attachErrorLock.unlock()
+    }
+
+    /// Ask observers to refresh after a change that bypassed the commit/sync
+    /// pipelines (file restore, rollback, backup restore) (v4.2.26).
+    public func notifyStateChanged() {
+        fireStateChange()
     }
 
     /// Detect git, build services, load roots, ensure repos, start watchers.
@@ -86,6 +140,13 @@ public final class FileVaultService: @unchecked Sendable {
             self?.onFailure(NSLocalizedString("推送失败", comment: "notification title"),
                             "\((repoPath as NSString).lastPathComponent)：\(reason)")
         }
+        repos.onNestedRepoExcluded = { [weak self] repoPath, dir in
+            let name = (repoPath as NSString).lastPathComponent
+            self?.onFailure(NSLocalizedString("嵌套仓库未纳入版本管理", comment: "notification title"),
+                            String(format: NSLocalizedString(
+                                "%@：%@ 是没有提交的独立 Git 仓库，已跳过；请先在里面完成首次提交",
+                                comment: "nested repo excluded"), name, dir))
+        }
         // Event-driven UI refresh: any sync transition or commit event notifies observers.
         sync.onStatusChange.handler = { [weak self] _, _ in
             self?.fireStateChange()
@@ -121,6 +182,16 @@ public final class FileVaultService: @unchecked Sendable {
                 if ProcessInfo.processInfo.environment["FV_DEBUG"] != nil {
                     print("[FV_DEBUG] attachRoot skipped \(root.path): \(error)")
                 }
+                // v4.2.26: a folder that cannot be mounted must not silently
+                // vanish from the app. Remember the reason for the UI and tell
+                // the user once per launch; it stays in the protected list.
+                let reason = error.localizedDescription
+                setAttachError(reason, for: root.path)
+                onFailure(
+                    NSLocalizedString("受保护文件夹暂时无法打开", comment: "notification title"),
+                    String(format: NSLocalizedString("%@：%@；它仍在受保护列表中，可从设置里重新定位或移除。",
+                                                     comment: "attach failure"),
+                           (root.path as NSString).lastPathComponent, reason))
             }
         }
         // Catch up changes made just before the last quit: the 5 s debounce may
@@ -136,7 +207,9 @@ public final class FileVaultService: @unchecked Sendable {
                             "\((repoPath as NSString).lastPathComponent)：\(message)")
         }
         let rootsForAuth = rootsSnapshot()
-        Task { [weak self] in
+        // Keep the task handle so deinit can stop the loop instead of leaking
+        // the whole service graph forever (v4.2.26).
+        authMonitorTask = Task { [weak self] in
             await self?.authMonitor?.runLoop(rootsProvider: { [weak self] in self?.rootsSnapshot() ?? rootsForAuth })
         }
         // v4.2.4: periodic safety sweep. FSEvents can miss changes (sleep/wake,
@@ -172,7 +245,14 @@ public final class FileVaultService: @unchecked Sendable {
             let root = resolved(cfgRoot.path)
             guard !attachedNow.contains(root),
                   FileManager.default.fileExists(atPath: root) else { continue }
-            try? await attachRoot(path: root, paused: pause.isPaused(root: root))
+            do {
+                try await attachRoot(path: root, paused: pause.isPaused(root: root))
+                setAttachError(nil, for: root)
+            } catch {
+                // Keep the reason so Settings can explain why the folder is
+                // listed but not protected right now (v4.2.26).
+                setAttachError(error.localizedDescription, for: root)
+            }
         }
         for root in rootsSnapshot() {
             // Self-heal watching: an external disk that disappears and comes
@@ -182,14 +262,15 @@ public final class FileVaultService: @unchecked Sendable {
                 if let watcher = watchers[root] {
                     if !watcher.isRunning { startWatching(watcher, path: root) }
                 } else {
-                    try? await attachRoot(path: root, paused: pause.isPaused(root: root))
+                    try? await attachRoot(path: root, paused: pause.isPaused(root: root),
+                                          announceReinitialisation: true)
                 }
             }
             if pause.isPaused(root: root) { continue }
-            let entries = (try? await repoManager.status(path: root)) ?? []
-            if !entries.isEmpty {
-                await commitEngine.runCommitPipeline(repoPath: root)
-            }
+            // Serialize with the debounce pipeline and restore/rollback paths:
+            // the sweep used to call the pipeline directly, so a commit could
+            // race another commit of the same repo (v4.2.26).
+            await commitEngine.commitSerialized(repoPath: root)
             // Periodic remote sync: pull new commits made on other machines
             // (and push our own), every remoteSyncInterval (v4.2.17).
             if await repoManager.remoteURL(path: root) != nil, remoteSyncDue(root) {
@@ -210,16 +291,39 @@ public final class FileVaultService: @unchecked Sendable {
         lastRemoteSync[root] = Date()
     }
 
+    /// Drop the periodic-sync bookkeeping of a removed/relocated root.
+    private func forgetRemoteSyncState(_ root: String) {
+        remoteSyncLock.lock(); defer { remoteSyncLock.unlock() }
+        lastRemoteSync.removeValue(forKey: root)
+    }
+
     // MARK: - Root lifecycle
 
     /// Register + prepare + watch a root folder.
-    public func addRoot(path: String) async throws {
+    ///
+    /// `remoteURL` lets the one-step sheet bind the remote BEFORE the first
+    /// commit, so an oversized file is excluded from the very first version
+    /// instead of entering history and making every push fail (v4.2.26).
+    public func addRoot(path: String, remoteURL: String? = nil) async throws {
+        guard isReady else { throw FileVaultServiceError.environmentNotReady }
         var p = path
         if let r = try? URL(fileURLWithPath: path).resolvingSymlinksInPath() { p = r.path }
         guard FileManager.default.fileExists(atPath: p) else {
             throw FileVaultServiceError.rootMissing
         }
-        try await attachRoot(path: p, paused: false)
+        // Nested/overlapping roots would put one git repo inside another: the
+        // outer repo records the inner one as an embedded repo, both watchers
+        // fire, and a clone of either gets an empty directory. Refuse with a
+        // readable explanation instead (v4.2.26).
+        for existing in configStore.load().roots.map({ resolved($0.path) }) where existing != p {
+            if p.hasPrefix(existing + "/") || existing.hasPrefix(p + "/") {
+                throw FileVaultServiceError.rootOverlaps(existing)
+            }
+        }
+        let trimmedRemote = remoteURL?.trimmingCharacters(in: .whitespacesAndNewlines)
+        try await attachRoot(path: p, paused: false,
+                             remoteURL: (trimmedRemote?.isEmpty ?? true) ? nil : trimmedRemote)
+        setAttachError(nil, for: p)
         var cfg = configStore.load()
         if !cfg.roots.contains(where: { $0.path == p }) {
             cfg.roots.append(ManagedRoot(path: p))
@@ -236,8 +340,19 @@ public final class FileVaultService: @unchecked Sendable {
         watchers.removeValue(forKey: p)
         roots.removeAll { $0 == p }
         lock.unlock()
-        commitEngine.unregisterRoot(p)
-        repoManager.releaseInstanceLock(path: p)
+        commitEngine?.unregisterRoot(p)
+        // Pending debounce fires for a forgotten folder would re-enqueue pushes
+        // for a removed repo or notify about it (v4.2.27).
+        debouncer?.cancel(key: p)
+        repoManager?.releaseInstanceLock(path: p)
+        // Forgetting a folder must forget its runtime state too: a leftover
+        // pause flag made a re-added folder look unpaused in the UI while the
+        // commit pipeline skipped it forever (v4.2.26). A push loop / backoff /
+        // failed status must not keep running for a folder that is gone.
+        pause.setPaused(false, forRoot: p)
+        setAttachError(nil, for: p)
+        forgetRemoteSyncState(p)
+        if let sync { await sync.reset(repoPath: p) }
         var cfg = configStore.load()
         cfg.roots.removeAll { $0.path == p }
         saveConfig(cfg)
@@ -251,6 +366,7 @@ public final class FileVaultService: @unchecked Sendable {
     /// full history; only the watched path and the config entry change. Nothing
     /// is re-initialised when a .git moved with the folder.
     public func relocateRoot(from oldPath: String, to newPath: String) async throws {
+        guard isReady else { throw FileVaultServiceError.environmentNotReady }
         let old = resolved(oldPath)
         var new = newPath
         if let r = try? URL(fileURLWithPath: newPath).resolvingSymlinksInPath() { new = r.path }
@@ -269,6 +385,13 @@ public final class FileVaultService: @unchecked Sendable {
         guard !cfg.roots.contains(where: { resolved($0.path) == new }) else {
             throw FileVaultServiceError.rootAlreadyManaged
         }
+        // Same nesting rule as addRoot: relocating INTO or AROUND another
+        // protected folder would create a repo inside a repo (v4.2.26).
+        for other in cfg.roots.map({ resolved($0.path) }) where other != old && other != new {
+            if new.hasPrefix(other + "/") || other.hasPrefix(new + "/") {
+                throw FileVaultServiceError.rootOverlaps(other)
+            }
+        }
         let paused = cfg.roots[idx].paused
 
         // Stop watching the old path first: its watcher would otherwise fire on
@@ -279,11 +402,17 @@ public final class FileVaultService: @unchecked Sendable {
         roots.removeAll { $0 == old }
         lock.unlock()
         commitEngine.unregisterRoot(old)
+        debouncer.cancel(key: old)
         repoManager.releaseInstanceLock(path: old)
         pause.setPaused(false, forRoot: old)
+        forgetRemoteSyncState(old)
+        if let sync { await sync.reset(repoPath: old) }
 
         // Attach the new path (adopts the .git that moved with the folder).
-        try await attachRoot(path: new, paused: paused)
+        // Announce reinit: the relocate dialog promises history is kept, so a
+        // .git that did not survive the move must produce a readable notice
+        // instead of a silently empty history (v4.2.27).
+        try await attachRoot(path: new, paused: paused, announceReinitialisation: true)
 
         cfg = configStore.load()
         if let i = cfg.roots.firstIndex(where: { resolved($0.path) == old }) {
@@ -299,7 +428,7 @@ public final class FileVaultService: @unchecked Sendable {
     ///
     /// The root is only registered once preparation succeeded, so a missing or
     /// unwritable folder can never appear as "attached but unwatched".
-    private func attachRoot(path: String, paused: Bool,
+    private func attachRoot(path: String, paused: Bool, remoteURL: String? = nil,
                             announceReinitialisation: Bool = false) async throws {
         let p = resolved(path)
         lock.lock()
@@ -307,16 +436,20 @@ public final class FileVaultService: @unchecked Sendable {
         lock.unlock()
         if alreadyAttached {
             if paused { pause.setPaused(true, forRoot: p) }
+            setAttachError(nil, for: p)
             return
         }
         guard FileManager.default.fileExists(atPath: p) else {
             throw FileVaultServiceError.rootMissing
         }
+        // Defensive: the sweep retries attachRoot from a background task, so it
+        // must fail readably (not trap) if the git services are not built yet.
+        guard isReady else { throw FileVaultServiceError.environmentNotReady }
         // v4.0: the managed root itself is the one repo.
         let hadRepo = FileManager.default.fileExists(
             atPath: (p as NSString).appendingPathComponent(".git"))
         let contentsBefore = (try? FileManager.default.contentsOfDirectory(atPath: p)) ?? []
-        _ = try await repoManager.ensureRepo(at: p)
+        _ = try await repoManager.ensureRepo(at: p, remoteURL: remoteURL)
         // Two copies of the app must not watch/commit the same folder: only the
         // first live instance owns it (v4.2.9).
         guard repoManager.acquireInstanceLock(path: p) else {
@@ -349,6 +482,7 @@ public final class FileVaultService: @unchecked Sendable {
         if !roots.contains(p) { roots.append(p) }
         lock.unlock()
         commitEngine.registerRoot(p)
+        setAttachError(nil, for: p)
         startWatching(w, path: p)
     }
 
@@ -369,7 +503,7 @@ public final class FileVaultService: @unchecked Sendable {
             saveConfig(cfg)
         }
         fireStateChange()
-        if !p {
+        if !p, let commitEngine {
             await commitEngine.commitAllDirty(root: resolved(root))
         }
     }
@@ -410,6 +544,7 @@ public final class FileVaultService: @unchecked Sendable {
     }
 
     public func commitAllNow() async {
+        guard let commitEngine else { return }
         for r in rootsSnapshot() {
             await commitEngine.commitAllDirty(root: r)
         }
@@ -465,14 +600,25 @@ public enum FileVaultServiceError: LocalizedError {
     case rootMissing
     case rootAlreadyManaged
     case managedByAnotherInstance
+    /// Git setup failed, so no git-backed service exists (v4.2.26).
+    case environmentNotReady
+    /// The folder nests one of the protected folders (or contains one): a repo
+    /// inside a repo breaks both (v4.2.26).
+    case rootOverlaps(String)
     public var errorDescription: String? {
         switch self {
+        case .environmentNotReady:
+            return NSLocalizedString("Git 环境尚未就绪：等自动安装完成后再试；若一直失败，可在主面板查看原因。",
+                                     comment: "service error")
         case .rootMissing:
             return NSLocalizedString("文件夹不存在或不可访问", comment: "service error")
         case .rootAlreadyManaged:
             return NSLocalizedString("这个文件夹已经在受保护列表里了", comment: "service error")
         case .managedByAnotherInstance:
             return NSLocalizedString("这个文件夹正被另一个 FileVault 实例管理", comment: "service error")
+        case .rootOverlaps(let other):
+            return String(format: NSLocalizedString("这个文件夹与已受保护的「%@」重叠：不能嵌套保护，请只保留外层或里层其中一个",
+                                                    comment: "service error"), other)
         }
     }
 }

@@ -522,11 +522,35 @@ public final class GitBinaryProvisioner: GitProvisioning, @unchecked Sendable {
     public static func findInstalledGit(in root: URL = GitBinaryProvisioner.defaultInstallRoot) -> String? {
         let fm = FileManager.default
         let entries = (try? fm.contentsOfDirectory(at: root, includingPropertiesForKeys: [.isDirectoryKey])) ?? []
-        for dir in entries.sorted(by: { $0.lastPathComponent > $1.lastPathComponent }) {
+        // Sort by parsed (version, arch): plain lexicographic order picks
+        // "2.9.0" over "2.10.0" forever after an upgrade, and prefers the wrong
+        // architecture when two payloads coexist (v4.2.27).
+        let currentArch = GitArch.current.rawValue
+        let ranked = entries.sorted { a, b in
+            let ka = Self.rank(a.lastPathComponent, currentArch: currentArch)
+            let kb = Self.rank(b.lastPathComponent, currentArch: currentArch)
+            if ka.version != kb.version {
+                // Lexicographic semantic-version order: [2,10,0] > [2,9,0].
+                for i in 0..<min(ka.version.count, kb.version.count) where ka.version[i] != kb.version[i] {
+                    return ka.version[i] > kb.version[i]
+                }
+                return ka.version.count > kb.version.count
+            }
+            return ka.archMatch > kb.archMatch
+        }
+        for dir in ranked {
             let exe = dir.appendingPathComponent("bin/git").path
             if verifies(exe) { return exe }
         }
         return nil
+    }
+
+    /// Sort key for a payload directory name like "2.56.1-arm64".
+    private static func rank(_ name: String, currentArch: String) -> (version: [Int], archMatch: Int) {
+        let parts = name.split(separator: "-")
+        let version = parts.first.map { $0.split(separator: ".").map { Int($0) ?? 0 } } ?? []
+        let archMatch = parts.count > 1 && parts[1].lowercased() == currentArch ? 1 : 0
+        return (version, archMatch)
     }
 
     /// Run `git --version` and require a sane answer.

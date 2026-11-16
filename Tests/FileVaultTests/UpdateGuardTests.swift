@@ -24,12 +24,12 @@ final class UpdateGuardTests: XCTestCase {
 
         let first = UpdateGuard.consumeLaunch(configDirectory: configDir)
         XCTAssertEqual(first?.attempts, 1)
-        XCTAssertFalse(UpdateGuard.shouldRollback(first!))
+        XCTAssertFalse(UpdateGuard.shouldRollback(first!, currentVersion: "3.3.0"))
 
         _ = UpdateGuard.consumeLaunch(configDirectory: configDir)
         let third = UpdateGuard.consumeLaunch(configDirectory: configDir)
         XCTAssertEqual(third?.attempts, UpdateGuard.maxLaunchAttempts)
-        XCTAssertTrue(UpdateGuard.shouldRollback(third!))
+        XCTAssertTrue(UpdateGuard.shouldRollback(third!, currentVersion: "3.3.0"))
 
         UpdateGuard.markHealthy(configDirectory: configDir)
         XCTAssertNil(UpdateGuard.read(configDirectory: configDir))

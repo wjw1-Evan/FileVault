@@ -127,6 +127,29 @@ public final class CommitEngine: @unchecked Sendable {
         }
     }
 
+    /// Run the commit pipeline through the per-repo busy gate.
+    ///
+    /// Callers that are not the debouncer (safety sweep, pause-resume, manual
+    /// flush) used to call `runCommitPipeline` directly and could therefore run a
+    /// second add/commit concurrently with the debounced one: index.lock errors
+    /// and fake "commit failed" notifications (v4.2.26).
+    public func commitSerialized(repoPath: String) async {
+        inFlight.lock()
+        if busyKeys.contains(repoPath) {
+            recheckKeys.insert(repoPath)
+            inFlight.unlock()
+            return
+        }
+        busyKeys.insert(repoPath)
+        inFlight.unlock()
+        await runCommitPipeline(repoPath: repoPath)
+        inFlight.lock()
+        let again = recheckKeys.remove(repoPath) != nil
+        busyKeys.remove(repoPath)
+        inFlight.unlock()
+        if again { commit(forKey: repoPath) }
+    }
+
     /// The commit pipeline: pause check -> status -> large file exclude -> add -> commit.
     public func runCommitPipeline(repoPath: String) async {
         if ProcessInfo.processInfo.environment["FV_DEBUG"] != nil {
@@ -139,6 +162,11 @@ public final class CommitEngine: @unchecked Sendable {
         // committing mid-rebase would stage conflict markers or move a detached
         // HEAD. The pull itself commits pending edits first, so nothing is lost.
         guard !(await repoManager.operationInProgress(path: repoPath)) else { return }
+        // A restore/rollback/pull owns the working tree for a moment: never
+        // interleave add/commit with it (v4.2.26). The sweep/debounce will try
+        // again shortly.
+        guard repoManager.tryAcquireLocalOp(repoPath) else { return }
+        defer { repoManager.releaseLocalOp(repoPath) }
         // Git cannot track empty directories: a folder created while we watch
         // would otherwise never appear in history. Give brand-new empty folders
         // a hidden marker file so their creation becomes a real version.
@@ -148,7 +176,15 @@ public final class CommitEngine: @unchecked Sendable {
             : await repoManager.materializeEmptyDirectoryMarkers(path: repoPath,
                                                                  candidates: pending,
                                                                  since: watchStart(for: repoPath))
-        let entries = (try? await repoManager.status(path: repoPath)) ?? []
+        // "status failed" is NOT "no changes": a broken/locked repo would look
+        // clean forever and never be reported (v4.2.26).
+        let entries: [StatusEntry]
+        do {
+            entries = try await repoManager.status(path: repoPath)
+        } catch {
+            handlePipelineFailure(repoPath: repoPath, error: error)
+            return
+        }
         if ProcessInfo.processInfo.environment["FV_DEBUG"] != nil {
             print("[FV_DEBUG] status entries=\(entries.count)")
         }
@@ -185,24 +221,35 @@ public final class CommitEngine: @unchecked Sendable {
                 onCommit?(repoPath, hash, Self.describe(entries: entries, excluded: excluded))
             }
         } catch {
-            if ProcessInfo.processInfo.environment["FV_DEBUG"] != nil {
-                print("[FV_DEBUG] commit error: \(error)")
-            }
-            failureLock.lock()
-            let count = (failureCounts[repoPath] ?? 0) + 1
-            failureCounts[repoPath] = count
-            failureLock.unlock()
-            let reason = Self.failureDescription(error)
-            if count == 1 {
-                // Report once; the retries below stay silent unless they give up.
-                onCommitFailure?(repoPath, reason)
-            } else if count > 3 {
-                onCommitFailure?(repoPath, reason + NSLocalizedString("（已自动重试 3 次仍未成功，下次文件改动时会再试）",
-                                                                      comment: "commit failure retries exhausted"))
-                return
-            }
-            scheduleRetry(repoPath: repoPath)
+            handlePipelineFailure(repoPath: repoPath, error: error)
         }
+    }
+
+    /// Report/retry a failed pipeline run.
+    ///
+    /// Notification policy: the first failure is reported, the retries stay
+    /// quiet, and the "gave up" note is emitted exactly ONCE (count 4). The old
+    /// branch notified on every run past 3, and the 120 s sweep produced a
+    /// notification every two minutes forever (v4.2.26).
+    private func handlePipelineFailure(repoPath: String, error: Error) {
+        if ProcessInfo.processInfo.environment["FV_DEBUG"] != nil {
+            print("[FV_DEBUG] commit error: \(error)")
+        }
+        failureLock.lock()
+        let count = (failureCounts[repoPath] ?? 0) + 1
+        failureCounts[repoPath] = count
+        failureLock.unlock()
+        let reason = Self.failureDescription(error)
+        if count == 1 {
+            onCommitFailure?(repoPath, reason)
+        } else if count == 4 {
+            onCommitFailure?(repoPath, reason + NSLocalizedString("（已自动重试 3 次仍未成功，下次文件改动时会再试）",
+                                                                  comment: "commit failure retries exhausted"))
+        }
+        // Stop the automatic retry chain once we have reported giving up; the
+        // safety sweep / next file event still retries.
+        guard count < 4 else { return }
+        scheduleRetry(repoPath: repoPath)
     }
 
     /// Retry a failed auto-commit after a delay: the cause (locked index, disk
@@ -241,7 +288,7 @@ public final class CommitEngine: @unchecked Sendable {
 
     /// Full check: commit the root repo if it is dirty (used on resume / manual flush).
     public func commitAllDirty(root: String) async {
-        await runCommitPipeline(repoPath: root)
+        await commitSerialized(repoPath: root)
     }
 
     /// Human-readable one-line description for logging/UI.

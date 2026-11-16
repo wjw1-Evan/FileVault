@@ -92,6 +92,11 @@ public final class ConfigStore: @unchecked Sendable {
     public let directory: URL
     private let lock = NSLock()
     private var cache: AppConfig?
+    /// Signature (size+mtime) of config.json when `cache` was read/written.
+    /// A second FileVault instance can edit the file at any time (the docs
+    /// support running two instances) — serving a stale cache made the next
+    /// save silently overwrite the other instance's changes (v4.2.26).
+    private var cacheSignature: String?
     /// Set when the first disk read had to recover from a bad primary file.
     public private(set) var lastLoadIssue: ConfigLoadIssue?
 
@@ -112,15 +117,26 @@ public final class ConfigStore: @unchecked Sendable {
         self.directory = directory ?? Self.defaultDirectory
     }
 
+    /// Fingerprint of config.json on disk (nil when it does not exist).
+    private func diskSignature() -> String? {
+        let primary = directory.appendingPathComponent("config.json")
+        guard let attrs = try? FileManager.default.attributesOfItem(atPath: primary.path),
+              let size = attrs[.size] as? Int,
+              let modified = attrs[.modificationDate] as? Date else { return nil }
+        return "\(size)-\(modified.timeIntervalSince1970)"
+    }
+
     public func load() -> AppConfig {
         lock.lock(); defer { lock.unlock() }
-        if let cache { return cache }
+        // Re-read when another writer changed the file since we cached it.
+        if let cache, cacheSignature == diskSignature() { return cache }
         let primary = directory.appendingPathComponent("config.json")
         let backup = directory.appendingPathComponent(Self.backupFileName)
         let decoder = JSONDecoder()
         if let data = try? Data(contentsOf: primary),
            let cfg = try? decoder.decode(AppConfig.self, from: data) {
             cache = cfg
+            cacheSignature = diskSignature()
             lastLoadIssue = nil
             return cfg
         }
@@ -130,6 +146,7 @@ public final class ConfigStore: @unchecked Sendable {
             // Recover the last good state instead of silently starting empty;
             // the next save() rewrites config.json from this cache.
             cache = cfg
+            cacheSignature = diskSignature()
             lastLoadIssue = .recoveredFromBackup
             return cfg
         }
@@ -151,7 +168,11 @@ public final class ConfigStore: @unchecked Sendable {
     public func save(_ config: AppConfig) -> Bool {
         lock.lock(); defer { lock.unlock() }
         cache = config
-        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true,
+                                                 attributes: [.posixPermissions: 0o700])
+        // Do NOT chmod an EXISTING directory: a deliberately read-only config dir
+        // must stay read-only so save() reports the failure. New directories are
+        // created 0700 above.
         let primary = directory.appendingPathComponent("config.json")
         let backup = directory.appendingPathComponent(Self.backupFileName)
         // Keep the previous good config as a backup before replacing it. A
@@ -160,16 +181,24 @@ public final class ConfigStore: @unchecked Sendable {
             if let old = try? Data(contentsOf: primary),
                (try? JSONDecoder().decode(AppConfig.self, from: old)) != nil {
                 try? old.write(to: backup, options: .atomic)
+                // The backup holds every protected-folder path too: without the
+                // chmod it stayed 0644 while the primary was 0600 (v4.2.27).
+                try? FileManager.default.setAttributes([.posixPermissions: 0o600],
+                                                       ofItemAtPath: backup.path)
             } else {
                 let stamp = Self.stamp()
-                try? FileManager.default.moveItem(
-                    atPath: primary.path,
-                    toPath: directory.appendingPathComponent("config.corrupt-\(stamp).json").path)
+                let corrupt = directory.appendingPathComponent("config.corrupt-\(stamp).json")
+                try? FileManager.default.moveItem(atPath: primary.path, toPath: corrupt.path)
+                try? FileManager.default.setAttributes([.posixPermissions: 0o600],
+                                                       ofItemAtPath: corrupt.path)
             }
         }
         guard let data = try? JSONEncoder().encode(config) else { return false }
         do {
             try data.write(to: primary, options: .atomic)
+            try? FileManager.default.setAttributes([.posixPermissions: 0o600],
+                                                   ofItemAtPath: primary.path)
+            cacheSignature = diskSignature()
             return true
         } catch {
             return false

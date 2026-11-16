@@ -18,6 +18,7 @@ private func sheetStatusTint(_ status: String) -> Color {
 
 struct FileHistorySheet: View {
     let service: HistoryService
+    let recovery: RecoveryService?
     let repoPath: String
     let file: String
     let currentHash: String
@@ -28,6 +29,9 @@ struct FileHistorySheet: View {
     @State private var commits: [CommitInfo] = []
     @State private var loading = true
     @State private var status: String?
+    /// Versions that can actually be restored under the CURRENT path:
+    /// pre-rename commits (--follow surfaces them) cannot (v4.2.27).
+    @State private var restorable: Set<String> = []
 
     var body: some View {
         VStack(spacing: 0) {
@@ -91,6 +95,18 @@ struct FileHistorySheet: View {
                 }
                 .padding(10)
             }
+            // 老版本在改名前：恢复按钮点了才报错 → 提前禁用并说明（v4.2.27）。
+            .overlay(alignment: .bottom) {
+                if !restorable.isEmpty {
+                    Text("改名前的版本不能按当前文件名恢复；请到「找回与还原」按当时的文件名找回。")
+                        .font(.system(size: 9.5))
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
+                        .frame(maxWidth: .infinity)
+                        .background(.bar)
+                }
+            }
         }
     }
 
@@ -128,6 +144,14 @@ struct FileHistorySheet: View {
                 restore(commit)
             }
             .controlSize(.small)
+            // Pre-rename versions exist in history but not under the current
+            // path: restore would answer "该版本里没有文件" — disable up front
+            // (v4.2.27; empty set when recovery is unavailable = no marking).
+            .disabled(recovery != nil && !restorable.contains(commit.hash))
+            .help(recovery != nil && !restorable.contains(commit.hash)
+                  ? NSLocalizedString("该版本里此文件是改名前的旧路径，无法按当前文件名恢复",
+                                      comment: "file history")
+                  : "")
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
@@ -138,15 +162,19 @@ struct FileHistorySheet: View {
     }
 
     private var footer: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "info.circle")
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: status?.hasPrefix("⚠️") == true
+                  ? "exclamationmark.triangle" : "info.circle")
                 .font(.system(size: 10))
                 .foregroundStyle(.secondary)
+                .padding(.top, 1)
             Text(status ?? String(format: NSLocalizedString("共 %d 个版本", comment: "file history"),
                                   commits.count))
                 .font(.system(size: 10.5))
                 .foregroundStyle(.secondary)
-                .lineLimit(1)
+                .lineLimit(3)
+                .fixedSize(horizontal: false, vertical: true)
+                .help(status ?? "")
             Spacer(minLength: 0)
         }
         .padding(.horizontal, 16)
@@ -156,7 +184,21 @@ struct FileHistorySheet: View {
     @MainActor
     private func load() async {
         loading = true
-        commits = (try? await service.fileHistory(repoPath: repoPath, file: file, limit: 200)) ?? []
+        // A failed read is an error, not "没有历史版本" (v4.2.27).
+        do {
+            commits = try await service.fileHistory(repoPath: repoPath, file: file, limit: 200)
+        } catch {
+            commits = []
+            status = String(format: NSLocalizedString("⚠️ 读取历史失败：%@", comment: "history status"),
+                            error.localizedDescription)
+            loading = false
+            return
+        }
+        // Pre-rename versions: reuse RecoveryService.versions()' exists 语义.
+        if let recovery {
+            let versions = (try? await recovery.versions(repoPath: repoPath, file: file, limit: 200)) ?? []
+            restorable = Set(versions.filter(\.exists).map(\.hash))
+        }
         loading = false
     }
 
@@ -170,7 +212,7 @@ struct FileHistorySheet: View {
                 onRestored()
                 await load()
             } catch {
-                status = String(format: NSLocalizedString("⚠️ 恢复失败: %@", comment: "history status"),
+                status = String(format: NSLocalizedString("⚠️ 恢复失败：%@", comment: "history status"),
                                 error.localizedDescription)
             }
         }
@@ -193,6 +235,9 @@ struct CompareSheet: View {
     @State private var loading = false
     @State private var diffLoading = false
     @State private var error: String?
+    /// Per-file diff failure: shown in the RIGHT pane only — reusing `error`
+    /// used to replace the whole file list (v4.2.27).
+    @State private var diffError: String?
     @State private var generation = 0
 
     init(service: HistoryService, repoPath: String, commits: [CommitInfo],
@@ -320,6 +365,8 @@ struct CompareSheet: View {
                     .foregroundStyle(.secondary)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if let diffError {
+            hint("差异读取失败", detail: LocalizedStringKey(diffError))
         } else if let diff {
             if diff.isBinary {
                 hint("二进制文件已更改",
@@ -415,6 +462,7 @@ struct CompareSheet: View {
     private func select(_ path: String) {
         selectedPath = path
         diff = nil
+        diffError = nil
         diffLoading = true
         let from = fromHash
         let to = toHash
@@ -428,7 +476,7 @@ struct CompareSheet: View {
             } catch {
                 guard current == generation else { return }
                 diffLoading = false
-                self.error = error.localizedDescription
+                self.diffError = error.localizedDescription
             }
         }
     }
@@ -444,6 +492,9 @@ struct RecoverySheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var backups: [BackupSnapshot] = []
     @State private var loading = true
+    /// Reading the hidden refs can fail (folder gone, git error). That is NOT
+    /// the same as "no backups yet" and used to be swallowed (v4.2.26).
+    @State private var loadError: String?
     @State private var status: String?
     @State private var target: BackupSnapshot?
     @State private var confirming = false
@@ -497,6 +548,22 @@ struct RecoverySheet: View {
                     .foregroundStyle(.secondary)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if let loadError {
+            VStack(spacing: 8) {
+                Image(systemName: "exclamationmark.triangle")
+                    .font(.system(size: 24, weight: .light))
+                    .foregroundStyle(.tertiary)
+                Text(backupLoadErrorText(loadError))
+                    .font(.system(size: 11))
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+                Button("重试") { Task { await load() } }
+                    .controlSize(.small)
+                    .padding(.top, 2)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .padding(.horizontal, 32)
         } else if backups.isEmpty {
             VStack(spacing: 8) {
                 Image(systemName: "clock.arrow.circlepath")
@@ -557,24 +624,53 @@ struct RecoverySheet: View {
     }
 
     private var footer: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "info.circle")
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: footerSymbol)
                 .font(.system(size: 10))
                 .foregroundStyle(.secondary)
-            Text(status ?? String(format: NSLocalizedString("共 %d 个备份", comment: "recovery"), backups.count))
+                .padding(.top, 1)
+            Text(footerText)
                 .font(.system(size: 10.5))
                 .foregroundStyle(.secondary)
-                .lineLimit(1)
+                .lineLimit(3)
+                .fixedSize(horizontal: false, vertical: true)
+                .help(footerText)
             Spacer(minLength: 0)
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 9)
     }
 
+    private var footerSymbol: String {
+        if loadError != nil || status?.hasPrefix("⚠️") == true {
+            return "exclamationmark.triangle"
+        }
+        return "info.circle"
+    }
+
+    private var footerText: String {
+        if let loadError { return backupLoadErrorText(loadError) }
+        return status ?? String(format: NSLocalizedString("共 %d 个备份", comment: "recovery"),
+                                backups.count)
+    }
+
+    /// Shared wording so the error block and the footer never drift apart.
+    private func backupLoadErrorText(_ reason: String) -> String {
+        String(format: NSLocalizedString("无法读取备份：%@", comment: "recovery sheet"), reason)
+    }
+
     @MainActor
     private func load() async {
         loading = true
-        backups = (try? await service.backups(repoPath: repoPath)) ?? []
+        loadError = nil
+        do {
+            backups = try await service.backups(repoPath: repoPath)
+        } catch {
+            // Keep the reason visible and offer retry: a silent empty list
+            // reads as "there is nothing to recover".
+            backups = []
+            loadError = error.localizedDescription
+        }
         loading = false
     }
 
@@ -591,7 +687,7 @@ struct RecoverySheet: View {
                 dismiss()
             } catch {
                 restoring = false
-                status = String(format: NSLocalizedString("⚠️ 恢复失败: %@", comment: "history status"),
+                status = String(format: NSLocalizedString("⚠️ 恢复失败：%@", comment: "history status"),
                                 error.localizedDescription)
             }
         }

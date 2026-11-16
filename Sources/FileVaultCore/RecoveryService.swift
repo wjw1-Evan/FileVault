@@ -159,7 +159,11 @@ public final class RecoveryService: Sendable {
                          recentCommits: Int = 500,
                          deletionCommits: Int = 3_000) async throws -> RecoverySnapshot {
         let head = try await headEntries(repoPath: repoPath)
-        let statuses = (try? await repoManager.status(path: repoPath)) ?? []
+        // "status failed" is not "nothing uncommitted": a locked/unreadable
+        // repo used to show every modified file as available/unchanged and the
+        // summary as "0 unsaved". Fail so the window shows its scan error
+        // instead of a reassuring lie (v4.2.26).
+        let statuses = try await repoManager.status(path: repoPath)
         let recent = try await scanLog(repoPath: repoPath, limit: recentCommits)
         let deletions = try await scanLog(repoPath: repoPath, limit: deletionCommits,
                                           deletionsOnly: true)
@@ -231,8 +235,10 @@ public final class RecoveryService: Sendable {
             return lhs.path.localizedStandardCompare(rhs.path) == .orderedAscending
         }
 
-        let truncated = recent.commitCount >= max(1, recentCommits)
-            || deletions.commitCount >= max(1, deletionCommits)
+        // The scan asks for one extra commit, so a hit limit is only reported
+        // when an older commit really exists (exactly-limit histories used to
+        // say "older records were not scanned" wrongly) (v4.2.26).
+        let truncated = recent.truncated || deletions.truncated
         return RecoverySnapshot(files: files, truncated: truncated, scannedCommits: recent.commitCount)
     }
 
@@ -243,7 +249,7 @@ public final class RecoveryService: Sendable {
     public func versions(repoPath: String, file: String, limit: Int = 100) async throws -> [FileVersion] {
         try RepoManager.validateRepoRelativePath(file)
         let r = try await runner.run(
-            ["log", "--follow", "-z", "--name-status",
+            ["log", "--follow", "-z", "--name-status", "--diff-merges=first-parent",
              "--pretty=format:%x01%H%x01%h%x01%aI%x01%s",
              "-n", String(max(1, limit)), "--", file],
             cwd: repoPath
@@ -255,12 +261,18 @@ public final class RecoveryService: Sendable {
         var seen = Set<String>()
         var result: [FileVersion] = []
         for record in Self.parseLog(r.stdout).records where seen.insert(record.commit).inserted {
+            // --follow also returns commits from BEFORE a rename, where the file
+            // had another name. Those cannot be checked out under the current
+            // path, so they must not look restorable (preview failed, the diff
+            // showed the whole file as new, and restore answered "not in that
+            // version") (v4.2.26).
+            let exists = !record.status.hasPrefix("D") && record.path == file
             result.append(FileVersion(hash: record.commit,
                                       shortHash: record.short,
                                       subject: record.subject,
                                       date: record.date ?? Date(timeIntervalSince1970: 0),
                                       status: record.status,
-                                      exists: !record.status.hasPrefix("D")))
+                                      exists: exists))
         }
         return result
     }
@@ -360,6 +372,8 @@ public final class RecoveryService: Sendable {
     struct ParsedLog: Equatable, Sendable {
         var records: [PathRecord] = []
         var commitCount = 0
+        /// True when the scan limit was hit and older commits may exist.
+        var truncated = false
     }
 
     private struct HeadEntry: Equatable, Sendable {
@@ -386,16 +400,31 @@ public final class RecoveryService: Sendable {
     }
 
     private func scanLog(repoPath: String, limit: Int, deletionsOnly: Bool = false) async throws -> ParsedLog {
+        let cap = max(1, limit)
         var args = ["log", "-z", "--name-status"]
-        if deletionsOnly { args.append("--diff-filter=D") }
+        if deletionsOnly {
+            args.append("--diff-filter=D")
+            // Rename detection ON (git's default for porcelain log) hid plain
+            // deletes: "a.txt -> b.txt" reports R100 and the old path never
+            // appeared in the 已删除 scan, so a renamed-away file could not be
+            // recovered from this window (v4.2.27; restoreDirectory/compare
+            // already pass --no-renames for the same reason).
+            args.append("--no-renames")
+        }
+        // Ask for one extra commit: that tells us whether an OLDER commit
+        // exists, so a full scan is distinguishable from a truncated one
+        // (v4.2.26).
         args.append(contentsOf: ["--pretty=format:%x01%H%x01%h%x01%aI%x01%s",
-                                 "-n", String(max(1, limit)), "--"])
+                                 "-n", String(cap + 1), "--"])
         let r = try await runner.run(args, cwd: repoPath)
         guard r.succeeded else {
             if Self.isUnbornError(r.stderr) { return ParsedLog() }
             throw GitCommandError(command: "log", exitCode: r.exitCode, stderr: r.stderr)
         }
-        return Self.parseLog(r.stdout)
+        var parsed = Self.parseLog(r.stdout)
+        parsed.truncated = parsed.commitCount > cap
+        if parsed.truncated { parsed.commitCount = cap }
+        return parsed
     }
 
     private func isHiddenMarker(_ path: String) -> Bool {

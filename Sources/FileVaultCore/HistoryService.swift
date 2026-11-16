@@ -9,8 +9,8 @@ public final class HistoryService: @unchecked Sendable {
     }
 
     /// Commits of a repo, newest first.
-    public func commits(repoPath: String, limit: Int = 50) async throws -> [CommitInfo] {
-        try await repoManager.log(path: repoPath, max: limit)
+    public func commits(repoPath: String, limit: Int = 50, offset: Int = 0) async throws -> [CommitInfo] {
+        try await repoManager.log(path: repoPath, max: limit, skip: offset)
     }
 
     /// Content of one file at a given commit.
@@ -39,21 +39,43 @@ public final class HistoryService: @unchecked Sendable {
 
 public extension HistoryService {
     /// Changed files of one commit ("M\ta.md" style lines, FR-09 content view).
+    /// Changed files of one commit as "status<TAB>path" lines.
+    ///
+    /// -z keeps unusual names (newlines, quotes, tabs) intact. Without it git
+    /// C-quotes them into escaped pseudo-paths, so the changed list/preview/
+    /// restore all operated on a path that does not exist (v4.2.26).
+    /// Output shape with -z is status NUL path NUL (rename: R100 NUL old NUL new).
     func changedFiles(repoPath: String, hash: String) async throws -> [String] {
         let r = try await repoManager.runner.run(
-            ["diff-tree", "--no-commit-id", "--name-status", "-r", "--root", hash],
+            ["diff-tree", "--no-commit-id", "--name-status", "-r", "--root", "-z", hash],
             cwd: repoPath
         )
         guard r.succeeded else {
             throw GitCommandError(command: "diff-tree", exitCode: r.exitCode, stderr: r.stderr)
         }
-        return r.stdout.split(separator: "\n").map(String.init).filter { !$0.isEmpty }
+        let tokens = r.stdout.split(separator: "\u{0}", omittingEmptySubsequences: true).map(String.init)
+        var lines: [String] = []
+        var index = 0
+        while index < tokens.count {
+            let status = tokens[index]
+            index += 1
+            guard index < tokens.count else { break }
+            let path = tokens[index]
+            index += 1
+            var display = status + "\t" + path
+            if status.hasPrefix("R") || status.hasPrefix("C"), index < tokens.count {
+                let newPath = tokens[index]
+                index += 1
+                display = status + "\t" + path + " -> " + newPath
+            }
             // The hidden marker only exists so Git can track folder creation;
             // it is an implementation detail, not a user-visible changed file.
-            .filter { line in
-                let path = line.split(separator: "\t", maxSplits: 1).last.map(String.init) ?? line
-                return (path as NSString).lastPathComponent != RepoManager.emptyFolderMarker
+            let lastComponent = (path as NSString).lastPathComponent
+            if lastComponent != RepoManager.emptyFolderMarker {
+                lines.append(display)
             }
+        }
+        return lines
     }
 }
 
