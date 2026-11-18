@@ -222,11 +222,13 @@ struct MenuContentView: View {
     }
 
     private var quitRow: some View {
+        // No extra bottom padding (v4.2.29): the panel is the window, so any
+        // padding below the last row rendered as an empty light strip under
+        // 「退出 FileVault」. Let the panel close on the row's own hover inset.
         MenuActionRow(symbol: "power",
                       title: "退出 FileVault",
                       key: "q", modifiers: [.command],
                       hint: "⌘Q") { app.quit() }
-            .padding(.bottom, 4)
     }
 
     private var panelDivider: some View {
