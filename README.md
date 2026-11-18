@@ -67,6 +67,8 @@ FileVault **永久免费**：无试用期、无激活码、无账号、无订阅
 
 **最新发布：[v4.2.27](https://github.com/wjw1-Evan/FileVault/releases/tag/v4.2.27)** — [FileVault-4.2.27.zip](https://github.com/wjw1-Evan/FileVault/releases/download/v4.2.27/FileVault-4.2.27.zip)（sha256 `c793977e…95c7ccbe`，约 21 MB）
 
+> v4.2.28 全量审计第三轮 + 性能/交互修复：**同一秒内的两次回滚 / 强制拉取 / 合并同步不再互相覆盖备份 ref**（v4.2.27 写的随机后缀是字面量源码文本，被推开的 HEAD 会变成 gc 可达却没有引用）；**合并提交不再显示「没有文件变更」**（`--diff-merges=first-parent`，自动合并出来的版本可以直接浏览并恢复其中的文件）；变基被本地同名文件挡住后先 abort 再重试，不会把仓库卡在 rebase 中间；双实例 pid 锁写入后读回校验，两个实例不再同时认为文件夹归自己；历史与恢复窗口读不到数据时如实报错而不是「没有变更 / 没有匹配」（变更文件、内容搜索、命名版本、提交时间线各自区分错误态，已加载的列表不会被一次瞬时失败清空）；切换文件夹会丢弃上一个文件夹的内容搜索结果；删除命名版本前先确认；恢复失败后会通知并重扫，不再等到下一轮轮询；对比视图只剥离 git 文件头，`-- ` 开头的正文行不再凭空消失；**绑定远程时连不上会当场提示**（不再几分钟后只报推送失败），把预填的远程地址清空会真的变回「仅本地」；保存设置后旧探测结果不再把已保存地址弹回；git 安装期间改通知 / 语言设置不再静默丢失；时间线分组、文件树展平与图片预览改为缓存 / 单次解码，大时间线滚动更轻；修复 `make_app.sh` 在 zsh 下图标只生成单尺寸、没有 gh 时每次启动都跑 `env auth setup-git`（exit 127）两处打包 / 环境问题。
+
 > v4.2.27 全量审计复审（18 个功能模块重新逐模块审计，见 [复审报告](docs/09-全量审计复审报告-v4.2.27.md)）：**忽略文件护栏补齐到目录恢复并修复大小写变体绕过**（macOS 默认大小写不敏感卷上 `Notes.txt` 与 `notes.txt` 是同一个文件，精确匹配曾让 `git reset --hard` 静默销毁内容）；自动提交/推送统一 `--no-verify`（用户 hooks 不再否决后台快照提交）；`git init` 未提交的嵌套仓库不再卡死整个文件夹的自动提交（自动排除并通知）；超过远程上限的已跟踪文件不再被提交进历史（推送不会被永久卡死）；凭证探测不再把提示语当凭证（「请填令牌」提示恢复正常）；git 未就绪时设置页操作不再崩溃；提交历史/健康度读取失败如实报错而不是假装「没有历史/0 次提交」；更新资产按版本唯一匹配、回滚版本门改语义比较、GitHub 限流独立提示；回滚后清理 `.failed` 残骸、成功路径 zip 清理修复；CI 增加编译门禁并钉住 action 版本；README/PRIVACY/AGENTS 文档锚点对齐实现。**同日设计评审轮**：⇧⌘D 打开主面板接线；暂停自动提交加确认弹窗（写明暂停期间新改动不生成版本）；时间线支持「加载更早的提交」（不再固定最近 100 条）；主面板对未绑远程的文件夹如实显示「仅本地」而不是误导的「云端已最新」；通知开关改名「问题提醒通知」（如实反映门控范围）；绑定了远程的文件夹回滚时提供「回退并暂停此文件夹的自动同步」选项；菜单常驻「添加文件夹…」入口；设置页文件夹卡片提前、补自动同步节奏说明；恢复窗口摘要口径统一。
 
 > v4.2.26 全量逐模块审计修复（18 个功能模块，见 [审计报告](docs/08-全量审计报告-v4.2.26.md)）：**回滚/恢复不再静默吞掉被忽略文件的内容**（整仓回滚、单文件恢复、目录恢复都会先检查并在会覆盖未纳管文件时拒绝执行）；git 路径统一按字面处理（`a[1].txt` 不再连带改写 `a1.txt`，恢复一个文件不会误改同名兄弟文件）；恢复/回滚与自动提交、后台拉取变基互斥，不再交错产生半提交；`git status`/`git log` 读不到时显示错误而不是「没有改动/没有历史」；自动提交失败不再每 2 分钟重复通知；首次绑定远程时先绑远程再提交首版（>100 MB 文件不会进入历史导致推送永久失败）；空远程首次推送失败后周期同步会补推，推送不再撞上变基中的分离 HEAD；删除文件夹会清理暂停标记与推送循环（重新添加后自动提交真的恢复）；启动时挂载失败的文件夹在菜单/主面板/设置里显示「不可用」并说明原因，暂停的文件夹显示「已暂停」；`git` 自动安装期间菜单不再被 15 秒刷新覆盖成「Git 未就绪」；未就绪时添加文件夹不再崩溃；更新安装改到后台线程（菜单不再卡死）、sha256 缺失改为拒绝安装、回滚通知下次启动补发、安装失败会清理临时包、回滚前先校验当前版本；诊断包脱敏修复（此前 JSON 转义的 `\/Users\/…` 绕过脱敏）；配置在双实例下不再用过期缓存覆盖对方改动；大文件守卫脚本对非法阈值与 git 失败改为失败即停；隐私政策补充 git 镜像下载说明。
@@ -98,7 +100,7 @@ swift run FileVaultApp --help        # 命令行参数
 
 ```bash
 ./scripts/vendor-git.sh --arch all   # 可选：预取内嵌 git（下载 + sha256 校验 + 剔除 GCM，见 docs/07）
-./scripts/make_app.sh 4.2.27         # release 构建 + 组装 FileVault.app（版本号必填；缺图标会自动生成）
+./scripts/make_app.sh 4.2.28         # release 构建 + 组装 FileVault.app（版本号必填；缺图标会自动生成）
 hdiutil create -volname FileVault -srcfolder build/FileVault.app -format UDZO dist/FileVault.dmg
 # 或（沙箱环境替代方案）：
 ditto -c -k --keepParent build/FileVault.app dist/FileVault-1.0.0.zip
@@ -107,7 +109,7 @@ ditto -c -k --keepParent build/FileVault.app dist/FileVault-1.0.0.zip
 - 产物：`FileVault.app`（LSUIElement 菜单栏模式、bundle 通知可用、设置内可开启「登录时启动」）
 - Release 实测：RSS 54–60MB、空闲 CPU **0.07%**（事件驱动刷新后，较轮询架构降低约 14 倍）、二进制 0.8MB
 - 本地构建默认 ad-hoc 签名；**对外分发必须正式签名 + 公证**：
-  `CODESIGN_IDENTITY="Developer ID Application: 你的名字 (TEAMID)" NOTARY_PROFILE=fv-notary ./scripts/make_app.sh 4.2.27`
+  `CODESIGN_IDENTITY="Developer ID Application: 你的名字 (TEAMID)" NOTARY_PROFILE=fv-notary ./scripts/make_app.sh 4.2.28`
   （公证需先执行一次 `xcrun notarytool store-credentials fv-notary --apple-id … --team-id … --password …`）
 
 ## 仓库卫生：GitHub 100 MiB 限制

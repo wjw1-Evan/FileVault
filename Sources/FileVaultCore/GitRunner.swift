@@ -282,8 +282,13 @@ public final class GitRunner: Sendable {
     /// One-time `gh auth setup-git` so GitHub HTTPS pushes work without manual
     /// credential setup (idempotent).
     public static func ghAuthSetupGit() async {
+        // ghURL()'s "/usr/bin/env" fallback is always executable, so an
+        // executability check alone ran `/usr/bin/env auth setup-git` (exit 127)
+        // on every Mac without gh (v4.2.28). Require a real gh binary.
         let gh = SelfUpdater.ghURL()
-        guard FileManager.default.isExecutableFile(atPath: gh.path) else { return }
+        guard gh.lastPathComponent == "gh", FileManager.default.isExecutableFile(atPath: gh.path) else {
+            return
+        }
         let p = Process()
         p.executableURL = gh
         p.arguments = ["auth", "setup-git"]

@@ -96,8 +96,11 @@ struct FileHistorySheet: View {
                 .padding(10)
             }
             // 老版本在改名前：恢复按钮点了才报错 → 提前禁用并说明（v4.2.27）。
+            // v4.2.28: 条件反转修正——只有确实存在「不可按当前文件名恢复」的
+            // 版本时才提示；未改名的文件此前也常驻这条提示，而全部版本都
+            // 是改名前（恰恰最需要提示）时反而不显示。
             .overlay(alignment: .bottom) {
-                if !restorable.isEmpty {
+                if commits.contains(where: { !restorable.contains($0.hash) }) {
                     Text("改名前的版本不能按当前文件名恢复；请到「找回与还原」按当时的文件名找回。")
                         .font(.system(size: 9.5))
                         .foregroundStyle(.secondary)
@@ -420,9 +423,14 @@ struct CompareSheet: View {
 
     private var footer: some View {
         HStack(spacing: 8) {
-            Text(String(format: NSLocalizedString("共 %d 个文件有差异", comment: "compare"), files.count))
-                .font(.system(size: 10.5))
-                .foregroundStyle(.secondary)
+            // "共 0 个文件有差异" next to an error read as a successful empty
+            // comparison; only claim a count when one was actually loaded
+            // (v4.2.28).
+            if error == nil, !loading {
+                Text(String(format: NSLocalizedString("共 %d 个文件有差异", comment: "compare"), files.count))
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(.secondary)
+            }
             Spacer(minLength: 0)
             Text(fromHash.prefix(7) + " → " + toHash.prefix(7))
                 .font(.system(size: 9.5, design: .monospaced))

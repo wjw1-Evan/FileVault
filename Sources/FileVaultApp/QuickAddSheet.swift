@@ -149,8 +149,22 @@ struct QuickAddSheet: View {
                                       remoteURL: trimmed.isEmpty ? nil : trimmed)
                 if !trimmed.isEmpty {
                     do {
-                        try await svc.sync.configureRemote(repoPath: folderPath,
-                                                           url: trimmed, autoPush: true)
+                        let change = try await svc.sync.configureRemote(repoPath: folderPath,
+                                                                        url: trimmed, autoPush: true)
+                        // setRemote reports a failed fetch through the result,
+                        // not an error — surfacing it here keeps "看起来添加
+                        // 成功但其实连不上" from surfacing only as a push
+                        // failure notification minutes later (v4.2.28). The
+                        // sheet STAYS OPEN so the address can be corrected,
+                        // same as the bind-failure path below.
+                        if !change.fetchSucceeded {
+                            busy = false
+                            await app.refresh()
+                            onAdded?()
+                            errorText = NSLocalizedString("文件夹已添加，但无法连接远程地址（当前按仅本地保存版本）。请检查地址与网络后重新点「添加」。",
+                                                          comment: "quick add")
+                            return
+                        }
                     } catch {
                         busy = false
                         await app.refresh()
@@ -158,6 +172,13 @@ struct QuickAddSheet: View {
                             + error.localizedDescription
                         return
                     }
+                } else if detectedRemote {
+                    // The field was PRE-FILLED with the folder's own origin and
+                    // the user emptied it: 「留空 = 仅本地」 must hold. Without
+                    // this, attachRoot re-enables auto-push for the existing
+                    // remote and the folder silently keeps syncing to the
+                    // cloud (v4.2.28).
+                    try await svc.sync.clearRemote(repoPath: folderPath)
                 }
                 await app.refresh()
                 onAdded?()

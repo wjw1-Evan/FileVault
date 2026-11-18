@@ -45,9 +45,13 @@ public extension HistoryService {
     /// C-quotes them into escaped pseudo-paths, so the changed list/preview/
     /// restore all operated on a path that does not exist (v4.2.26).
     /// Output shape with -z is status NUL path NUL (rename: R100 NUL old NUL new).
+    /// --diff-merges=first-parent: a plain diff-tree prints NOTHING for merge
+    /// commits, so every auto-sync merge showed "没有文件变更" and its files
+    /// could not be browsed or restored (v4.2.28).
     func changedFiles(repoPath: String, hash: String) async throws -> [String] {
         let r = try await repoManager.runner.run(
-            ["diff-tree", "--no-commit-id", "--name-status", "-r", "--root", "-z", hash],
+            ["diff-tree", "--no-commit-id", "--name-status", "-r", "--root",
+             "--diff-merges=first-parent", "-z", hash],
             cwd: repoPath
         )
         guard r.succeeded else {
@@ -129,10 +133,11 @@ public extension HistoryService {
         guard r.succeeded else {
             throw GitCommandError(command: "log --follow", exitCode: r.exitCode, stderr: r.stderr)
         }
+        // One formatter for the whole batch (same reason as RepoManager.log).
+        let f = ISO8601DateFormatter()
         return r.stdout.split(separator: "\n").compactMap { line in
             let parts = line.components(separatedBy: "\u{0}")
             guard parts.count == 4, !parts[0].isEmpty, !parts[3].isEmpty else { return nil }
-            let f = ISO8601DateFormatter()
             let d = f.date(from: parts[3]) ?? Date(timeIntervalSince1970: 0)
             return CommitInfo(hash: parts[0], shortHash: parts[1], subject: parts[2], date: d)
         }

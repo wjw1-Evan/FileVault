@@ -824,10 +824,12 @@ public final class RepoManager: @unchecked Sendable {
             }
             throw GitCommandError(command: "log", exitCode: r.exitCode, stderr: r.stderr)
         }
+        // One formatter for the whole batch: constructing ISO8601DateFormatter
+        // per line used to dominate log() time on 100-entry pages (v4.2.28).
+        let f = ISO8601DateFormatter()
         return r.stdout.split(separator: "\n").compactMap { line in
             let parts = line.components(separatedBy: "\u{0}")
             guard parts.count == 4, !parts[0].isEmpty, !parts[3].isEmpty else { return nil }
-            let f = ISO8601DateFormatter()
             let d = f.date(from: parts[3]) ?? Date(timeIntervalSince1970: 0)
             return CommitInfo(hash: parts[0], shortHash: parts[1], subject: parts[2], date: d)
         }
@@ -941,7 +943,7 @@ public final class RepoManager: @unchecked Sendable {
         // The promised safety net is only real if this ref exists: a swallowed
         // failure made "找不回被回滚的版本" possible on a full disk / locked refs.
         // A short random suffix keeps two rollbacks in the same second apart.
-        let backupRef = "refs/filevault/backup/\(Self.backupStamp())-(UUID().uuidString.prefix(4))"
+        let backupRef = "refs/filevault/backup/\(Self.backupStamp())-\(UUID().uuidString.prefix(4))"
         let backup = try await runner.run(["update-ref", backupRef, headHash], cwd: path)
         guard backup.succeeded else {
             throw HistoryError.resetFailed(
@@ -1135,7 +1137,9 @@ public final class RepoManager: @unchecked Sendable {
             if !blocked.isEmpty {
                 let moved = await moveBlockedFilesAside(path: path, files: blocked)
                 if !moved.isEmpty {
-                    movedLocalCopies = moved
+                    // Append, don't replace: copies preserved by the earlier
+                    // protection pass must stay in the report (v4.2.28).
+                    movedLocalCopies += moved
                     ff = try await runNetwork(ffArgs, cwd: path)
                 }
             }
@@ -1163,6 +1167,13 @@ public final class RepoManager: @unchecked Sendable {
         if !rebase.succeeded {
             let blocked = blockedUntrackedFiles(stderr: rebase.stderr)
             if !blocked.isEmpty {
+                // A blocked checkout can leave the rebase machinery half-started;
+                // retrying without aborting would fail with "previous rebase in
+                // progress" and strand the repo mid-rebase. Abort first (same
+                // order as the merge path) (v4.2.28).
+                if await rebaseInProgress(path: path) {
+                    _ = try? await runner.run(["rebase", "--abort"], cwd: path)
+                }
                 let moved = await moveBlockedFilesAside(path: path, files: blocked)
                 if !moved.isEmpty {
                     movedLocalCopies += moved
@@ -1283,7 +1294,7 @@ public final class RepoManager: @unchecked Sendable {
             // Same random suffix as resetRepo: two force-pulls in the same
             // second would otherwise overwrite each other's backup ref, leaving
             // the pushed-aside HEAD unreferenced and gc-able (v4.2.27).
-            let ref = "refs/filevault/backup/\(Self.backupStamp())-(UUID().uuidString.prefix(4))"
+            let ref = "refs/filevault/backup/\(Self.backupStamp())-\(UUID().uuidString.prefix(4))"
             let backup = try await runner.run(["update-ref", ref, oldHead], cwd: path)
             guard backup.succeeded else {
                 throw GitCommandError(command: "update-ref \(ref)", exitCode: backup.exitCode,
@@ -1531,9 +1542,16 @@ public final class RepoManager: @unchecked Sendable {
             .appendingPathComponent("filevault-instance.pid")
         // Fail closed: when the lock cannot be written (weird .git layout, read-
         // only repo) a second instance must not believe it owns the folder.
+        // Read-back check: two instances racing `write` could each believe they
+        // own the folder (last writer wins); after writing, the file must really
+        // name THIS process (v4.2.28).
         do {
             try Data(String(getpid()).utf8).write(to: URL(fileURLWithPath: file))
         } catch {
+            return false
+        }
+        guard let raw = try? String(contentsOfFile: file, encoding: .utf8),
+              raw.trimmingCharacters(in: .whitespacesAndNewlines) == String(getpid()) else {
             return false
         }
         return true
@@ -1777,8 +1795,11 @@ public final class RepoManager: @unchecked Sendable {
         }
 
         // Keep the replaced HEAD recoverable before touching the working tree.
+        // Same random suffix as resetRepo/forcePull: two merge-syncs in the
+        // same second would otherwise overwrite each other's backup ref,
+        // leaving the pushed-aside HEAD unreferenced and gc-able (v4.2.28).
         var backupRef: String?
-        let ref = "refs/filevault/backup/" + Self.backupStamp()
+        let ref = "refs/filevault/backup/\(Self.backupStamp())-\(UUID().uuidString.prefix(4))"
         let backup = try await runner.run(["update-ref", ref, oldHead], cwd: path)
         guard backup.succeeded else {
             throw GitCommandError(command: "update-ref " + ref, exitCode: backup.exitCode, stderr: backup.stderr)

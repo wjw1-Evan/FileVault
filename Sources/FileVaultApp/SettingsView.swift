@@ -81,6 +81,11 @@ final class SettingsModel: ObservableObject {
     /// Username field touched but not saved: background refreshes must not
     /// snap it back to the stored credential's username mid-typing (v4.2.27).
     private var editedAuthUsers: Set<String> = []
+    /// Per-card fill generation (v4.2.28): a detail fill that started BEFORE a
+    /// save finished must not write its pre-save url/auth values back after
+    /// the save cleared the edit marks — the credential probe can suspend for
+    /// seconds, and the late write made the saved address "snap back".
+    private var fillGenerations: [String: Int] = [:]
     /// Folders with a save/test operation already running (reentrancy guard).
     private var busyRepos: Set<String> = []
     private var generalCommitted = false
@@ -201,6 +206,7 @@ final class SettingsModel: ObservableObject {
         let cardPaths = Set(rootCards.map(\.id))
         editedPaths.formIntersection(cardPaths)
         editedAuthModes.formIntersection(cardPaths)
+        editedAuthUsers.formIntersection(cardPaths)
         for card in rootCards where card.repo.available && ready {
             fillRepoDetails(id: card.repo.id)
         }
@@ -223,6 +229,8 @@ final class SettingsModel: ObservableObject {
         // repoManager is implicitly unwrapped until start() finishes: never ask
         // for git facts before the service is ready (v4.2.26).
         guard let svc = service, svc.isReady else { return }
+        fillGenerations[id, default: 0] += 1
+        let pass = fillGenerations[id] ?? 0
         Task { [weak self] in
             let url = await svc.repoManager.remoteURL(path: id)
             let healthInfo = await svc.repoManager.health(path: id)
@@ -250,6 +258,9 @@ final class SettingsModel: ObservableObject {
             }
             await MainActor.run { [weak self] in
                 guard let self, let idx = self.indexOf(id) else { return }
+                // A newer fill (or a save) superseded this one: never write the
+                // stale pre-save values back (v4.2.28).
+                guard self.fillGenerations[id] == pass else { return }
                 // Never wipe text the user is typing.
                 if !self.editedPaths.contains(id) {
                     self.rootCards[idx].repo.urlText = url ?? ""
@@ -308,7 +319,27 @@ final class SettingsModel: ObservableObject {
     // MARK: - General settings
 
     func commitGeneral() {
-        guard generalCommitted, let svc = service else { return }
+        // While git is still installing there is no service yet; the toggle
+        // used to silently drop every change (and the language picker snapped
+        // back) with no feedback (v4.2.28). Persist straight to the config
+        // store — updateGeneral's runtime apply is optional-chained anyway, so
+        // nothing here needs a built service.
+        guard let svc = service else {
+            let store = ConfigStore(directory: ConfigStore.defaultDirectory)
+            var cfg = store.load()
+            cfg.general.notificationsEnabled = notificationsEnabled
+            cfg.general.autoCheckUpdates = autoCheckUpdates
+            cfg.general.debounceSeconds = debounceSeconds
+            cfg.general.language = language
+            // No repo card exists yet to carry an inline message; a failed
+            // write is surfaced by the next successful reload reverting the
+            // controls, and saveConfig-style failures are already reported by
+            // the service once it starts.
+            _ = store.save(cfg)
+            generalCommitted = true
+            return
+        }
+        guard generalCommitted else { return }
         svc.updateGeneral { g in
             g.notificationsEnabled = notificationsEnabled
             g.autoCheckUpdates = autoCheckUpdates
@@ -352,9 +383,18 @@ final class SettingsModel: ObservableObject {
     /// Changing the interface language: persist, point the bundle at the new
     /// localisation and relaunch (SwiftUI only resolves it at launch).
     func setLanguage(_ code: String) {
-        guard let svc = service else { return }
+        // The picker used to dead-end while git was still installing (no
+        // service yet): persist through the config store directly instead of
+        // silently dropping the choice (v4.2.28).
         language = code
-        svc.updateGeneral { $0.language = code }
+        if let svc = service {
+            svc.updateGeneral { $0.language = code }
+        } else {
+            let store = ConfigStore(directory: ConfigStore.defaultDirectory)
+            var cfg = store.load()
+            cfg.general.language = code
+            _ = store.save(cfg)
+        }
         AppLanguage.apply(AppLanguage.storedValue(code))
         relaunchSoon()
     }
@@ -425,6 +465,7 @@ final class SettingsModel: ObservableObject {
                 // refills its remote field instead of showing it empty (M8/P3).
                 self?.editedPaths.remove(card.id)
                 self?.editedAuthModes.remove(card.id)
+                self?.editedAuthUsers.remove(card.id)
                 self?.reload()
             }
         }
@@ -591,6 +632,10 @@ final class SettingsModel: ObservableObject {
                 self.editedPaths.remove(id)
                 self.editedAuthModes.remove(id)
                     self.editedAuthUsers.remove(id)
+                // Invalidate fills that started before this save: their stale
+                // pre-save values must not land after the marks were cleared
+                // (v4.2.28). fillRepoDetails below starts a fresh pass.
+                self.fillGenerations[id, default: 0] += 1
                 if needsToken {
                     await MainActor.run {
                         self.setMessage(id, NSLocalizedString("已保存地址，但「用户名 + 访问令牌」还需要填写访问令牌（令牌只写进本机凭证库，不写进 git 配置）",

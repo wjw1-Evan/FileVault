@@ -61,6 +61,9 @@ final class AppState: ObservableObject {
     var renderRequest: RenderRequest?
 
     private var statusCache: [String: SyncStatus] = [:]
+    /// Out-of-order guard for refresh(): a suspended pass must not publish
+    /// stale roots after a newer pass already ran (v4.2.28).
+    private var refreshGeneration = 0
     private var timer: Timer?
     private var updateCheckStarted = false
     /// True while the one-time git download/install is running: the 15 s
@@ -323,6 +326,13 @@ final class AppState: ObservableObject {
         // with no way to relocate or remove it — exactly what the docs promise
         // the app shows.
         let configured = svc.configuredRoots()
+        // Out-of-order guard: the per-root `await` below can suspend across an
+        // add/removeRoot that started a newer refresh; publishing the stale
+        // pass afterwards resurrected a removed folder until the next event or
+        // the 15 s timer (same bug shape DashboardModel already guards,
+        // v4.2.28).
+        refreshGeneration += 1
+        let pass = refreshGeneration
         var newRoots: [RootMenuEntry] = []
         // Rebuild the cache every pass: a removed folder used to leave its old
         // .failed state behind, so the menu bar kept a warning icon and the
@@ -348,6 +358,7 @@ final class AppState: ObservableObject {
                                           unavailable: !attached,
                                           paused: cfgRoot.paused))
         }
+        guard pass == refreshGeneration else { return }
         roots = newRoots
         statusCache = newStatusCache
         unavailableCount = unavailable

@@ -286,7 +286,11 @@ struct RootMenuRow: View {
         // LocalizedStringKey (not String): a String argument selects the
         // verbatim overload and keeps the tooltip Chinese in English builds
         // (v4.2.26).
-        .help(LocalizedStringKey("在 Finder 中打开 \(root.name)"))
+        // v4.2.28: unavailable rows navigate to Settings (where they can be
+        // relocated or removed) — the tooltip must not promise Finder.
+        .help(root.unavailable
+              ? LocalizedStringKey("文件夹当前不可用；点击前往设置重新定位或移除")
+              : LocalizedStringKey("在 Finder 中打开 \(root.name)"))
     }
 }
 

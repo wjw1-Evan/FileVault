@@ -61,10 +61,14 @@ if [ ! -f build/AppIcon.icns ]; then
     rm -rf build/AppIcon.iconset
     mkdir -p build/AppIcon.iconset
     for spec in "16 32" "32 64" "128 256" "256 512" "512 1024"; do
-      set -- $spec
-      # $1 = point size, $2 = pixel size (@2x variants cover all slugs).
-      sips -z "$2" "$2" --resampleWidth "$2" build/AppIcon-1024.png \
-        --out "build/AppIcon.iconset/icon_${1}x${1}@2x.png" >/dev/null 2>&1 || true
+      # zsh does NOT word-split unquoted expansions (SH_WORD_SPLIT off), so
+      # `set -- $spec` produced ONE argument and every sips call got empty
+      # sizes — the iconset stayed empty and every build silently fell back
+      # to the single-resolution PNG-as-icns that this loop was supposed to
+      # replace (v4.2.28). `read` splits the two numbers in both zsh and bash.
+      read -r point pixel <<< "$spec"
+      sips -z "$pixel" "$pixel" --resampleWidth "$pixel" build/AppIcon-1024.png \
+        --out "build/AppIcon.iconset/icon_${point}x${point}@2x.png" >/dev/null 2>&1 || true
     done
     if iconutil -c icns build/AppIcon.iconset -o build/AppIcon.icns 2>/dev/null; then
       rm -rf build/AppIcon.iconset build/AppIcon-1024.png

@@ -217,6 +217,10 @@ final class RecoveryModel: ObservableObject {
         pendingReload = Task { [weak self] in
             try? await Task.sleep(nanoseconds: 600_000_000)
             guard !Task.isCancelled, let self, self.isActive else { return }
+            // A restore/rollback owns the folder right now: the pre-restore
+            // snapshot must not refresh the list mid-operation (same guard the
+            // 15 s poll already has) (v4.2.28).
+            guard self.busy == false, self.loading == false else { return }
             self.reload(preserveSelection: true)
         }
     }
@@ -309,7 +313,11 @@ final class RecoveryModel: ObservableObject {
                     // version the user is looking at: only reload the detail when
                     // the file's STATE changed (deleted / modified / back), which
                     // is what makes the old version list misleading.
-                    if previousSelection?.state != updated.state || self.versions.isEmpty {
+                    // v4.2.28: ALSO only when the user is still on that file —
+                    // a click made while the scan was in flight (versions still
+                    // empty) used to be yanked back to the stale selection.
+                    if self.selectedPath == keep,
+                       previousSelection?.state != updated.state || self.versions.isEmpty {
                         self.selectFile(keep, force: true)
                     }
                 } else {
@@ -531,6 +539,13 @@ final class RecoveryModel: ObservableObject {
                 self.statusText = String(format: NSLocalizedString("⚠️ 恢复失败：%@",
                                                                   comment: "recovery status"),
                                          error.localizedDescription)
+                // The failed restore may still have mutated the repo (the
+                // pre-restore backup commit happens BEFORE some refusals, and
+                // a failed final commit leaves the checkout applied): notify
+                // listeners and rescan instead of waiting for the next poll
+                // (v4.2.28).
+                svc.notifyStateChanged()
+                self.reload(preserveSelection: false)
             }
         }
     }
@@ -877,7 +892,7 @@ struct RecoveryView: View {
         case .deleted:
             FVEmptyState(symbol: "checkmark.circle",
                          title: "没有被删除的文件",
-                         message: "文件夹里的文件都在。万一误删了，被删的文件会出现在这里，直接就能找回。")
+                         message: "文件夹里的文件都在。万一误删了，被删的文件会出现在这里，直接就能找回。被 .gitignore 忽略的文件不会留下版本，删除后无法在这里找回。")
                 .padding(.top, 12)
         case .recent:
             FVEmptyState(symbol: "pencil",
@@ -887,7 +902,7 @@ struct RecoveryView: View {
         case .all:
             FVEmptyState(symbol: "doc.on.doc",
                          title: "还没有版本记录",
-                         message: "这个文件夹被保护后，每次改动都会留下一个版本，可以在这里找回或还原。")
+                         message: "这个文件夹被保护后，每次改动都会留下一个版本，可以在这里找回或还原。被 .gitignore 忽略的文件（如 .env）不会留下版本，也不会出现在这个列表里。")
                 .padding(.top, 12)
         }
     }
@@ -1061,8 +1076,16 @@ struct RecoveryView: View {
     }
 
     private var versionCountText: String {
-        model.versions.isEmpty ? "" : String(format: NSLocalizedString("%d 个版本", comment: "recovery caption"),
-                                             model.versions.count)
+        guard !model.versions.isEmpty else { return "" }
+        // The scan is bounded at 100 versions: say so when the list is exactly
+        // full, instead of implying everything is shown (v4.2.28).
+        if model.versions.count >= 100 {
+            return String(format: NSLocalizedString("%d 个版本（更早的版本未显示，可在历史时间线里翻找）",
+                                                    comment: "recovery caption"),
+                          model.versions.count)
+        }
+        return String(format: NSLocalizedString("%d 个版本", comment: "recovery caption"),
+                      model.versions.count)
     }
 
     private var versionsHeight: CGFloat {
@@ -1525,12 +1548,20 @@ private struct RecoveryDiffView: View {
     private var lines: [String] {
         // Hide git's file header ("diff --git", "index", "---", "+++"): a
         // non-technical reader only needs the hunks and their +/- lines.
+        // v4.2.28: strip header lines ONLY before the first @@ hunk. The old
+        // whole-text filter also swallowed CONTENT lines — a deleted line
+        // whose text starts with "-- " renders as "--- …" and vanished from
+        // the comparison.
         let headers = ["diff --git ", "index ", "--- ", "+++ ",
                        "deleted file mode ", "new file mode ", "old mode ", "new mode ",
                        "similarity index ", "rename from ", "rename to ",
                        "copy from ", "copy to "]
-        let all = diff.text.components(separatedBy: "\n").filter { line in
-            !headers.contains { line.hasPrefix($0) }
+        var pastFirstHunk = false
+        var all: [String] = []
+        for line in diff.text.components(separatedBy: "\n") {
+            if line.hasPrefix("@@") { pastFirstHunk = true }
+            if !pastFirstHunk, headers.contains(where: { line.hasPrefix($0) }) { continue }
+            all.append(line)
         }
         return all.count > 3_000 ? Array(all.prefix(3_000)) : all
     }
@@ -1582,11 +1613,12 @@ private struct RecoveryDiffView: View {
     }
 
     private func color(for line: String) -> Color {
-        if line.hasPrefix("+++") || line.hasPrefix("---") { return .secondary }
+        // Header lines never reach the renderer (stripped before the first
+        // hunk), so a "+"/"-" prefix here is always CONTENT: a deleted line
+        // whose text starts with "-- " must be red, not gray (v4.2.28).
         if line.hasPrefix("+") { return .green }
         if line.hasPrefix("-") { return .red }
         if line.hasPrefix("@@") { return .accentColor }
-        if line.hasPrefix("diff --git") || line.hasPrefix("index ") { return .secondary }
         return .primary
     }
 }

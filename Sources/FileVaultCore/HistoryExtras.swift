@@ -202,7 +202,8 @@ public extension HistoryService {
     func changeStats(repoPath: String, hash: String) async throws -> [String: FileChangeStat] {
         try Self.requireHash(hash, error: HistoryError.commitNotFound(hash))
         let r = try await repoManager.runner.run(
-            ["diff-tree", "--no-commit-id", "-r", "--root", "--numstat", "-z", hash],
+            ["diff-tree", "--no-commit-id", "-r", "--root", "--numstat",
+             "--diff-merges=first-parent", "-z", hash],
             cwd: repoPath
         )
         guard r.succeeded else {

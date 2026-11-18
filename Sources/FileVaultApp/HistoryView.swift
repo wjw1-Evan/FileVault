@@ -98,6 +98,17 @@ enum HistoryTimeline {
         let commits: [CommitInfo]
     }
 
+    /// Stable identity per day, built once: constructing a DateFormatter on
+    /// every sections() call dominated body evaluations on large timelines
+    /// (v4.2.28). DateFormatter is documented as not thread-safe, but this is
+    /// only touched from the main-actor view and serial tests.
+    private static let dayIDFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = "yyyy-MM-dd"
+        return f
+    }()
+
     static func sections(for commits: [CommitInfo],
                          now: Date = Date(),
                          calendar: Calendar = .current,
@@ -110,10 +121,8 @@ enum HistoryTimeline {
             if buckets[day] == nil { order.append(day) }
             buckets[day, default: []].append(commit)
         }
-        let dayID = DateFormatter()
-        dayID.locale = Locale(identifier: "en_US_POSIX")
+        let dayID = Self.dayIDFormatter
         dayID.timeZone = calendar.timeZone
-        dayID.dateFormat = "yyyy-MM-dd"
         let yesterday = calendar.date(byAdding: .day, value: -1, to: now) ?? now
         return order.map { day in
             let title: String
@@ -169,10 +178,19 @@ final class HistoryModel: ObservableObject {
     @Published var tagsByHash: [String: [String]] = [:]
     /// Folder awaiting a restore confirmation (tree rows).
     @Published var pendingDirectoryRestore: String?
+    /// Tag awaiting a deletion confirmation (v4.2.28: a right-click delete
+    /// used to run immediately with no confirmation).
+    @Published var pendingTagDeletion: String?
     /// Timeline search mode + results of git log -S content search.
     @Published var searchMode: HistorySearchMode = .subject
     @Published var contentHits: [CommitInfo] = []
     @Published var contentSearching = false
+    /// The content search itself failed (repo unreadable): an error state, not
+    /// "no matches" (v4.2.28).
+    @Published var contentSearchError = false
+    /// Commit timeline read failure (v4.2.28): distinct from the empty state;
+    /// a populated list is KEPT when a background reload fails.
+    @Published var commitsError: String?
     @Published var statusText = NSLocalizedString("选择一个提交，查看并恢复它包含的文件", comment: "history status")
     /// Local filter over the loaded commit subjects / short hashes.
     @Published var searchText = ""
@@ -214,6 +232,36 @@ final class HistoryModel: ObservableObject {
         return query.isEmpty ? commits : contentHits
     }
 
+    // MARK: Body-eval caches
+    // The timeline re-evaluates on every @Published flip; re-grouping all
+    // commits and re-flattening the whole snapshot tree per frame made every
+    // keystroke/refresh linear over the loaded window (v4.2.28). Both caches
+    // key on cheap identity fields and fall through to recompute on change.
+
+    private var sectionsCache: (count: Int, first: String?, last: String?,
+                                sections: [HistoryTimeline.DaySection])?
+    var timelineSections: [HistoryTimeline.DaySection] {
+        let list = displayedCommits
+        if let c = sectionsCache, c.count == list.count,
+           c.first == list.first?.hash, c.last == list.last?.hash {
+            return c.sections
+        }
+        let s = HistoryTimeline.sections(for: list)
+        sectionsCache = (list.count, list.first?.hash, list.last?.hash, s)
+        return s
+    }
+
+    private var treeRowsCache: (dirs: Set<String>, nodes: [HistoryTreeNode],
+                                rows: [HistoryTreeRow])?
+    var flattenedTreeRows: [HistoryTreeRow] {
+        if let c = treeRowsCache, c.dirs == expandedDirs, c.nodes == treeNodes {
+            return c.rows
+        }
+        let rows = HistoryTree.flatten(treeNodes, expanded: expandedDirs)
+        treeRowsCache = (expandedDirs, treeNodes, rows)
+        return rows
+    }
+
     /// Switch the timeline between commit search and file-content history.
     func setSearchMode(_ mode: HistorySearchMode) {
         guard mode != searchMode else { return }
@@ -232,21 +280,43 @@ final class HistoryModel: ObservableObject {
         contentSearchTask = nil
         guard searchMode == .content else { return }
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !query.isEmpty else { contentHits = []; contentSearching = false; return }
+        guard !query.isEmpty else {
+            contentHits = []
+            contentSearching = false
+            contentSearchError = false
+            return
+        }
         guard let svc = app?.service, let repo = selectedRepo else { return }
         contentSearching = true
+        contentSearchError = false
         contentSearchTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: 350_000_000)
             guard !Task.isCancelled else { return }
-            let hits = (try? await svc.history.searchHistory(repoPath: repo, query: query)) ?? []
-            guard !Task.isCancelled, let self else { return }
-            guard self.searchMode == .content,
-                  self.searchText.trimmingCharacters(in: .whitespacesAndNewlines) == query else { return }
-            self.contentHits = hits.map { c in
-                CommitInfo(hash: c.hash, shortHash: c.shortHash,
-                           subject: c.subject.fvDecodingGitEscapes, date: c.date)
+            do {
+                let hits = try await svc.history.searchHistory(repoPath: repo, query: query)
+                guard !Task.isCancelled, let self else { return }
+                // The repo may have been switched while git log -S was running:
+                // stale hits must never land in the new folder's timeline
+                // (v4.2.28).
+                guard self.selectedRepo == repo,
+                      self.searchMode == .content,
+                      self.searchText.trimmingCharacters(in: .whitespacesAndNewlines) == query else { return }
+                self.contentHits = hits.map { c in
+                    CommitInfo(hash: c.hash, shortHash: c.shortHash,
+                               subject: c.subject.fvDecodingGitEscapes, date: c.date)
+                }
+                self.contentSearching = false
+            } catch {
+                guard !Task.isCancelled, let self else { return }
+                guard self.selectedRepo == repo,
+                      self.searchMode == .content,
+                      self.searchText.trimmingCharacters(in: .whitespacesAndNewlines) == query else { return }
+                // A failed search must not read as "no matches" (v4.2.28).
+                self.contentHits = []
+                self.contentSearching = false
+                self.contentSearchError = true
+                self.statusText = NSLocalizedString("内容搜索失败", comment: "history status") + "：" + error.localizedDescription
             }
-            self.contentSearching = false
         }
     }
 
@@ -259,7 +329,16 @@ final class HistoryModel: ObservableObject {
             return
         }
         Task { [weak self] in
-            let list = (try? await svc.history.tags(repoPath: repo)) ?? []
+            let list: [TagInfo]
+            do {
+                list = try await svc.history.tags(repoPath: repo)
+            } catch {
+                // A failed read must not silently wipe the named-version list:
+                // the user would conclude their tags are gone (v4.2.28).
+                guard let self, self.selectedRepo == repo else { return }
+                self.statusText = NSLocalizedString("命名版本读取失败", comment: "history status") + "：" + error.localizedDescription
+                return
+            }
             guard let self, self.selectedRepo == repo else { return }
             self.allTags = list
             self.tagsByHash = Dictionary(grouping: list, by: \.hash).mapValues { $0.map(\.name) }
@@ -412,6 +491,16 @@ final class HistoryModel: ObservableObject {
         }
         // v4.0: the root folder is the repository; no sub-repo picker.
         selectedRepo = root
+        // Switching folders must drop the previous folder's content-search
+        // results (and cancel the in-flight query): switching repo while a
+        // slow git log -S was running used to keep showing the OLD repo's
+        // hits, and selecting one queried the new repo with the old hash
+        // (v4.2.28).
+        contentSearchTask?.cancel()
+        contentSearchTask = nil
+        contentHits = []
+        contentSearching = false
+        contentSearchError = false
         loadGeneration += 1
         reloadCommits()
     }
@@ -440,20 +529,27 @@ final class HistoryModel: ObservableObject {
             guard let self else { return }
             // A failed read used to render as "还没有提交历史" and even wipe the
             // loaded timeline; it is an error state, not an empty state (v4.2.27).
+            // v4.2.28: when a list is already loaded, KEEP it — a transient
+            // failure (index.lock, unreadable disk) must not blank the view the
+            // user is reading. The timeline shows a distinct failure state only
+            // when nothing is loaded yet.
             let raw: [CommitInfo]
             do {
                 raw = try await svc.history.commits(repoPath: repo, limit: 100)
             } catch {
                 guard generation == self.loadGeneration else { return }
-                self.commits = []
-                self.files = []
-                self.selectedCommitHash = nil
-                self.selectedFile = nil
-                self.preview = .none
-                self.statusText = NSLocalizedString("提交历史读取失败",
-                                                    comment: "history status") + "：" + error.localizedDescription
+                self.commitsError = NSLocalizedString("提交历史读取失败",
+                                                      comment: "history status") + "：" + error.localizedDescription
+                self.statusText = self.commitsError ?? ""
+                if self.commits.isEmpty {
+                    self.files = []
+                    self.selectedCommitHash = nil
+                    self.selectedFile = nil
+                    self.preview = .none
+                }
                 return
             }
+            self.commitsError = nil
             // Legacy commits may carry git's octal-escaped paths; decode once here
             // so the list, detail header and restore status all read clean.
             let list = raw.map { c in
@@ -504,6 +600,10 @@ final class HistoryModel: ObservableObject {
         let offset = commits.count
         Task { [weak self] in
             guard let self else { return }
+            // The generation guards below return early; without a defer the
+            // flag stayed true forever and the button read "正在加载…" until
+            // relaunch (v4.2.28).
+            defer { self.loadingMore = false }
             do {
                 let raw = try await svc.history.commits(repoPath: repo, limit: 100, offset: offset)
                 guard generation == self.loadGeneration else { return }
@@ -519,7 +619,6 @@ final class HistoryModel: ObservableObject {
                 self.statusText = NSLocalizedString("提交历史读取失败",
                                                     comment: "history status") + "：" + error.localizedDescription
             }
-            self.loadingMore = false
         }
     }
 
@@ -549,8 +648,25 @@ final class HistoryModel: ObservableObject {
         let generation = filesGeneration
         Task { [weak self] in
             guard let self else { return }
-            let lines = (try? await svc.history.changedFiles(repoPath: repo, hash: commit.hash)) ?? []
-            let stats = (try? await svc.history.changeStats(repoPath: repo, hash: commit.hash)) ?? [:]
+            // A failed read is an error, not "this commit changed nothing":
+            // the old try? rendered an empty list AND a footer claiming the
+            // commit had no changes while the repo was merely unreadable
+            // (v4.2.28).
+            var lines: [String] = []
+            var stats: [String: FileChangeStat] = [:]
+            var readError: String?
+            do {
+                lines = try await svc.history.changedFiles(repoPath: repo, hash: commit.hash)
+            } catch {
+                readError = error.localizedDescription
+            }
+            if readError == nil {
+                do {
+                    stats = try await svc.history.changeStats(repoPath: repo, hash: commit.hash)
+                } catch {
+                    readError = error.localizedDescription
+                }
+            }
             guard generation == self.filesGeneration else { return }
             self.changeStats = stats
             self.files = lines.map { line -> ChangedFile in
@@ -569,10 +685,14 @@ final class HistoryModel: ObservableObject {
             } else if let first = self.files.first {
                 self.selectFile(first.path)
             }
-            self.statusText = self.files.isEmpty
-                ? String(format: NSLocalizedString("「%@」没有文件变更", comment: "history status"), commit.subject)
-                : String(format: NSLocalizedString("「%@」包含 %d 个文件", comment: "history status"),
-                         commit.subject, self.files.count)
+            if let readError {
+                self.statusText = NSLocalizedString("变更文件读取失败", comment: "history status") + "：" + readError
+            } else {
+                self.statusText = self.files.isEmpty
+                    ? String(format: NSLocalizedString("「%@」没有文件变更", comment: "history status"), commit.subject)
+                    : String(format: NSLocalizedString("「%@」包含 %d 个文件", comment: "history status"),
+                             commit.subject, self.files.count)
+            }
             // The tree is lazy: only load it when that pane is actually visible.
             if self.fileListMode == .all { self.loadFileTree() }
         }
@@ -1035,12 +1155,17 @@ struct HistoryView: View {
     }
 
     private var sections: [HistoryTimeline.DaySection] {
-        HistoryTimeline.sections(for: model.displayedCommits)
+        model.timelineSections
     }
 
     private var directoryRestoreBinding: Binding<Bool> {
         Binding(get: { model.pendingDirectoryRestore != nil },
                 set: { if !$0 { model.pendingDirectoryRestore = nil } })
+    }
+
+    private var tagDeletionBinding: Binding<Bool> {
+        Binding(get: { model.pendingTagDeletion != nil },
+                set: { if !$0 { model.pendingTagDeletion = nil } })
     }
 
     var body: some View {
@@ -1104,6 +1229,17 @@ struct HistoryView: View {
             Button("取消", role: .cancel) { model.pendingDirectoryRestore = nil }
         } message: {
             Text("选中的文件夹会回到这个版本：该版本之后新增的文件会被删除，被删的文件会恢复；其他文件夹不受影响。未提交的改动会先自动保存。")
+        }
+        .confirmationDialog("删除命名版本？", isPresented: tagDeletionBinding, titleVisibility: .visible) {
+            if let tag = model.pendingTagDeletion {
+                Button(String(format: NSLocalizedString("删除标签「%@」", comment: "history tag"), tag),
+                       role: .destructive) {
+                    model.deleteTag(tag)
+                }
+            }
+            Button("取消", role: .cancel) { model.pendingTagDeletion = nil }
+        } message: {
+            Text("同名版本标记会被永久移除（提交本身与文件不受影响，可重新命名）。")
         }
         .alert("命名此版本", isPresented: $showTagPrompt) {
             TextField("版本名（如：答辩前）", text: $tagName)
@@ -1292,7 +1428,20 @@ struct HistoryView: View {
 
             FVHairline(leading: 0)
 
-            if model.commits.isEmpty {
+            if model.commits.isEmpty, let commitError = model.commitsError {
+                VStack(spacing: 10) {
+                    FVEmptyState(symbol: "exclamationmark.triangle",
+                                 title: "提交历史读取失败",
+                                 message: LocalizedStringKey(commitError))
+                        .padding(.top, 24)
+                    Button("重试") {
+                        model.reloadCommits()
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                }
+                Spacer(minLength: 0)
+            } else if model.commits.isEmpty {
                 FVEmptyState(symbol: "clock.arrow.circlepath",
                              title: "还没有提交历史",
                              message: "这个文件夹被保护后，每次改动都会自动留下一条记录。")
@@ -1306,6 +1455,12 @@ struct HistoryView: View {
                         .foregroundStyle(.secondary)
                 }
                 .padding(.top, 20)
+                Spacer(minLength: 0)
+            } else if model.searchMode == .content && model.contentSearchError && sections.isEmpty {
+                FVEmptyState(symbol: "exclamationmark.triangle",
+                             title: "内容搜索失败",
+                             message: "仓库暂时读不到（可能正忙或磁盘不可用），稍后重试。")
+                    .padding(.top, 24)
                 Spacer(minLength: 0)
             } else if sections.isEmpty {
                 FVEmptyState(symbol: "magnifyingglass",
@@ -1461,7 +1616,9 @@ struct HistoryView: View {
                         .contextMenu {
                             Button(String(format: NSLocalizedString("删除标签「%@」", comment: "history tag"),
                                          tag), role: .destructive) {
-                                model.deleteTag(tag)
+                                // Confirm first: the name is unrecoverable from
+                                // the UI once deleted (v4.2.28).
+                                model.pendingTagDeletion = tag
                             }
                         }
                         .help("已命名版本")
@@ -1608,7 +1765,7 @@ struct HistoryView: View {
     }
 
     private var treeRows: [HistoryTreeRow] {
-        HistoryTree.flatten(model.treeNodes, expanded: model.expandedDirs)
+        model.flattenedTreeRows
     }
 
     private var treeListHeight: CGFloat {
@@ -1722,30 +1879,10 @@ struct HistoryView: View {
                 .padding(.horizontal, 18)
                 .padding(.bottom, 12)
             case .image(let data):
-                if let image = NSImage(data: data) {
-                    VStack(spacing: 6) {
-                        Image(nsImage: image)
-                            .resizable()
-                            .interpolation(.high)
-                            .scaledToFit()
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
-                            .padding(10)
-                        Text(Self.imageInfo(data, image))
-                            .font(.system(size: 9.5))
-                            .foregroundStyle(.tertiary)
-                            .padding(.bottom, 6)
-                    }
-                    .background(
-                        RoundedRectangle(cornerRadius: 10, style: .continuous)
-                            .fill(Color.primary.opacity(0.035))
-                    )
-                    .padding(.horizontal, 18)
-                    .padding(.bottom, 12)
-                } else {
-                    previewNote(symbol: "photo",
-                                title: "无法预览这张图片",
-                                detail: "可以用默认应用打开查看")
-                }
+                // Decode ONCE: NSImage(data:) + NSBitmapImageRep ran on every
+                // body evaluation (any @Published flip re-decoded up to 20 MB)
+                // (v4.2.28).
+                ImagePreviewPane(data: data)
             case .binary(let size):
                 previewNote(symbol: "doc.richtext",
                             title: "无法在应用内预览",
@@ -1977,6 +2114,67 @@ struct HistoryView: View {
             return "\(rep.pixelsWide) × \(rep.pixelsHigh) · \(bytes)"
         }
         return bytes
+    }
+}
+
+/// Inline image preview (v4.2.28): decodes the blob and its pixel-size info
+/// ONCE in onAppear. The previous inline implementation re-ran NSImage(data:)
+/// + NSBitmapImageRep(data:) on every body evaluation — up to 20 MB of
+/// decoding per @Published flip while a preview was open.
+private struct ImagePreviewPane: View {
+    let data: Data
+    @State private var image: NSImage?
+    @State private var info: String?
+
+    var body: some View {
+        Group {
+            if let image {
+                VStack(spacing: 6) {
+                    Image(nsImage: image)
+                        .resizable()
+                        .interpolation(.high)
+                        .scaledToFit()
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .padding(10)
+                    if let info {
+                        Text(info)
+                            .font(.system(size: 9.5))
+                            .foregroundStyle(.tertiary)
+                            .padding(.bottom, 6)
+                    }
+                }
+                .background(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(Color.primary.opacity(0.035))
+                )
+            } else {
+                VStack(spacing: 8) {
+                    Image(systemName: "photo")
+                        .font(.system(size: 22))
+                        .foregroundStyle(.tertiary)
+                    Text("无法预览这张图片")
+                        .font(.system(size: 11.5, weight: .medium))
+                    Text("可以用默认应用打开查看")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.top, 30)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .onAppear {
+            guard image == nil else { return }
+            image = NSImage(data: data)
+            if let rep = NSBitmapImageRep(data: data) {
+                info = "\(rep.pixelsWide) × \(rep.pixelsHigh) · \(Self.sizeText(data.count))"
+            } else {
+                info = Self.sizeText(data.count)
+            }
+        }
+    }
+
+    private static func sizeText(_ bytes: Int) -> String {
+        ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)
     }
 }
 

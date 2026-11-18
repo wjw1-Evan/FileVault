@@ -72,6 +72,10 @@ final class DashboardModel: ObservableObject {
     private var app: AppState?
     private var timer: Timer?
     private var listenerToken: UUID?
+    /// Retry task waiting for the service to appear (v4.2.28): unbind must
+    /// cancel it, or a window closed during startup re-registered its listener
+    /// + timer with nobody left to remove them.
+    private var bindRetryTask: Task<Void, Never>?
 
     func bind(_ app: AppState) {
         self.app = app
@@ -91,12 +95,13 @@ final class DashboardModel: ObservableObject {
         // A window restored at login (or --open-ui) can appear before the
         // service exists; without this retry it never registered the listener and
         // fell back to 10 s polling forever (v4.2.26).
-        if app.service == nil {
-            Task { @MainActor [weak self] in
+        if app.service == nil, bindRetryTask == nil {
+            bindRetryTask = Task { @MainActor [weak self] in
                 for _ in 0..<50 where self?.app?.service == nil {
                     try? await Task.sleep(nanoseconds: 200_000_000)
                 }
                 guard let self, let a = self.app, a.service != nil else { return }
+                self.bindRetryTask = nil
                 self.bind(a)
             }
         }
@@ -108,6 +113,8 @@ final class DashboardModel: ObservableObject {
         listenerToken = nil
         timer?.invalidate()
         timer = nil
+        bindRetryTask?.cancel()
+        bindRetryTask = nil
     }
 
     func refresh() async {
@@ -313,7 +320,10 @@ struct DashboardView: View {
                                      : (localOnly ? "internaldrive.fill" : "checkmark.icloud.fill")),
                    tint: hasFailure ? .red : (hasPending ? .orange : (localOnly ? .gray : .green)),
                    value: valueText,
-                   label: hasFailure ? "推送失败" : (hasPending ? "待推送" : (localOnly ? "仅本地" : "待推送")),
+                   // The final branch previously still said "待推送" while the
+                   // caption claimed "云端已最新" — "0 · 待推送 · 云端已最新"
+                   // contradicted itself (v4.2.28).
+                   label: hasFailure ? "推送失败" : (hasPending ? "待推送" : (localOnly ? "仅本地" : "已同步")),
                    caption: hasFailure
                        ? NSLocalizedString("本地版本已保留", comment: "dashboard tile")
                        : (hasPending
