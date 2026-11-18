@@ -65,7 +65,7 @@ FileVault **永久免费**：无试用期、无激活码、无账号、无订阅
 
 ## 下载安装
 
-**最新发布：[v4.2.27](https://github.com/wjw1-Evan/FileVault/releases/tag/v4.2.27)** — [FileVault-4.2.27.zip](https://github.com/wjw1-Evan/FileVault/releases/download/v4.2.27/FileVault-4.2.27.zip)（sha256 `c793977e…95c7ccbe`，约 21 MB）
+**最新发布：[v4.2.28](https://github.com/wjw1-Evan/FileVault/releases/tag/v4.2.28)** — [FileVault-4.2.28.zip](https://github.com/wjw1-Evan/FileVault/releases/download/v4.2.28/FileVault-4.2.28.zip)（sha256 `bd40662e…b66e40ee`，约 21 MB）
 
 > v4.2.28 全量审计第三轮 + 性能/交互修复：**同一秒内的两次回滚 / 强制拉取 / 合并同步不再互相覆盖备份 ref**（v4.2.27 写的随机后缀是字面量源码文本，被推开的 HEAD 会变成 gc 可达却没有引用）；**合并提交不再显示「没有文件变更」**（`--diff-merges=first-parent`，自动合并出来的版本可以直接浏览并恢复其中的文件）；变基被本地同名文件挡住后先 abort 再重试，不会把仓库卡在 rebase 中间；双实例 pid 锁写入后读回校验，两个实例不再同时认为文件夹归自己；历史与恢复窗口读不到数据时如实报错而不是「没有变更 / 没有匹配」（变更文件、内容搜索、命名版本、提交时间线各自区分错误态，已加载的列表不会被一次瞬时失败清空）；切换文件夹会丢弃上一个文件夹的内容搜索结果；删除命名版本前先确认；恢复失败后会通知并重扫，不再等到下一轮轮询；对比视图只剥离 git 文件头，`-- ` 开头的正文行不再凭空消失；**绑定远程时连不上会当场提示**（不再几分钟后只报推送失败），把预填的远程地址清空会真的变回「仅本地」；保存设置后旧探测结果不再把已保存地址弹回；git 安装期间改通知 / 语言设置不再静默丢失；时间线分组、文件树展平与图片预览改为缓存 / 单次解码，大时间线滚动更轻；修复 `make_app.sh` 在 zsh 下图标只生成单尺寸、没有 gh 时每次启动都跑 `env auth setup-git`（exit 127）两处打包 / 环境问题。
 

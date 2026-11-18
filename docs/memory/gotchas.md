@@ -80,3 +80,10 @@
 - 原因：没有存储凭证时 git 会调用 askpass，`echo` 把 "Username for '...':" 原样返回为 username/password（exit 0），探测得到垃圾值——「请填令牌」提示永不出现。
 - 证据：`CredentialStore.fill`（GIT_ASKPASS=/usr/bin/true + 空值兜底）；`AuditV427Tests.testCredentialFillReturnsNilWithoutStoredCredential`。
 - 规避：无凭证探测要用「无输出即失败」的 askpass（/usr/bin/true），并校验返回值非空。
+
+### 字符串插值只包住第一个 `\(...)`（v4.2.28）
+
+- 结论：往 ref 名 / 路径里拼随机后缀时，每个变量都必须各自被 `\(...)` 包住，否则后半截会变成字面量源码文本。
+- 原因：v4.2.27 写作 `"refs/filevault/backup/\(Self.backupStamp())-(UUID().uuidString.prefix(4))"`——只有 `backupStamp()` 在插值里，`-(UUID().uuidString.prefix(4))` 是普通字符。同一秒内的三次快照因此拿到同一个 ref 名，后一次 update-ref 覆盖前一次，被推开的 HEAD 失去引用（gc 可达）。
+- 证据：`RepoManager.resetRepo` / `forcePull` / `mergeSync` 三处备份 ref；`AuditV428Tests.testResetRepoBackupRefsAreUniqueWithinTheSameSecond`（断言 `<yyyyMMdd-HHmmss>-<4 hex>` 且不含 `(`）。
+- 规避：生成 ref / 路径后加断言或测试钉住格式；review 时看一眼 ref 名里有没有源码文本片段。
