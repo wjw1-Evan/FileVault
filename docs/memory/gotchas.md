@@ -87,3 +87,10 @@
 - 原因：v4.2.27 写作 `"refs/filevault/backup/\(Self.backupStamp())-(UUID().uuidString.prefix(4))"`——只有 `backupStamp()` 在插值里，`-(UUID().uuidString.prefix(4))` 是普通字符。同一秒内的三次快照因此拿到同一个 ref 名，后一次 update-ref 覆盖前一次，被推开的 HEAD 失去引用（gc 可达）。
 - 证据：`RepoManager.resetRepo` / `forcePull` / `mergeSync` 三处备份 ref；`AuditV428Tests.testResetRepoBackupRefsAreUniqueWithinTheSameSecond`（断言 `<yyyyMMdd-HHmmss>-<4 hex>` 且不含 `(`）。
 - 规避：生成 ref / 路径后加断言或测试钉住格式；review 时看一眼 ref 名里有没有源码文本片段。
+
+### MenuBarExtra 面板高度就是内容高度（v4.2.29）
+
+- 结论：菜单弹层面板即窗口本身——最后一行下方的任何额外 padding 都会渲染成一条空白带；分区表达用卡片，不要用横穿分隔条。
+- 原因：v3.2 的 quitRow 在行自身 6pt 底边距外又叠 4pt，面板底部收出 ~10pt 空白带，用户两次指出「无用的横条」；320pt 宽的弹层里 hairline 分隔条也显得零碎。
+- 证据：空白带修复 d2b39b6、卡片化重设计 de53b8f（MenuContentView.swift 的 FVMenuCard）；开发渲染像素实测：字形底 y=1074 / 面板底 y=1077（2x）。
+- 规避：改菜单布局时保持四边 12pt 对称外边距；新增分区用 FVMenuCard 包裹；最后一行永远不加额外 bottom padding，也不要重新引入 panelDivider。
