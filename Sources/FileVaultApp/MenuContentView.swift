@@ -222,13 +222,15 @@ struct MenuContentView: View {
     }
 
     private var quitRow: some View {
-        // No extra bottom padding (v4.2.29): the panel is the window, so any
-        // padding below the last row rendered as an empty light strip under
-        // 「退出 FileVault」. Let the panel close on the row's own hover inset.
+        // The panel is the window: every point of padding below the last row
+        // renders as a blank strip under 「退出 FileVault」. flushBottom drops
+        // the row's own bottom inset as well, so the panel ends on the row's
+        // hover area (v4.2.29).
         MenuActionRow(symbol: "power",
                       title: "退出 FileVault",
                       key: "q", modifiers: [.command],
-                      hint: "⌘Q") { app.quit() }
+                      hint: "⌘Q",
+                      flushBottom: true) { app.quit() }
     }
 
     private var panelDivider: some View {
@@ -309,6 +311,9 @@ struct MenuActionRow: View {
     /// Secondary utility rows (检查更新 / 关于) are slightly smaller and dimmer
     /// so they do not compete with 历史与恢复 / 设置 (v4.2.24).
     var compact = false
+    /// Last row of the panel (退出): collapse the bottom inset so the panel
+    /// ends on the row itself — no blank strip under the final row (v4.2.29).
+    var flushBottom = false
     let action: () -> Void
     @State private var hovering = false
 
@@ -330,7 +335,8 @@ struct MenuActionRow: View {
                 }
             }
             .padding(.horizontal, 14)
-            .padding(.vertical, compact ? 4.5 : 6)
+            .padding(.top, compact ? 4.5 : 6)
+            .padding(.bottom, flushBottom ? 0 : (compact ? 4.5 : 6))
             .background(
                 RoundedRectangle(cornerRadius: 6, style: .continuous)
                     .fill(hovering ? Color.primary.opacity(0.06) : Color.clear)
