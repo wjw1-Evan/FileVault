@@ -27,28 +27,27 @@ enum MenuLabels {
     static let more = "更多"
 }
 
-/// Menu bar panel (v3.2): a designed popover instead of the system NSMenu.
+/// Menu bar panel (v4.2.29 redesign): status header, then floating section
+/// cards — protected folders, primary actions, and a quiet utility+quit group.
 ///
-/// Structure: status header, live update banner, protected repos, primary
-/// actions, secondary tiles, automation toggle and quit. Every row is a plain
-/// button with a hover wash so the panel reads like part of the app, not like a
-/// stock menu.
+/// The v3.2 panel chopped sections apart with hairline dividers and closed on
+/// a padded strip under the last row; both read as stray bars. The redesign
+/// groups rows into inset cards on the panel canvas (the same surface language
+/// as the windows' fvCard) so no decorative strips are needed anywhere, and
+/// the frame padding is symmetric (12pt) so no edge shows a leftover band.
 struct MenuContentView: View {
     @EnvironmentObject var app: AppState
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
+        VStack(alignment: .leading, spacing: 10) {
             header
             statusBanner
-            panelDivider
-            rootsSection
-            panelDivider
-            primaryActions
-            secondaryActions
-            panelDivider
-            quitRow
+            foldersCard
+            actionsCard
+            footerCard
         }
+        .padding(12)
         .frame(width: 320)
     }
 
@@ -59,7 +58,7 @@ struct MenuContentView: View {
             FVIconBadge(symbol: "clock.arrow.circlepath", size: 30)
             VStack(alignment: .leading, spacing: 1) {
                 Text("FileVault")
-                    .font(.system(size: 12, weight: .semibold))
+                    .font(.system(size: 13, weight: .semibold))
                 Text(app.statusLine)
                     .font(.system(size: 10))
                     .foregroundStyle(.secondary)
@@ -71,9 +70,6 @@ struct MenuContentView: View {
                 app.open("dashboard")
             }
         }
-        .padding(.horizontal, 14)
-        .padding(.top, 12)
-        .padding(.bottom, 10)
     }
 
     // MARK: Update / notice banner
@@ -90,8 +86,6 @@ struct MenuContentView: View {
                     .lineLimit(2)
                 Spacer(minLength: 0)
             }
-            .padding(.horizontal, 14)
-            .padding(.bottom, 8)
         } else if !app.envReady, let reason = app.gitSetupError, !reason.isEmpty {
             // The reason the automatic git setup failed belongs in the menu:
             // otherwise "Git 未就绪" is a dead end (v4.2.26).
@@ -115,129 +109,132 @@ struct MenuContentView: View {
             Spacer(minLength: 0)
         }
         .foregroundStyle(.secondary)
-        .padding(.horizontal, 14)
-        .padding(.bottom, 8)
     }
 
-    // MARK: Roots
+    // MARK: Folders card
 
     @ViewBuilder
-    private var rootsSection: some View {
+    private var foldersCard: some View {
         if app.roots.isEmpty {
-            VStack(alignment: .leading, spacing: 7) {
+            FVMenuCard {
                 Text("尚未添加文件夹")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
-                Button("添加文件夹…") {
-                    app.quickAddRequested = true
-                    app.open("dashboard")
-                }
-                    .buttonStyle(.link)
-                    .font(.system(size: 11))
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 9)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 12)
         } else {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 1) {
-                    ForEach(app.roots) { root in
-                        // An unavailable folder has nothing to open in
-                        // Finder (NSWorkspace.open just fails silently) — route
-                        // to Settings where 重新定位/移除 live (v4.2.27).
-                        RootMenuRow(root: root) {
-                            if root.unavailable {
-                                app.open("settings")
-                            } else {
-                                app.openPath(root.path)
+            FVMenuCard {
+                ScrollView {
+                    VStack(spacing: 2) {
+                        ForEach(app.roots) { root in
+                            // An unavailable folder has nothing to open in
+                            // Finder (NSWorkspace.open just fails silently) — route
+                            // to Settings where 重新定位/移除 live (v4.2.27).
+                            RootMenuRow(root: root) {
+                                if root.unavailable {
+                                    app.open("settings")
+                                } else {
+                                    app.openPath(root.path)
+                                }
                             }
                         }
-                        if root.id != app.roots.last?.id {
-                            Rectangle()
-                                .fill(FVTheme.hairline)
-                                .frame(height: 1)
-                                .padding(.horizontal, 8)
-                                .padding(.vertical, 5)
-                        }
                     }
+                    .padding(.vertical, 1)
                 }
-                .padding(.horizontal, 8)
-                .padding(.vertical, 8)
+                // Deterministic height: a bare ScrollView in a popover has no
+                // intrinsic height and can collapse or balloon.
+                .frame(height: rootsListHeight)
+                // Soft fade instead of a hard cut through the last folder row.
+                .mask(
+                    LinearGradient(stops: [
+                        .init(color: .black, location: 0),
+                        .init(color: .black, location: 0.92),
+                        .init(color: .clear, location: 1),
+                    ], startPoint: .top, endPoint: .bottom)
+                )
             }
-            // Deterministic height: a bare ScrollView in a popover has no
-            // intrinsic height and can collapse or balloon.
-            .frame(height: rootsListHeight)
-            // Soft fade instead of a hard cut through the last repo row.
-            .mask(
-                LinearGradient(stops: [
-                    .init(color: .black, location: 0),
-                    .init(color: .black, location: 0.9),
-                    .init(color: .clear, location: 1),
-                ], startPoint: .top, endPoint: .bottom)
-            )
         }
     }
 
     private var rootsListHeight: CGFloat {
-        // One row per protected folder (v4.0), plus the section's own padding.
-        min(CGFloat(app.roots.count) * 30 + 16, 260)
+        // One row per protected folder (v4.0): row ≈ 30pt (6pt insets × 2 +
+        // 11.5pt text) + 2pt gaps + the card's own insets.
+        min(CGFloat(app.roots.count) * 30 + 8, 232)
     }
 
-    // MARK: Actions
+    // MARK: Actions card
 
-    private var primaryActions: some View {
-        VStack(spacing: 0) {
-            // README promises 添加入口在「首启、菜单栏、主面板」三处；菜单只在
-            // 空状态才出现这一行，第二个文件夹就找不到入口了（v4.2.27 设计轮）。
-            MenuActionRow(symbol: "plus.circle",
-                          title: "添加文件夹…") {
-                app.quickAddRequested = true
-                app.open("dashboard")
+    private var actionsCard: some View {
+        FVMenuCard {
+            VStack(spacing: 2) {
+                // README promises 添加入口在「首启、菜单栏、主面板」三处 (v4.2.27
+                // 设计轮) — the menu keeps a permanent add row.
+                MenuActionRow(symbol: "plus.circle",
+                              title: "添加文件夹…") {
+                    app.quickAddRequested = true
+                    app.open("dashboard")
+                }
+                MenuActionRow(symbol: "clock.arrow.circlepath",
+                              title: "历史与恢复…") { app.open("records") }
+                MenuActionRow(symbol: "gearshape",
+                              title: "设置…",
+                              key: ",", modifiers: [.command],
+                              hint: "⌘,") { app.open("settings") }
             }
-            MenuActionRow(symbol: "clock.arrow.circlepath",
-                          title: "历史与恢复…") { app.open("records") }
-            MenuActionRow(symbol: "gearshape",
-                          title: "设置…",
-                          key: ",", modifiers: [.command],
-                          hint: "⌘,") { app.open("settings") }
         }
-        .padding(.vertical, 5)
     }
 
-    /// Utility actions live at the bottom as compact rows, matching the rest
-    /// of the panel instead of two oversized tiles (v4.2.24).
-    private var secondaryActions: some View {
-        VStack(spacing: 0) {
-            MenuActionRow(symbol: "arrow.triangle.2.circlepath",
-                          title: app.isUpdating ? "正在检查更新…" : "检查更新",
-                          compact: true) {
-                Task { await app.checkForUpdate(silent: false) }
+    // MARK: Utility + quit card
+
+    /// Quiet bottom group (v4.2.24 hierarchy, kept by the redesign): utility
+    /// rows are smaller and dimmer so they do not compete with the primary
+    /// actions, and quit stays last with its shortcut visible.
+    private var footerCard: some View {
+        FVMenuCard {
+            VStack(spacing: 2) {
+                MenuActionRow(symbol: "arrow.triangle.2.circlepath",
+                              title: app.isUpdating ? "正在检查更新…" : "检查更新",
+                              compact: true) {
+                    Task { await app.checkForUpdate(silent: false) }
+                }
+                .disabled(app.isUpdating)
+                MenuActionRow(symbol: "info.circle",
+                              title: "关于 FileVault",
+                              hint: app.version.isEmpty ? nil : "v\(app.version)",
+                              compact: true) { app.showAbout() }
+                MenuActionRow(symbol: "power",
+                              title: "退出 FileVault",
+                              key: "q", modifiers: [.command],
+                              hint: "⌘Q",
+                              compact: true) { app.quit() }
             }
-            .disabled(app.isUpdating)
-            MenuActionRow(symbol: "info.circle",
-                          title: "关于 FileVault",
-                          hint: app.version.isEmpty ? nil : "v\(app.version)",
-                          compact: true) { app.showAbout() }
         }
-        .padding(.vertical, 2)
     }
+}
 
-    private var quitRow: some View {
-        // The panel is the window: every point of padding below the last row
-        // renders as a blank strip under 「退出 FileVault」. flushBottom drops
-        // the row's own bottom inset as well, so the panel ends on the row's
-        // hover area (v4.2.29).
-        MenuActionRow(symbol: "power",
-                      title: "退出 FileVault",
-                      key: "q", modifiers: [.command],
-                      hint: "⌘Q",
-                      flushBottom: true) { app.quit() }
-    }
+/// Inset group card (v4.2.29 menu redesign): a section floats as a rounded
+/// card on the panel canvas instead of being chopped apart by hairline strips.
+/// Same surface pairing as the windows' fvCard (FVTheme.card + hairline
+/// stroke), scaled down for a 320pt popover.
+private struct FVMenuCard<Content: View>: View {
+    @ViewBuilder let content: Content
 
-    private var panelDivider: some View {
-        Rectangle()
-            .fill(FVTheme.hairline)
-            .frame(height: 1)
-            .padding(.vertical, 2)
+    var body: some View {
+        content
+            .padding(.horizontal, 4)
+            .padding(.vertical, 3)
+            .background(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(FVTheme.card)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .strokeBorder(FVTheme.cardStroke, lineWidth: 1)
+            )
+            // Edge rows' hover washes must not bleed past the card corners.
+            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
     }
 }
 
@@ -275,8 +272,9 @@ struct RootMenuRow: View {
             }
             .padding(.horizontal, 8)
             .padding(.vertical, 6)
+            .frame(maxWidth: .infinity, alignment: .leading)
             .background(
-                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
                     .fill(hovering ? Color.primary.opacity(0.06) : Color.clear)
             )
             .contentShape(Rectangle())
@@ -308,12 +306,9 @@ struct MenuActionRow: View {
     var key: KeyEquivalent? = nil
     var modifiers: EventModifiers = [.command]
     var hint: String? = nil
-    /// Secondary utility rows (检查更新 / 关于) are slightly smaller and dimmer
-    /// so they do not compete with 历史与恢复 / 设置 (v4.2.24).
+    /// Utility rows (检查更新 / 关于 / 退出) are slightly smaller and dimmer
+    /// so they do not compete with the primary actions (v4.2.24).
     var compact = false
-    /// Last row of the panel (退出): collapse the bottom inset so the panel
-    /// ends on the row itself — no blank strip under the final row (v4.2.29).
-    var flushBottom = false
     let action: () -> Void
     @State private var hovering = false
 
@@ -334,11 +329,11 @@ struct MenuActionRow: View {
                         .foregroundStyle(.tertiary)
                 }
             }
-            .padding(.horizontal, 14)
-            .padding(.top, compact ? 4.5 : 6)
-            .padding(.bottom, flushBottom ? 0 : (compact ? 4.5 : 6))
+            .padding(.horizontal, 8)
+            .padding(.vertical, compact ? 5 : 6)
+            .frame(maxWidth: .infinity, alignment: .leading)
             .background(
-                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
                     .fill(hovering ? Color.primary.opacity(0.06) : Color.clear)
             )
             .contentShape(Rectangle())
