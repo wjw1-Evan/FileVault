@@ -4,7 +4,7 @@
 
 Pastward 常驻 macOS 菜单栏，对你添加的每个文件夹，**直接在该文件夹根上初始化一个 Git 仓库**（v4.0 起不再按一级子文件夹拆仓）；监控到文件变动后自动提交。核心价值：**零操作的文件历史版本管理**——误删误改随时找回，可选绑定远程仓库自动备份上云。
 
-> ✅ 品牌决策（v4.2.31）：原「FileVault」与 macOS 自带磁盘加密功能同名（搜索混淆 + 审核风险），正式更名为 **Pastward**（仿 backward / afterward 构词，"驶向过去"，与「文件时光机」同构）。更名经全网冲突检索：无任何同名软件产品、App Store 应用或活跃 GitHub 项目占用（原候选 Vaultkeeper/TimeGit/SnapKeep/Histodeck 均已证伪撞名）。**机器标识刻意保留旧拼写以保迁移连续**：bundle id `com.filevault.FileVault`（自动更新链钉住它）、配置目录 `~/Library/Application Support/FileVault`、备份 ref `refs/filevault/backup`、可执行与模块名 `FileVaultApp/FileVaultCore`——老用户自动更新完全无缝，重装一次即可换成新名的 .app。
+> ✅ 品牌决策（v4.2.31）：原「FileVault」与 macOS 自带磁盘加密功能同名（搜索混淆 + 审核风险），正式更名为 **Pastward**（仿 backward / afterward 构词，"驶向过去"，与「文件时光机」同构）。更名经全网冲突检索：无任何同名软件产品、App Store 应用或活跃 GitHub 项目占用（原候选 Vaultkeeper/TimeGit/SnapKeep/Histodeck 均已证伪撞名）。**机器标识刻意保留旧拼写以保迁移连续**：bundle id `com.filevault.FileVault`（自动更新链钉住它）、配置目录 `~/Library/Application Support/FileVault`、备份 ref `refs/filevault/backup`、可执行与模块名 `FileVaultApp/FileVaultCore`——老用户自动更新完全无缝，重装一次即可换成新名的 .app。完整尽调矩阵与历代更新器兼容实证见 [docs/10-品牌更名方案](docs/10-品牌更名方案.md)。
 
 ## 核心功能
 

@@ -5,7 +5,7 @@ public struct ReleaseInfo: Equatable, Sendable {
     public var version: String       // "1.1.0" (no v prefix)
     public var tagName: String       // "v1.1.0"
     public var notes: String
-    public var assetName: String     // "FileVault-1.1.0.zip"
+    public var assetName: String     // "Pastward-1.1.0.zip"（v4.2.31 前为 FileVault-*.zip；更新器按版本号匹配，不依赖资产名前缀）
     public var sha256: String?       // asset digest from the API (when present)
     public var assetID: Int64        // GitHub asset id
     public var assetSize: Int64      // bytes (for progress)
