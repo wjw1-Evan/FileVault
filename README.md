@@ -66,7 +66,7 @@ Pastward **永久免费**：无试用期、无激活码、无账号、无订阅�
 
 ## 下载安装
 
-**最新发布：[v4.2.31](https://github.com/wjw1-Evan/FileVault/releases/tag/v4.2.31)** — [Pastward-4.2.31.zip](https://github.com/wjw1-Evan/FileVault/releases/download/v4.2.31/Pastward-4.2.31.zip)（sha256 `f5a3101c…b91e999`，约 22 MB）
+**最新发布：[v4.2.32](https://github.com/wjw1-Evan/FileVault/releases/tag/v4.2.32)** — [Pastward-4.2.32.zip](https://github.com/wjw1-Evan/FileVault/releases/download/v4.2.32/Pastward-4.2.32.zip)（sha256 `943ef0c0…c237f45af`，约 22 MB）
 
 > v4.2.32 功能闭环轮：**把历轮审计留下的 watchlist 逐条收口**——4 项确认缺陷修复（网络命令超时预算可注入并给出真实等待秒数、gh 输出 >64KB 时先等待后读管道会卡死到超时、Debouncer 被取消的旧定时器事件会误清新调度并提前提交、遗留未解析路径的文件夹暂停态写不回配置）+ **10 项经实证证伪的假疑点**（符号链接大文件判定本来就是 lstat 语义、归档仓库措辞不与分支保护混淆、sweep 残余窗口无法确定性触达等），全部附实验证据与钉住契约的测试；**7 项更新/配置/诊断层缺陷修复**（更新包下载从逐字节 195 KB/s 改为 URLSession 直下——22 MB 从 2 分钟降到数秒，并新增 10 分钟总时长上限；更新包解压 stderr 并发读；替换失败回滚分支补测试；配置备份写失败可感知；diagnostics 临时目录崩溃残留自动清扫；恢复目录拒绝字面 .git；更新检查支持注入传输层并测重试/限流；git 自动安装的 Xcode CLT 回退路径可测）；**12 处用户可见流程收口**（启动窗口 9 个静默死按钮给出应答；仓库完整性检查的告警补「勿删 .git + 导出诊断包」下一步；恢复成功不再是暗淡小字——绿色强调 + 「查看刚恢复的文件」直达按钮，修复了原来 Finder 按钮会揭示别的文件的问题）。新增 **docs/11 功能闭环矩阵**：README 1–17 条逐条列出入口→成功→失败下一步→回退→测试归属，全部判定闭环。测试 638 → **676 项全绿**；更新包下载与解压路径做了性能实测（20 MB 下载 136 s → 0.25 s 级别）。
 >
