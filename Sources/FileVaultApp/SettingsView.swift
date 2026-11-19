@@ -24,6 +24,15 @@ struct RepoSection: Identifiable, Equatable {
     var remoteNames: [String] = []
     var message: String = ""
     var messageIsError: Bool = false
+    /// Full text for the message row's hover (classified reason + condensed
+    /// git output); empty when the message line is all there is (v4.2.30).
+    var messageHelp: String = ""
+    /// True when the sync status is "仅本地": an empty remote field then gets
+    /// its meaning spelled out instead of just sitting there (v4.2.30).
+    var localOnly: Bool = false
+    /// Files auto-excluded for exceeding the remote's single-file limit — the
+    /// card renders a dedicated orange row for them (v4.2.30 audit item 4).
+    var excludedLargeFileCount: Int = 0
     /// False for a configured folder that is not attached right now (external
     /// disk unplugged, folder moved, another live instance): the card then
     /// shows why and only offers relocate/remove (v4.2.26 audit M8).
@@ -45,6 +54,9 @@ struct ConnectionAlert: Identifiable {
     let id = UUID()
     var ok: Bool
     var detail: String
+    /// Readable classified failure (primary line); empty when ok (v4.2.30
+    /// audit item 2: `detail` keeps the condensed git output as the second).
+    var summary: String = ""
 }
 
 struct GitignoreEditorState: Identifiable {
@@ -72,6 +84,18 @@ final class SettingsModel: ObservableObject {
     @Published var gitignoreEditor: GitignoreEditorState?
     @Published var createRepoTarget: String?
     @Published var createRepoName = ""
+    /// v4.2.30 audit item 6: the create-repo dialog is a sheet that keeps its
+    /// errors inside instead of flashing an alert and dumping the reason
+    /// into the card's small status line.
+    @Published var createRepoError = ""
+    @Published var createRepoBusy = false
+    /// gh precheck result, refreshed every time the dialog opens (v4.2.30
+    /// audit item 6b).
+    @Published var ghMissing = false
+    /// v4.2.30 audit item 4: the excluded-large-files sheet.
+    @Published var largeFilesViewer: LargeFilesState?
+    /// v4.2.30 audit item 10: the FAQ sheet.
+    @Published var showFAQ = false
 
     /// Paths the user typed into — async refill must not wipe them.
     private var editedPaths: Set<String> = []
@@ -188,6 +212,9 @@ final class SettingsModel: ObservableObject {
                 repo.authToken = old.authToken
                 repo.message = old.message
                 repo.messageIsError = old.messageIsError
+                repo.messageHelp = old.messageHelp
+                repo.localOnly = old.localOnly
+                repo.excludedLargeFileCount = old.excludedLargeFileCount
             }
             if !ready {
                 repo.health = NSLocalizedString("正在加载…", comment: "settings status")
@@ -280,6 +307,8 @@ final class SettingsModel: ObservableObject {
                 self.rootCards[idx].repo.statusGlyph = glyph.symbol
                 self.rootCards[idx].repo.statusColor = glyph.color
                 self.rootCards[idx].repo.statusLabel = FVStatusMeta.forSync(st).label
+                self.rootCards[idx].repo.localOnly = (st == .noRemote)
+                self.rootCards[idx].repo.excludedLargeFileCount = healthInfo.excludedLargeFileCount
                 self.rootCards[idx].repo.authGuidance = sshGuidance ?? ""
                 self.rootCards[idx].repo.remoteLimit = limitText
                 self.rootCards[idx].repo.remoteNames = remoteNames
@@ -378,6 +407,46 @@ final class SettingsModel: ObservableObject {
         f.locale = Locale(identifier: "en_US_POSIX")
         f.dateFormat = "yyyyMMdd-HHmm"
         return f.string(from: Date())
+    }
+
+    /// v4.2.30 audit item 10: support mail that already carries the app and
+    /// macOS versions saves a round-trip.
+    func composeSupportMail() {
+        let os = ProcessInfo.processInfo.operatingSystemVersion
+        var osText = "macOS \(os.majorVersion).\(os.minorVersion)"
+        if os.patchVersion > 0 { osText += ".\(os.patchVersion)" }
+        let subject = String(format: NSLocalizedString("FileVault 反馈（v%@ · %@）",
+                                                        comment: "support mail subject"),
+                             app?.version ?? "0", osText)
+        var components = URLComponents()
+        components.scheme = "mailto"
+        components.path = AppBrand.supportEmail
+        components.queryItems = [URLQueryItem(name: "subject", value: subject)]
+        if let url = components.url { NSWorkspace.shared.open(url) }
+    }
+
+    /// v4.2.30 audit item 4: the card counts the excluded large files, this
+    /// sheet names them with sizes.
+    func openLargeFiles(_ id: String) {
+        guard let svc = service, svc.isReady else { return }
+        let repoName = (id as NSString).lastPathComponent
+        Task { [weak self] in
+            let rules = svc.repoManager.excludedLargeFiles(path: id)
+            let formatter = ByteCountFormatter()
+            formatter.countStyle = .file
+            let rows = rules.map { rule in
+                let absolute = (id as NSString).appendingPathComponent(rule)
+                var sizeText = "—"
+                if let attrs = try? FileManager.default.attributesOfItem(atPath: absolute),
+                   let size = attrs[.size] as? UInt64 {
+                    sizeText = formatter.string(fromByteCount: Int64(size))
+                }
+                return LargeFileRow(name: rule, size: sizeText)
+            }
+            await MainActor.run {
+                self?.largeFilesViewer = LargeFilesState(repoName: repoName, rows: rows)
+            }
+        }
     }
 
     /// Changing the interface language: persist, point the bundle at the new
@@ -524,16 +593,17 @@ final class SettingsModel: ObservableObject {
                 })
     }
 
-    func message(_ id: String) -> (String, Color)? {
+    func message(_ id: String) -> (String, Color, String)? {
         guard let idx = indexOf(id) else { return nil }
         let s = rootCards[idx].repo
-        return s.message.isEmpty ? nil : (s.message, s.messageIsError ? Color(nsColor: .systemRed) : Color(nsColor: .secondaryLabelColor))
+        return s.message.isEmpty ? nil : (s.message, s.messageIsError ? Color(nsColor: .systemRed) : Color(nsColor: .secondaryLabelColor), s.messageHelp)
     }
 
-    private func setMessage(_ id: String, _ text: String, error: Bool = false) {
+    private func setMessage(_ id: String, _ text: String, error: Bool = false, help: String = "") {
         guard let idx = indexOf(id) else { return }
         rootCards[idx].repo.message = text
         rootCards[idx].repo.messageIsError = error
+        rootCards[idx].repo.messageHelp = help
     }
 
     /// Reentrancy guard: only one pull/sync/force-pull per folder at a time, so
@@ -551,20 +621,59 @@ final class SettingsModel: ObservableObject {
         busyRepos.remove(id)
     }
 
+    /// Result of one save attempt, for dialogs that wait for the bind
+    /// (v4.2.30 audit item 6c): `.saved` closes the dialog, `.blocked` keeps
+    /// it open and shows the message inside it.
+    enum SaveOutcome {
+        /// The remote state was persisted (address saved or remote cleared);
+        /// the card carries the follow-up status line.
+        case saved(String)
+        /// Nothing was written; the message says why.
+        case blocked(String)
+    }
+
+    /// Lightweight pre-save validation (v4.2.30 audit item 9): an address that
+    /// is neither an https:// / git@ / file:// URL nor an absolute local path
+    /// ("github.com/user/repo") would configure a remote git cannot talk to;
+    /// block it and say what a complete address looks like.
+    static func looksIncompleteRemote(_ raw: String) -> Bool {
+        let url = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !url.isEmpty else { return false }
+        if url.hasPrefix("https://") || url.hasPrefix("git@") || url.hasPrefix("file://") { return false }
+        if url.hasPrefix("/") { return false }
+        return true
+    }
+
     /// Shared save path: persist auth mode, configure + test + inline feedback (FR-06).
-    func saveRepo(_ id: String) {
-        guard let svc = service, let idx = indexOf(id) else { return }
+    func saveRepo(_ id: String, completion: (@MainActor (SaveOutcome) -> Void)? = nil) {
+        guard let svc = service, let idx = indexOf(id) else {
+            completion?(.blocked(NSLocalizedString("Git 环境尚未就绪，请稍后重试（可在主面板查看原因）。", comment: "settings status")))
+            return
+        }
         // git not ready yet: repoManager/sync are implicit unwraps until
         // start() finishes — these repo actions used to trap (v4.2.26 fixed
         // only some entries; these were missed) (v4.2.27).
         guard svc.isReady else {
-            setMessage(id, NSLocalizedString("Git 环境尚未就绪，请稍后重试（可在主面板查看原因）。", comment: "settings status"))
+            let msg = NSLocalizedString("Git 环境尚未就绪，请稍后重试（可在主面板查看原因）。", comment: "settings status")
+            setMessage(id, msg)
+            completion?(.blocked(msg))
+            return
+        }
+        // v4.2.30 audit item 9: incomplete addresses never reach git config;
+        // the field row shows the same hint while typing.
+        if Self.looksIncompleteRemote(rootCards[idx].repo.urlText) {
+            let msg = NSLocalizedString("远程地址看起来不完整（应以 https:// 或 git@ 开头）", comment: "settings status")
+            setMessage(id, msg, error: true)
+            completion?(.blocked(msg))
             return
         }
         // A double click / repeated Return must not run two overlapping saves:
         // two configureRemote/mergeSync/push chains race on index.lock and
         // overwrite each other's status (v4.2.26 audit M8).
-        guard beginRepoOp(id) else { return }
+        guard beginRepoOp(id) else {
+            completion?(.blocked(NSLocalizedString("正在处理上一个操作，请稍候…", comment: "settings status")))
+            return
+        }
         let section = rootCards[idx].repo
         let url = section.urlText.trimmingCharacters(in: .whitespacesAndNewlines)
         let mode = section.authMode
@@ -577,9 +686,11 @@ final class SettingsModel: ObservableObject {
             do {
                 if url.isEmpty {
                     try await svc.sync.clearRemote(repoPath: id)
+                    let cleared = NSLocalizedString("已清除远程仓库（仅本地模式）", comment: "settings status")
                     await MainActor.run {
-                        self.setMessage(id, NSLocalizedString("已清除远程仓库（仅本地模式）", comment: "settings status"))
+                        self.setMessage(id, cleared)
                         self.fillRepoDetails(id: id)   // refresh the remote-derived limit
+                        completion?(.saved(cleared))
                     }
                     self.editedPaths.remove(id)
                     self.editedAuthModes.remove(id)
@@ -637,19 +748,29 @@ final class SettingsModel: ObservableObject {
                 // (v4.2.28). fillRepoDetails below starts a fresh pass.
                 self.fillGenerations[id, default: 0] += 1
                 if needsToken {
+                    // The address itself persisted, so a waiting dialog closes;
+                    // the card keeps prompting for the token (v4.2.30 audit 6c).
+                    let tokenMsg = NSLocalizedString("已保存地址，但「用户名 + 访问令牌」还需要填写访问令牌（令牌只写进本机凭证库，不写进 git 配置）",
+                                                      comment: "settings status")
                     await MainActor.run {
-                        self.setMessage(id, NSLocalizedString("已保存地址，但「用户名 + 访问令牌」还需要填写访问令牌（令牌只写进本机凭证库，不写进 git 配置）",
-                                                             comment: "settings status"), error: true)
+                        self.setMessage(id, tokenMsg, error: true)
+                        completion?(.saved(tokenMsg))
                     }
                     return
                 }
                 await MainActor.run { self.setMessage(id, NSLocalizedString("已保存，正在测试连接…", comment: "settings status")) }
                 await MainActor.run { self.fillRepoDetails(id: id) }   // remote limit may have changed
                 let conn = await svc.sync.testConnectivity(repoPath: id)
+                // v4.2.30 audit item 2: the failure line leads with the
+                // classified reason (PullError.errorDescription); the condensed
+                // git output rides along as hover detail instead of being the
+                // whole message.
+                let connMain = conn.failureMessage ?? conn.detail
+                let connHelp = (conn.failureMessage != nil && conn.failureMessage != conn.detail) ? conn.detail : ""
                 let status: String
                 if change.changed && !change.fetchSucceeded {
                     status = String(format: NSLocalizedString("⚠️ 已保存新远程地址，但暂时读不到这个远程（检查地址或认证）：%@",
-                                                             comment: "settings status"), conn.detail) + credentialNote
+                                                             comment: "settings status"), connMain) + credentialNote
                 } else if change.needsDecision {
                     // v4.2: a remote that already has commits is merged into the
                     // folder automatically (local files kept, same-name files kept
@@ -663,13 +784,21 @@ final class SettingsModel: ObservableObject {
                     status = NSLocalizedString("✓ 已保存并连通，之后自动同步", comment: "settings status") + credentialNote
                 } else {
                     status = String(format: NSLocalizedString("⚠️ 已保存但连接失败：%@", comment: "settings status"),
-                                    conn.detail) + credentialNote
+                                    connMain) + credentialNote
                 }
-                await MainActor.run { self.setMessage(id, status, error: !conn.ok && !change.changed) }
-            } catch {
                 await MainActor.run {
-                    self.setMessage(id, String(format: NSLocalizedString("⚠️ 保存失败：%@", comment: "settings status"),
-                                               error.localizedDescription), error: true)
+                    self.setMessage(id, status, error: !conn.ok && !change.changed, help: connHelp)
+                    // Every branch here persisted the address, so a waiting
+                    // dialog closes; the probe result stays visible on the
+                    // card (v4.2.30 audit item 6c).
+                    completion?(.saved(status))
+                }
+            } catch {
+                let failed = String(format: NSLocalizedString("⚠️ 保存失败：%@", comment: "settings status"),
+                                    error.localizedDescription)
+                await MainActor.run {
+                    self.setMessage(id, failed, error: true)
+                    completion?(.blocked(failed))
                 }
             }
         }
@@ -684,14 +813,22 @@ final class SettingsModel: ObservableObject {
             setMessage(id, NSLocalizedString("Git 环境尚未就绪，请稍后重试（可在主面板查看原因）。", comment: "settings status"))
             return
         }
+        // v4.2.30 audit item 1: the button tests what is IN THE FIELD —
+        // including unsaved edits — and only falls back to the stored remote
+        // when the field is empty (the view greys it out when neither exists).
+        let typed = indexOf(id).map { rootCards[$0].repo.urlText.trimmingCharacters(in: .whitespacesAndNewlines) } ?? ""
         // Same reentrancy guard as save: a second click while ls-remote is in
         // flight must not stack another git process (v4.2.26 audit M8).
         guard beginRepoOp(id) else { return }
         Task { [weak self] in
             defer { self?.endRepoOp(id) }
-            let result = await svc.sync.testConnectivity(repoPath: id)
+            let result = typed.isEmpty
+                ? await svc.sync.testConnectivity(repoPath: id)
+                : await svc.sync.testRemote(url: typed, repoPath: id)
             await MainActor.run {
-                self?.connectionAlert = ConnectionAlert(ok: result.ok, detail: result.detail)
+                self?.connectionAlert = ConnectionAlert(ok: result.ok,
+                                                        detail: result.detail,
+                                                        summary: result.ok ? "" : (result.failureMessage ?? result.detail))
             }
         }
     }
@@ -867,22 +1004,52 @@ final class SettingsModel: ObservableObject {
         return nil
     }
 
+    /// Open the create-repo dialog for one card (v4.2.30 audit item 6):
+    /// resets the dialog state and prechecks gh.
+    func openCreateRepo(_ id: String) {
+        createRepoTarget = id
+        createRepoName = ""
+        createRepoError = ""
+        createRepoBusy = false
+        // Precheck gh NOW: a missing CLI used to surface only after the user
+        // had typed a name and clicked a doomed button (v4.2.30 audit 6b).
+        ghMissing = GhRepoCreator.defaultGhPath().isEmpty
+    }
+
     func createRepoAndBind(target: String, name: String) {
         let clean = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !clean.isEmpty else { return }
+        guard !clean.isEmpty, CreateRepoSheet.isValidRepoName(clean) else { return }
+        guard !createRepoBusy else { return }
+        createRepoBusy = true
+        createRepoError = ""
         setMessage(target, String(format: NSLocalizedString("正在创建仓库 %@…", comment: "settings status"), clean))
         Task { [weak self] in
             guard let self else { return }
             do {
                 let url = try await GhRepoCreator().createPrivate(name: clean)
                 await MainActor.run {
+                    self.createRepoBusy = false
                     if let idx = self.indexOf(target) {
                         self.rootCards[idx].repo.urlText = url
                     }
-                    self.saveRepo(target)
+                    // v4.2.30 audit item 6c: the dialog stays open until the
+                    // bind actually persisted; a failure shows inside it
+                    // instead of flashing by and landing in the card's small
+                    // status line.
+                    self.saveRepo(target) { outcome in
+                        switch outcome {
+                        case .saved:
+                            self.createRepoTarget = nil
+                            self.createRepoError = ""
+                        case .blocked(let message):
+                            self.createRepoError = message
+                        }
+                    }
                 }
             } catch {
                 await MainActor.run {
+                    self.createRepoBusy = false
+                    self.createRepoError = error.localizedDescription
                     self.setMessage(target, String(format: NSLocalizedString("⚠️ 创建失败: %@", comment: "settings status"),
                                                    error.localizedDescription), error: true)
                 }
@@ -976,8 +1143,12 @@ struct SettingsView: View {
             }
         }
         .alert(item: $model.connectionAlert) { alert in
+            // v4.2.30 audit item 2: the classified, readable reason is the
+            // primary line; the condensed git output follows as the detail.
             Alert(title: Text(alert.ok ? "连接成功" : "连接失败"),
-                  message: Text(alert.detail),
+                  message: Text(alert.ok || alert.summary.isEmpty || alert.summary == alert.detail
+                                ? alert.detail
+                                : alert.summary + "\n" + alert.detail),
                   dismissButton: .default(Text("好")))
         }
         .sheet(item: $model.gitignoreEditor) { editor in
@@ -987,19 +1158,33 @@ struct SettingsView: View {
                                                          repoName: editor.repoName, draft: draft))
             }
         }
-        .alert("在 GitHub 创建私有仓库并绑定", isPresented: Binding(
+        .sheet(isPresented: Binding(
             get: { model.createRepoTarget != nil },
             set: { if !$0 { model.createRepoTarget = nil } })) {
-            TextField("my-notes", text: $model.createRepoName)
-            Button("创建并绑定") {
-                if let target = model.createRepoTarget {
-                    model.createRepoAndBind(target: target, name: model.createRepoName)
-                }
-                model.createRepoName = ""
-            }
-            Button("取消", role: .cancel) { model.createRepoName = "" }
-        } message: {
-            Text("输入仓库名（将创建为当前 gh 账号下的私有仓库）：")
+            // v4.2.30 audit item 6: a sheet (not a transient alert) so a failed
+            // create/bind can be shown INSIDE the dialog instead of flashing
+            // by and dumping the error into the card's small status line.
+            CreateRepoSheet(name: $model.createRepoName,
+                            errorText: $model.createRepoError,
+                            busy: $model.createRepoBusy,
+                            ghMissing: model.ghMissing,
+                            onCreate: {
+                                if let target = model.createRepoTarget {
+                                    model.createRepoAndBind(target: target, name: model.createRepoName)
+                                }
+                            },
+                            onCancel: {
+                                model.createRepoTarget = nil
+                                model.createRepoName = ""
+                                model.createRepoError = ""
+                            })
+                .interactiveDismissDisabled(model.createRepoBusy)
+        }
+        .sheet(isPresented: $model.showFAQ) {
+            FAQSheet()
+        }
+        .sheet(item: $model.largeFilesViewer) { viewer in
+            LargeFilesSheet(state: viewer)
         }
         .confirmationDialog("移除文件夹？", isPresented: Binding(
             get: { removeTarget != nil },
@@ -1044,6 +1229,27 @@ struct SettingsView: View {
                     .foregroundStyle(.secondary)
             }
             Spacer()
+            // v4.2.30 audit item 8: collapseAll/expandAll existed with test
+            // coverage but no control ever called them (dead code).
+            if !model.rootCards.isEmpty {
+                HStack(spacing: 8) {
+                    Button("全部折叠") {
+                        withAnimation(.easeInOut(duration: 0.16)) {
+                            collapse.collapseAll(model.rootCards.map(\.id))
+                            collapse.save()
+                        }
+                    }
+                    .disabled(model.rootCards.allSatisfy { collapse.isCollapsed($0.id) })
+                    Button("全部展开") {
+                        withAnimation(.easeInOut(duration: 0.16)) {
+                            collapse.expandAll()
+                            collapse.save()
+                        }
+                    }
+                    .disabled(collapse.isEmpty)
+                }
+                .controlSize(.small)
+            }
         }
     }
 
@@ -1158,6 +1364,20 @@ struct SettingsView: View {
                     .controlSize(.small)
             }
             FVHairline(leading: 16)
+            // v4.2.30 audit item 10: support is reachable from Settings, not
+            // only from the repo README.
+            settingRow(title: "反馈与支持",
+                       detail: "发邮件反馈问题，主题自动附上版本号与系统版本") {
+                Button("发邮件…") { model.composeSupportMail() }
+                    .controlSize(.small)
+            }
+            FVHairline(leading: 16)
+            settingRow(title: "常见问题",
+                       detail: "误删找回、自动保存、大文件等 8 条解答") {
+                Button("查看…") { model.showFAQ = true }
+                    .controlSize(.small)
+            }
+            FVHairline(leading: 16)
             settingRow(title: "隐私与许可",
                        detail: "无云端中转；数据与版本库完全属于你") {
                 HStack(spacing: 10) {
@@ -1267,6 +1487,7 @@ struct SettingsView: View {
     /// One repo: identity + status, remote field, then a calm row of controls.
     private func repoBlock(_ card: RootCard) -> some View {
         let repo = card.repo
+        let typedRemote = repo.urlText.trimmingCharacters(in: .whitespacesAndNewlines)
         return VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .center, spacing: 7) {
                 // The status glyph already sits in the folder header; here the
@@ -1283,7 +1504,7 @@ struct SettingsView: View {
 
             if repo.available {
                 HStack(spacing: 8) {
-                    TextField("远程仓库地址（留空 = 仅本地）", text: model.urlBinding(repo.id))
+                    TextField("https://github.com/用户名/仓库.git", text: model.urlBinding(repo.id))
                         .textFieldStyle(.roundedBorder)
                         .controlSize(.small)
                         .font(.system(size: 11))
@@ -1292,6 +1513,23 @@ struct SettingsView: View {
                         .controlSize(.small)
                     Button("测试") { model.testConnection(repo.id) }
                         .controlSize(.small)
+                        // v4.2.30 audit item 1: nothing to probe when the
+                        // field is empty AND no remote is stored.
+                        .disabled(typedRemote.isEmpty && repo.remoteNames.isEmpty)
+                }
+
+                // v4.2.30 audit item 9: obvious paste mistakes (a bare host)
+                // get an in-place red hint; the save guard blocks them too.
+                if SettingsModel.looksIncompleteRemote(repo.urlText) {
+                    Text("远程地址看起来不完整（应以 https:// 或 git@ 开头）")
+                        .font(.system(size: 10))
+                        .foregroundStyle(Color(nsColor: .systemRed))
+                } else if repo.localOnly && typedRemote.isEmpty {
+                    // v4.2.30 audit item 3: an empty remote field plus a
+                    // "仅本地" status needs its meaning spelled out once.
+                    Text("版本只保存在本机，绑定远程后自动上云")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.tertiary)
                 }
 
                 HStack(spacing: 12) {
@@ -1323,7 +1561,7 @@ struct SettingsView: View {
                         }
                         Button("编辑忽略规则…") { model.openGitignoreEditor(repo.id) }
                         Button("重新定位（文件夹被移动/改名）…") { model.relocateRoot(repo.id) }
-                        Button("在 GitHub 建仓并绑定…") { model.createRepoTarget = repo.id }
+                        Button("在 GitHub 建仓并绑定…") { model.openCreateRepo(repo.id) }
                         Divider()
                         Button("检查仓库完整性…") { model.checkIntegrity(repo.id) }
                         Button("修复未完成的合并/变基…") { model.repairInterruptedOperation(repo.id) }
@@ -1331,6 +1569,26 @@ struct SettingsView: View {
                     .controlSize(.small)
                     .menuStyle(.borderlessButton)
                     .fixedSize()
+                }
+
+                // v4.2.30 audit item 4: excluded files are NOT backed up — a
+                // dedicated orange row (not a suffix on the health line) makes
+                // the loss visible and lists the files on click.
+                if repo.excludedLargeFileCount > 0 {
+                    Button {
+                        model.openLargeFiles(repo.id)
+                    } label: {
+                        HStack(spacing: 5) {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .font(.system(size: 9))
+                            Text(String(format: NSLocalizedString("%d 个大文件未备份", comment: "settings status"),
+                                        repo.excludedLargeFileCount))
+                                .font(.system(size: 11, weight: .medium))
+                        }
+                        .foregroundStyle(Color(nsColor: .systemOrange))
+                    }
+                    .buttonStyle(.plain)
+                    .help("点击查看哪些文件超过了远程单文件上限")
                 }
             } else {
                 // Configured but not attached right now (disk unplugged, folder
@@ -1356,6 +1614,10 @@ struct SettingsView: View {
                         .lineLimit(2)
                 }
                 .foregroundStyle(msg.1)
+                // v4.2.30 audit item 2: the two-line status truncates; hover
+                // reveals the full classified reason plus the condensed git
+                // output.
+                .help(msg.2.isEmpty ? msg.0 : msg.0 + "\n\n" + msg.2)
             }
         }
         .padding(.horizontal, 16)
@@ -1414,6 +1676,20 @@ struct GitignoreSheet: View {
         _draft = State(initialValue: state.draft)
     }
 
+    /// Append `rule` on its own line unless it is already present (a trimmed
+    /// comparison so surrounding whitespace never fools the check).
+    private func insertRule(_ rule: String) {
+        let existing = draft.components(separatedBy: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
+        guard !existing.contains(rule) else { return }
+        if draft.isEmpty {
+            draft = rule
+        } else if draft.hasSuffix("\n") {
+            draft += rule
+        } else {
+            draft += "\n" + rule
+        }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(spacing: 12) {
@@ -1426,6 +1702,16 @@ struct GitignoreSheet: View {
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
+            }
+            VStack(alignment: .leading, spacing: 4) {
+                // v4.2.30 audit item 7: state the consequence up front —
+                // "ignored" silently means "unrecoverable once deleted".
+                Text("写在这里的文件不会留下版本，删除后无法找回")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(Color(nsColor: .systemOrange))
+                Text("每行一条，如 *.log 或 node_modules/")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.tertiary)
             }
             TextEditor(text: $draft)
                 .font(.system(size: 12, design: .monospaced))
@@ -1440,6 +1726,25 @@ struct GitignoreSheet: View {
                         .strokeBorder(FVTheme.cardStroke, lineWidth: 1)
                 )
                 .frame(minHeight: 240)
+            // v4.2.30 audit item 7: one-tap insertions for the three patterns
+            // nearly every macOS/git project wants; duplicates are skipped.
+            HStack(spacing: 8) {
+                ForEach([".DS_Store", "node_modules/", "*.log"], id: \.self) { rule in
+                    Button {
+                        insertRule(rule)
+                    } label: {
+                        Text(rule)
+                            .font(.system(size: 10, design: .monospaced))
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 3)
+                            .background(Capsule(style: .continuous).fill(Color.primary.opacity(0.06)))
+                            .overlay(Capsule(style: .continuous)
+                                .strokeBorder(Color.primary.opacity(0.14), lineWidth: 1))
+                    }
+                    .buttonStyle(.plain)
+                }
+                Spacer()
+            }
             if let errorText {
                 Text(errorText)
                     .font(.system(size: 11))
@@ -1465,7 +1770,7 @@ struct GitignoreSheet: View {
             }
         }
         .padding(20)
-        .frame(width: 540, height: 420)
+        .frame(width: 540, height: 460)
         .background(FVTheme.canvas)
     }
 }

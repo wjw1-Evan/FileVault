@@ -88,6 +88,13 @@
 - 证据：`RepoManager.resetRepo` / `forcePull` / `mergeSync` 三处备份 ref；`AuditV428Tests.testResetRepoBackupRefsAreUniqueWithinTheSameSecond`（断言 `<yyyyMMdd-HHmmss>-<4 hex>` 且不含 `(`）。
 - 规避：生成 ref / 路径后加断言或测试钉住格式；review 时看一眼 ref 名里有没有源码文本片段。
 
+### --render-* 截图在无屏幕录制权限的 shell 下静默全空白（2026-11-19）
+
+- 结论：CGWindowListCreateImage 没有 TCC 屏幕录制权限时返回**非 nil 的空白图**，render 流程照样打印 "rendered: path"——不能凭退出码判断截图有效。
+- 原因：captureAndExit 拿到 image 就写盘退出，权限缺失不报错。
+- 证据：Sources/FileVaultApp/AppState.swift 的 captureAndExit；2026-11-19 实测四窗口全白，screencapture -x 同 shell 报 "could not create image from display"。
+- 影响：验证 UI 改动前先确认宿主终端有屏幕权限；无权限就改走测试断言 + diff 审查，别把空白 PNG 当成"窗口没内容"的 bug 排查。
+
 ### MenuBarExtra 面板高度就是内容高度（v4.2.29）
 
 - 结论：菜单弹层面板即窗口本身——最后一行下方的任何额外 padding 都会渲染成一条空白带；分区表达用卡片，不要用横穿分隔条。

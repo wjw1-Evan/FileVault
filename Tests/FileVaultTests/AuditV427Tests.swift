@@ -440,10 +440,16 @@ final class AuditV427Tests: XCTestCase {
     }
 
     /// The health line must distinguish "0 commits" from "cannot read" (v4.2.27).
+    /// v4.2.30: `readError` is readable copy now — the raw exit code lives in
+    /// `readErrorExitCode` (diagnostics only), never in the rendered line.
     func testRepoHealthSummaryShowsReadError() {
         let broken = RepoHealth(commitCount: 0, sizeBytes: 0, lastCommitDate: nil,
-                                readError: "rev-list exit 128")
+                                readError: "仓库暂时读不到（可能正忙或磁盘不可用），稍后重试。",
+                                readErrorExitCode: 128)
         XCTAssertTrue(broken.summary.contains("读取失败"), broken.summary)
+        XCTAssertTrue(broken.summary.contains("仓库暂时读不到"), broken.summary)
+        XCTAssertFalse(broken.summary.contains("128"), "exit codes must not be glued into the health line: \(broken.summary)")
+        XCTAssertEqual(broken.readErrorExitCode, 128, "diagnostics keep the exit code")
         let empty = RepoHealth(commitCount: 0, sizeBytes: 0, lastCommitDate: nil)
         XCTAssertFalse(empty.summary.contains("读取失败"))
         XCTAssertEqual(empty.commitCount, 0)

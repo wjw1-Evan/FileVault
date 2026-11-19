@@ -13,18 +13,23 @@ public struct RepoHealth: Equatable, Sendable {
     /// showing a misleading "0 commits · 0KB" (v4.2.8).
     public var available: Bool
     /// Set when git reads failed (rev-list/log): the health line must show the
-    /// failure instead of a misleading "0 次提交" (v4.2.27).
+    /// failure instead of a misleading "0 次提交" (v4.2.27). Readable user copy
+    /// since v4.2.30 — the raw exit code moved to `readErrorExitCode`.
     public var readError: String?
+    /// Diagnostic data only (support bundle, tests): the exit code of the
+    /// failed rev-list. Never rendered to users (v4.2.30 audit item 5).
+    public var readErrorExitCode: Int32?
 
     public init(commitCount: Int, sizeBytes: UInt64, lastCommitDate: Date?,
                 excludedLargeFileCount: Int = 0, available: Bool = true,
-                readError: String? = nil) {
+                readError: String? = nil, readErrorExitCode: Int32? = nil) {
         self.commitCount = commitCount
         self.sizeBytes = sizeBytes
         self.lastCommitDate = lastCommitDate
         self.excludedLargeFileCount = excludedLargeFileCount
         self.available = available
         self.readError = readError
+        self.readErrorExitCode = readErrorExitCode
     }
 
     public var summary: String {
@@ -32,7 +37,11 @@ public struct RepoHealth: Equatable, Sendable {
             return NSLocalizedString("⚠️ 文件夹当前不可用（可能未挂载或被移动）", comment: "repo health")
         }
         if let readError {
-            return NSLocalizedString("⚠️ 仓库读取失败", comment: "repo health") + "：" + readError
+            // Complete format string (v4.2.30 audit item 5): the old line glued
+            // "⚠️ 仓库读取失败" + "：" + a raw exit code together — unreadable in
+            // Chinese and impossible to translate correctly in English.
+            return String(format: NSLocalizedString("⚠️ 仓库读取失败：%@", comment: "repo health"),
+                          readError)
         }
         var t = commitCount == 1
             ? String(format: NSLocalizedString("1 次提交 · %@", comment: "repo health"), sizeText)
@@ -65,15 +74,13 @@ public struct RepoHealth: Equatable, Sendable {
 }
 
 public extension RepoManager {
-    /// Repo health: commit count, .git size, last commit date (FR-19).
-    func health(path: String) async -> RepoHealth {
-        guard isRepo(at: path) else {
-            return RepoHealth(commitCount: 0, sizeBytes: 0, lastCommitDate: nil, available: false)
-        }
-        let gitDir = RepoManager.gitDirectory(forRepoAt: path)
+    /// Synchronous .git size walk. Kept out of the async `health` body:
+    /// the enumerator's iterator is unavailable from asynchronous contexts
+    /// (a warning under the v5 language mode, an error under Swift 6).
+    private static func gitDirectorySize(_ gitDir: String) -> UInt64 {
         var size: UInt64 = 0
         if let e = FileManager.default.enumerator(atPath: gitDir) {
-            for case let f as String in e {
+            while let f = e.nextObject() as? String {
                 let full = (gitDir as NSString).appendingPathComponent(f)
                 if let attrs = try? FileManager.default.attributesOfItem(atPath: full),
                    let s = attrs[.size] as? UInt64 {
@@ -81,20 +88,37 @@ public extension RepoManager {
                 }
             }
         }
+        return size
+    }
+
+    /// Repo health: commit count, .git size, last commit date (FR-19).
+    func health(path: String) async -> RepoHealth {
+        guard isRepo(at: path) else {
+            return RepoHealth(commitCount: 0, sizeBytes: 0, lastCommitDate: nil, available: false)
+        }
+        let gitDir = RepoManager.gitDirectory(forRepoAt: path)
+        let size = Self.gitDirectorySize(gitDir)
         let countResult = try? await runner.run(["rev-list", "--count", "HEAD"], cwd: path)
         let count = countResult.flatMap { Int($0.stdout.trimmingCharacters(in: .whitespacesAndNewlines)) } ?? 0
         let log = (try? await self.log(path: path, max: 1)) ?? []
         // A failed read is an error, not "0 commits" — EXCEPT an unborn HEAD
         // (fresh repo), which is genuinely empty (v4.2.27).
         var readError: String?
+        var readErrorExitCode: Int32?
         if countResult?.succeeded != true,
            !(countResult?.stderr.contains("unknown revision") ?? false),
            !(countResult?.stderr.contains("does not have any commits yet") ?? false) {
-            readError = "rev-list exit \((countResult?.exitCode ?? -1))"
+            // Readable copy reuses the history window's existing sentence
+            // (v4.2.30 audit item 5) — "rev-list exit 128" said nothing a user
+            // could act on. The exit code stays in diagnostics.
+            readError = NSLocalizedString("仓库暂时读不到（可能正忙或磁盘不可用），稍后重试。",
+                                          comment: "history status")
+            readErrorExitCode = countResult?.exitCode ?? -1
         }
         let excluded = self.excludedLargeFiles(path: path).count
         return RepoHealth(commitCount: count, sizeBytes: size, lastCommitDate: log.first?.date,
-                          excludedLargeFileCount: excluded, readError: readError)
+                          excludedLargeFileCount: excluded, readError: readError,
+                          readErrorExitCode: readErrorExitCode)
     }
 }
 

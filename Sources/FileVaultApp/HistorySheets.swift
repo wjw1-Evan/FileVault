@@ -32,6 +32,10 @@ struct FileHistorySheet: View {
     /// Versions that can actually be restored under the CURRENT path:
     /// pre-rename commits (--follow surfaces them) cannot (v4.2.27).
     @State private var restorable: Set<String> = []
+    /// Version awaiting the restore confirmation (v4.2.30 audit round: the
+    /// one-click 「恢复」 overwrote the current file with no chance to back out).
+    @State private var restoreTarget: CommitInfo?
+    @State private var confirmRestore = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -44,6 +48,16 @@ struct FileHistorySheet: View {
         .frame(width: 660, height: 480)
         .background(Color(nsColor: .windowBackgroundColor))
         .task { await load() }
+        .alert("恢复确认", isPresented: $confirmRestore, presenting: restoreTarget) { commit in
+            Button("恢复此版本") { restore(commit) }
+            Button("取消", role: .cancel) {}
+        } message: { commit in
+            Text(String(format: NSLocalizedString("将用 %@ 版本的内容覆盖「%@」。", comment: "recovery confirm"),
+                        commit.shortHash, file)
+                 + "\n\n"
+                 + NSLocalizedString("恢复前会先自动保存当前改动；恢复本身也会记成一个新版本，之后仍然可以再找回来。",
+                                     comment: "recovery confirm"))
+        }
     }
 
     private var header: some View {
@@ -101,7 +115,7 @@ struct FileHistorySheet: View {
             // 是改名前（恰恰最需要提示）时反而不显示。
             .overlay(alignment: .bottom) {
                 if commits.contains(where: { !restorable.contains($0.hash) }) {
-                    Text("改名前的版本不能按当前文件名恢复；请到「找回与还原」按当时的文件名找回。")
+                    Text("改名前的版本不能按当前文件名恢复；请到「文件恢复」按当时的文件名找回。")
                         .font(.system(size: 9.5))
                         .foregroundStyle(.secondary)
                         .padding(.horizontal, 12)
@@ -144,7 +158,8 @@ struct FileHistorySheet: View {
             .controlSize(.small)
             .disabled(commit.hash == currentHash)
             Button("恢复") {
-                restore(commit)
+                restoreTarget = commit
+                confirmRestore = true
             }
             .controlSize(.small)
             // Pre-rename versions exist in history but not under the current
@@ -538,7 +553,7 @@ struct RecoverySheet: View {
                 Button("关闭") { dismiss() }
                     .controlSize(.small)
             }
-            Text("每次回滚前，FileVault 都会把当时的状态备份到隐藏 ref（refs/filevault/backup）。这里可以把它恢复回来。")
+            Text("每次回滚前，FileVault 都会把回滚前的样子自动备份一份；之后想反悔，随时可以在这里把它恢复回来。（技术细节：备份保存在 refs/filevault/backup。）")
                 .font(.system(size: 10.5))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)

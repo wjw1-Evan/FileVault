@@ -151,7 +151,9 @@ final class SupplementalTests: XCTestCase {
         await model.refresh()
         XCTAssertTrue(model.rootsEmpty, "no roots configured → empty state")
         XCTAssertFalse(model.stateLine.contains("📂"))
-        XCTAssertTrue(model.stateLine.contains("0 个文件夹受守护"))
+        // v4.2.30: "0 个文件夹受守护" became "尚未保护任何文件夹" — the
+        // empty state tells the user what to do instead of a bare count.
+        XCTAssertTrue(model.stateLine.contains("尚未保护任何文件夹"))
         try? FileManager.default.removeItem(atPath: base)
     }
 }

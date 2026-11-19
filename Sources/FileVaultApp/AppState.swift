@@ -194,7 +194,28 @@ final class AppState: ObservableObject {
                        rolledBackFrom))
         }
         svc.onFailure.handler = { [weak self] title, body in
-            self?.notificationService.notifyFailure(title, body)
+            // The handler is @Sendable (invoked from background sync tasks):
+            // hop to the main actor instead of touching its state directly —
+            // a warning in v5 mode, an error under Swift 6.
+            Task { @MainActor in
+                self?.notificationService.notifyFailure(title, body)
+            }
+        }
+        // v4.2.30: a brand-new install opens the dashboard IMMEDIATELY. The
+        // git download can take minutes, and until now the only feedback was
+        // a silent menu-bar icon ("did the app even open?"). The window shows
+        // the preparation state; the quick-add sheet still waits for git
+        // (runOnboardingIfNeeded below).
+        Task { @MainActor [weak self] in
+            for _ in 0..<100 where self?.openWindowHandler == nil {
+                try? await Task.sleep(nanoseconds: 100_000_000)
+            }
+            guard let self, let svc = self.service else { return }
+            if svc.configStore.load().roots.isEmpty,
+               !UserDefaults.standard.bool(forKey: "fv.onboarded") {
+                self.openWindowHandler?("dashboard")
+                NSApp.activate(ignoringOtherApps: true)
+            }
         }
         // FR-01: git 自动准备（内嵌 / 多镜像下载）的进度写进菜单状态行，
         // 用户能看到"正在下载 git（ghfast.top 加速）…"而不是干等。
@@ -276,12 +297,21 @@ final class AppState: ObservableObject {
     private func runOnboardingIfNeeded() async {
         guard let svc = service else { return }
         if svc.configStore.load().roots.isEmpty, !UserDefaults.standard.bool(forKey: "fv.onboarded") {
-            UserDefaults.standard.set(true, forKey: "fv.onboarded")
+            // v4.2.30: the flag is no longer set here — markOnboarded() fires
+            // only once a folder is actually protected. Cancelling the
+            // first-run sheet used to silence onboarding FOREVER: a novice
+            // who clicked 取消 had no visible "next step" left anywhere.
             // v4.2.18: first run goes straight to the one-step add folder
             // sheet instead of the settings page.
             quickAddRequested = true
             openWindowHandler?("dashboard")
         }
+    }
+
+    /// Onboarding is complete only once a folder is protected (v4.2.30).
+    /// Called from refresh(), where every add path converges.
+    private func markOnboarded() {
+        UserDefaults.standard.set(true, forKey: "fv.onboarded")
     }
 
     /// Re-enabling "自动检查更新" resumes checking right away instead of
@@ -359,6 +389,11 @@ final class AppState: ObservableObject {
                                           paused: cfgRoot.paused))
         }
         guard pass == refreshGeneration else { return }
+        // v4.2.30: a protected folder exists → onboarding is genuinely
+        // complete (covers the quick-add sheet, settings and any future path).
+        if !newRoots.isEmpty, !UserDefaults.standard.bool(forKey: "fv.onboarded") {
+            markOnboarded()
+        }
         roots = newRoots
         statusCache = newStatusCache
         unavailableCount = unavailable
@@ -378,6 +413,13 @@ final class AppState: ObservableObject {
         } else {
             state = NSLocalizedString("正常", comment: "menu state")
         }
+        // v4.2.30: "0 个文件夹 · 正常" told a fresh install everything was
+        // fine — the panel is the first thing a new user reads, so the empty
+        // state says what to do instead.
+        if rootCount == 0, envReady, !anyFailed, unavailable == 0 {
+            statusLine = NSLocalizedString("尚未保护任何文件夹", comment: "menu state")
+            return
+        }
         // Short enough for a single menu line (v3.1.5: the version lives in
         // 「关于 FileVault」 and the dashboard, not in the menu headline).
         let units = String(format: NSLocalizedString("%d 个文件夹", comment: "menu state"), rootCount)
@@ -393,6 +435,10 @@ final class AppState: ObservableObject {
         if statuses.contains(.pendingPush) || statuses.contains(.pushing) { return "arrow.up.arrow.down.circle" }
         return "clock.arrow.circlepath"
     }
+
+    /// True while the one-time git download runs; the add sheet and the
+    /// dashboard empty state render preparation progress from it (v4.2.30).
+    var isPreparingGit: Bool { gitInstalling }
 
     var menuIcon: String {
         if gitInstalling { return "arrow.down.circle" }
@@ -462,6 +508,10 @@ final class AppState: ObservableObject {
     @Published var lastNotifiedUpdateVersion: String?
     /// Set by the menu bar to open the dashboard's quick-add sheet (v4.2.18).
     @Published var quickAddRequested = false
+    /// Folder dropped onto the menu panel or the dashboard (v4.2.30): the add
+    /// sheet opens with the path pre-filled — drag & drop replaces the
+    /// 选择… → NSOpenPanel navigation entirely.
+    @Published var quickAddPrefill: String?
     /// Shared 历史与恢复 window: which tab to show (v4.2.20).
     @Published var recordsTab: RecordsTab = .recover
 

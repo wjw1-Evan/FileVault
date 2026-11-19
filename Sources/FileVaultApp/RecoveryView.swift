@@ -597,6 +597,9 @@ struct RecoveryView: View {
     @EnvironmentObject var app: AppState
     @Environment(\.openWindow) private var openWindow
     @StateObject private var model = RecoveryModel()
+    /// Set by RecordsWindow: hands the current folder to the history tab when
+    /// the user follows the truncated-scan pointer ("去历史时间线按提交查找").
+    var handoff: RecordsHandoff? = nil
     @State private var confirmRestore = false
 
     var body: some View {
@@ -787,12 +790,32 @@ struct RecoveryView: View {
             list
 
             if model.snapshot?.truncated == true {
-                Text("更早的记录没有扫描到，也可以在「历史版本」里按提交查找")
+                // Actionable pointer (v4.2.30 audit round): a plain-text mention
+                // of another tab is a dead end. The button switches to the
+                // timeline AND hands over the folder the user is looking at;
+                // HistoryView consumes the handoff once on activation.
+                HStack(spacing: 6) {
+                    Image(systemName: "clock.arrow.circlepath")
+                        .font(.system(size: 9))
+                        .foregroundStyle(.tertiary)
+                    Text("更早的记录没有扫描到")
+                        .font(.system(size: 9.5))
+                        .foregroundStyle(.tertiary)
+                    Button("去历史时间线按提交查找") {
+                        if let root = model.selectedRoot {
+                            handoff?.requestedHistoryRoot = root
+                        }
+                        app.open("history")
+                    }
                     .font(.system(size: 9.5))
-                    .foregroundStyle(.tertiary)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 8)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .buttonStyle(.link)
+                    .controlSize(.small)
+                    .help("切换到历史时间线标签，保留当前文件夹，按提交继续查找")
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 8)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
         .frame(maxHeight: .infinity, alignment: .top)
@@ -857,6 +880,14 @@ struct RecoveryView: View {
                     .font(.system(size: 9.5))
                     .foregroundStyle(.secondary)
                     .lineLimit(3)
+                // Same way out as the toolbar refresh instead of a dead-end
+                // error (v4.2.30 audit round).
+                Button("重试") {
+                    model.reload(preserveSelection: true)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .padding(.top, 4)
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 12)
@@ -1249,10 +1280,10 @@ struct RecoveryView: View {
             RecoveryDiffView(diff: fileDiff)
         case .blame:
             noteBlock(symbol: "person.text.rectangle", title: "逐行归属",
-                      detail: "逐行归属视图在「历史版本」窗口里查看。")
+                      detail: "逐行归属视图在「历史时间线」里查看。")
         case .lfsPointer:
             noteBlock(symbol: "externaldrive.badge.icloud", title: "这个文件由 Git LFS 管理",
-                      detail: "应用内只看到指针；可在终端用 git lfs pull 取回实际内容。")
+                      detail: "实际内容存在远程存储，这里只记录了它的位置；要取回真实内容，可在终端运行 git lfs pull。")
         }
     }
 

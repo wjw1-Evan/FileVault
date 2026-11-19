@@ -4,32 +4,87 @@ public extension SyncManager {
     /// Connectivity outcome for FR-17.
     struct ConnectivityResult: Sendable {
         public var ok: Bool
+        /// Condensed raw git output (the success greeting when ok). AuthMonitor
+        /// matches English phrases against this, so it must stay raw (v4.2.30).
         public var detail: String
+        /// Readable classified failure (PullError.errorDescription) for the
+        /// UI's primary line; nil when ok, when no remote is configured, or
+        /// when git could not run at all — callers then show `detail`
+        /// (v4.2.30 audit item 2: raw stderr used to be the only text users
+        /// ever saw).
+        public var failureMessage: String?
     }
 
     /// Verify the remote is reachable and credentials work (FR-17).
     /// Uses `git ls-remote origin HEAD` — supports local paths, SSH and HTTPS remotes.
     func testConnectivity(repoPath: String) async -> ConnectivityResult {
         guard let remote = await repoManager.defaultRemoteName(path: repoPath) else {
-            return ConnectivityResult(ok: false, detail: NSLocalizedString("未配置远程仓库", comment: "connectivity"))
+            return ConnectivityResult(ok: false,
+                                      detail: NSLocalizedString("未配置远程仓库", comment: "connectivity"),
+                                      failureMessage: nil)
         }
         do {
             let r = try await repoManager.runner.run(["ls-remote", remote, "HEAD"], cwd: repoPath, timeout: 20)
             if r.succeeded {
-                return ConnectivityResult(ok: true, detail: NSLocalizedString("连接成功", comment: "connectivity"))
+                return ConnectivityResult(ok: true,
+                                          detail: NSLocalizedString("连接成功", comment: "connectivity"),
+                                          failureMessage: nil)
             }
-            // Use the WHOLE condensed stderr, not its last line: SSH auth
-            // failures end with a hint line; the actual reason
-            // (Permission denied (publickey)) is earlier, so the UI and
-            // AuthMonitor could not classify a real auth problem (v4.2.26).
-            let condensed = PullError.condense(r.stderr)
-            let reason = condensed.isEmpty
-                ? NSLocalizedString("未知错误", comment: "connectivity")
-                : condensed
-            return ConnectivityResult(ok: false, detail: reason)
+            return Self.failureResult(r, remote: remote)
         } catch {
-            return ConnectivityResult(ok: false, detail: NSLocalizedString("连接超时或无法执行 git", comment: "connectivity"))
+            return ConnectivityResult(ok: false,
+                                      detail: NSLocalizedString("连接超时或无法执行 git", comment: "connectivity"),
+                                      failureMessage: nil)
         }
+    }
+
+    /// Probe a candidate remote address WITHOUT saving it: the settings
+    /// "测试" button tests what is in the field, not what git has stored
+    /// (v4.2.30 audit item 1).
+    ///
+    /// Same safety envelope as `testConnectivity`: the runner forces stable
+    /// English diagnostics (LC_ALL=C), disables every interactive credential
+    /// prompt (GIT_TERMINAL_PROMPT=0, empty askpass, BatchMode ssh) and bounds
+    /// the wait at 20 s — so probing an unsaved URL can never hang on a
+    /// password box.
+    func testRemote(url: String, repoPath: String) async -> ConnectivityResult {
+        let target = url.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !target.isEmpty else {
+            return ConnectivityResult(ok: false,
+                                      detail: NSLocalizedString("未配置远程仓库", comment: "connectivity"),
+                                      failureMessage: nil)
+        }
+        do {
+            let r = try await repoManager.runner.run(["ls-remote", target, "HEAD"], cwd: repoPath, timeout: 20)
+            if r.succeeded {
+                return ConnectivityResult(ok: true,
+                                          detail: NSLocalizedString("连接成功", comment: "connectivity"),
+                                          failureMessage: nil)
+            }
+            return Self.failureResult(r, remote: target)
+        } catch {
+            return ConnectivityResult(ok: false,
+                                      detail: NSLocalizedString("连接超时或无法执行 git", comment: "connectivity"),
+                                      failureMessage: nil)
+        }
+    }
+
+    /// Shared failure mapping for both probes: `detail` keeps the condensed
+    /// raw output (the AuthMonitor contract), `failureMessage` carries the
+    /// classified, readable reason for the UI's primary line.
+    private static func failureResult(_ r: GitResult, remote: String) -> ConnectivityResult {
+        // Use the WHOLE condensed stderr, not its last line: SSH auth
+        // failures end with a hint line; the actual reason
+        // (Permission denied (publickey)) is earlier, so the UI and
+        // AuthMonitor could not classify a real auth problem (v4.2.26).
+        let condensed = PullError.condense(r.stderr)
+        let reason = condensed.isEmpty
+            ? NSLocalizedString("未知错误", comment: "connectivity")
+            : condensed
+        // "HEAD" is the ref both probes ask about, so a branch-name mismatch
+        // names it instead of guessing the checked-out branch.
+        let classified = PullError.classify(stderr: r.stderr, remote: remote, branch: "HEAD")
+        return ConnectivityResult(ok: false, detail: reason, failureMessage: classified.errorDescription)
     }
 }
 

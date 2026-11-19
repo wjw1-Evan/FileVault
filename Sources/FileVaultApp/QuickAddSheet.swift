@@ -8,9 +8,20 @@ import FileVaultCore
 /// Before this, adding a folder took: open settings → 添加文件夹 → pick folder →
 /// find the remote section → paste URL → save. Now it is one sheet with two
 /// optional steps, and it can be opened straight from the menu bar.
+///
+/// v4.2.30:
+/// - Drag & drop: the sheet opens with the path pre-filled when a folder was
+///   dropped on the menu panel or the dashboard roots card.
+/// - The form speaks plain language (「云端备份」instead of 「远程仓库地址」)
+///   and creates a private GitHub repo inline — previously the only one-click
+///   creation lived in Settings → 更多, which the first-run user never saw.
+/// - Git-not-ready is honest: a running download shows its progress, a
+///   permanent failure shows its reason. "请稍后重试" for a dead end is gone.
 struct QuickAddSheet: View {
     @EnvironmentObject var app: AppState
     @Environment(\.dismiss) private var dismiss
+    /// Path pre-filled from a drag & drop (menu panel / dashboard, v4.2.30).
+    var initialPath: String? = nil
     var onAdded: (() -> Void)?
 
     @State private var folderPath = ""
@@ -18,6 +29,10 @@ struct QuickAddSheet: View {
     @State private var detectedRemote = false
     @State private var busy = false
     @State private var errorText: String?
+    // v4.2.30: inline one-click private GitHub repo creation.
+    @State private var ghRepoName = ""
+    @State private var ghBusy = false
+    @State private var ghUnavailable = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -26,7 +41,7 @@ struct QuickAddSheet: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("添加受保护文件夹")
                         .font(.system(size: 14, weight: .semibold))
-                    Text("选一个文件夹，里面的所有文件都会自动保存版本。")
+                    Text("把文件夹拖进来，或点「选择…」；里面的所有文件都会自动保存版本。")
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
                 }
@@ -59,17 +74,66 @@ struct QuickAddSheet: View {
             .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.04)))
 
             VStack(alignment: .leading, spacing: 4) {
-                Text("远程仓库地址（可选）")
+                Text("云端备份（可选）")
                     .font(.system(size: 11, weight: .medium))
-                TextField("https://github.com/用户名/仓库.git", text: $remoteURL)
+                TextField("https://github.com/用户名/仓库名", text: $remoteURL)
                     .textFieldStyle(.roundedBorder)
                     .font(.system(size: 11))
                     .disabled(busy)
                 Text(detectedRemote
-                     ? "已检测到该文件夹已有的远程地址，将直接使用。"
-                     : "留空 = 仅本地保存版本（暂不上云）。绑定 GitHub 私有仓库后会自动上云、换电脑不丢；之后在设置里随时能加。")
+                     ? "已检测到该文件夹已有的云端地址，将直接使用。"
+                     : "留空 = 只保存在这台 Mac。绑定 GitHub 私有仓库后会自动上云、换电脑不丢；之后在设置里随时能加。")
                     .font(.system(size: 10))
                     .foregroundStyle(.tertiary)
+                // v4.2.30: users without a remote hit a wall here before — the
+                // app already had one-click creation but never showed it in the
+                // first form. Hidden once an address is present (typed or
+                // detected): the wall only exists while the field is empty.
+                if !detectedRemote,
+                   remoteURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    HStack(spacing: 6) {
+                        TextField("仓库名（默认用文件夹名）", text: $ghRepoName)
+                            .textFieldStyle(.roundedBorder)
+                            .font(.system(size: 11))
+                            .disabled(busy || ghBusy || ghUnavailable)
+                        Button { createAndBindRepo() } label: {
+                            if ghBusy { Text("创建中…") } else { Text("在 GitHub 创建并绑定") }
+                        }
+                        .controlSize(.small)
+                            .disabled(busy || ghBusy || ghUnavailable
+                                     || ghRepoName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    }
+                    if ghUnavailable {
+                        Text("需要先安装 GitHub CLI（brew install gh 并登录），或把现成仓库地址粘贴到上面。")
+                            .font(.system(size: 10))
+                            .foregroundStyle(.tertiary)
+                    }
+                }
+            }
+
+            if !app.envReady {
+                // v4.2.30: the add button stays disabled until git exists; the
+                // form explains WHY instead of failing on click.
+                HStack(spacing: 6) {
+                    if app.isPreparingGit {
+                        Image(systemName: "arrow.down.circle")
+                            .font(.system(size: 10))
+                        Text(app.statusLine)
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Image(systemName: "exclamationmark.triangle")
+                            .font(.system(size: 10))
+                            .foregroundStyle(.orange)
+                        Text(app.gitSetupError.flatMap { $0.isEmpty ? nil : $0 }
+                             ?? NSLocalizedString("Git 环境尚未就绪。", comment: "quick add"))
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                        Button("查看详情") { app.open("dashboard") }
+                            .controlSize(.small)
+                            .buttonStyle(.link)
+                    }
+                }
             }
 
             if let errorText {
@@ -83,13 +147,53 @@ struct QuickAddSheet: View {
                 Spacer()
                 Button("取消") { dismiss() }
                     .disabled(busy)
-                Button(busy ? "添加中…" : "添加") { add() }
-                    .keyboardShortcut(.defaultAction)
-                    .disabled(folderPath.isEmpty || busy)
+                Button { add() } label: {
+                    if busy {
+                        Text("添加中…")
+                    } else if app.envReady {
+                        Text("添加")
+                    } else {
+                        Text("Git 就绪后可添加")
+                    }
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(folderPath.isEmpty || busy || !app.envReady)
             }
         }
         .padding(20)
         .frame(width: 500)
+        .onAppear {
+            ghUnavailable = GhRepoCreator.defaultGhPath().isEmpty
+            if folderPath.isEmpty, let path = initialPath {
+                adoptFolder(at: path)
+            }
+        }
+    }
+
+    /// Adopt a folder path (from 选择… or a drag & drop): record it, then
+    /// probe for an existing origin with the same stale-result guards as the
+    /// v4.2.26 audit M8 fix.
+    private func adoptFolder(at path: String) {
+        folderPath = path
+        detectedRemote = false
+        remoteURL = ""
+        if ghRepoName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            ghRepoName = (path as NSString).lastPathComponent
+        }
+        Task { @MainActor in
+            // Git setup can still be running (or have failed): never touch
+            // the implicitly-unwrapped repoManager before it exists (v4.2.26).
+            guard let svc = app.service, svc.isReady else { return }
+            let existing = await svc.repoManager.remoteURL(path: path)
+            // The probe is async: if the user picked another folder (or
+            // typed another address) meanwhile, never let the stale result
+            // overwrite the current choice (v4.2.26 audit M8).
+            guard folderPath == path, remoteURL.isEmpty else { return }
+            if let existing {
+                remoteURL = existing
+                detectedRemote = true
+            }
+        }
     }
 
     private func chooseFolder() {
@@ -99,22 +203,28 @@ struct QuickAddSheet: View {
         panel.allowsMultipleSelection = false
         panel.prompt = NSLocalizedString("选择文件夹", comment: "quick add panel")
         if panel.runModal() == .OK, let url = panel.url {
-            folderPath = url.path
-            detectedRemote = false
-            remoteURL = ""
-            Task { @MainActor in
-                // Git setup can still be running (or have failed): never touch
-                // the implicitly-unwrapped repoManager before it exists (v4.2.26).
-                guard let svc = app.service, svc.isReady else { return }
-                let existing = await svc.repoManager.remoteURL(path: url.path)
-                // The probe is async: if the user picked another folder (or
-                // typed another address) meanwhile, never let the stale result
-                // overwrite the current choice (v4.2.26 audit M8).
-                guard folderPath == url.path, remoteURL.isEmpty else { return }
-                if let existing {
-                    remoteURL = existing
-                    detectedRemote = true
-                }
+            adoptFolder(at: url.path)
+        }
+    }
+
+    /// v4.2.30: create a private GitHub repo with gh and continue straight
+    /// into the add flow — one click, and failures stay in this sheet
+    /// instead of landing in a distant one-line message elsewhere.
+    private func createAndBindRepo() {
+        guard !busy, !ghBusy else { return }
+        let name = ghRepoName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return }
+        ghBusy = true
+        errorText = nil
+        Task { @MainActor in
+            do {
+                let url = try await GhRepoCreator().createPrivate(name: name)
+                remoteURL = url
+                ghBusy = false
+                add()
+            } catch {
+                ghBusy = false
+                errorText = error.localizedDescription
             }
         }
     }
@@ -123,15 +233,12 @@ struct QuickAddSheet: View {
         // A double click can deliver two actions before SwiftUI repaints the
         // button as disabled; never run two add/configure passes (v4.2.26).
         guard !busy else { return }
-        guard let svc = app.service else {
-            errorText = NSLocalizedString("Git 环境尚未就绪，请稍后重试（可在主面板查看原因）。",
-                                          comment: "quick add")
-            return
-        }
-        guard svc.isReady else {
+        guard let svc = app.service, svc.isReady else {
+            // v4.2.30: "请稍后重试" was a dead end when the failure is permanent
+            // (mirror ladder exhausted → needs Xcode CLT). The status line
+            // above already tracks preparation; show the concrete reason.
             errorText = app.gitSetupError.flatMap { $0.isEmpty ? nil : $0 }
-                ?? NSLocalizedString("Git 环境尚未就绪，请稍后重试（可在主面板查看原因）。",
-                                     comment: "quick add")
+                ?? NSLocalizedString("Git 环境尚未就绪。", comment: "quick add")
             return
         }
         busy = true

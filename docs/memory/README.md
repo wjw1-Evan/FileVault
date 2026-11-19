@@ -25,7 +25,7 @@ DSH 等智能体每次会话都从零开始，上下文还会被自动压缩；�
 
 ### 坑
 
-见 [gotchas.md](gotchas.md)（云盘占位符、特殊文件名、.git 丢失、远端大文件上限、双实例互斥、git pathspec 字面化与 check-ignore 限制、忽略文件覆盖、JSON 转义绕过脱敏、大小写变体绕过护栏、askpass=echo 假凭证）。
+见 [gotchas.md](gotchas.md)（云盘占位符、特殊文件名、.git 丢失、远端大文件上限、双实例互斥、git pathspec 字面化与 check-ignore 限制、忽略文件覆盖、JSON 转义绕过脱敏、大小写变体绕过护栏、askpass=echo 假凭证、render 截图缺权限时静默空白）。
 
 ## 一条记忆的格式
 

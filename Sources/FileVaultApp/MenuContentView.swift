@@ -1,4 +1,5 @@
 import SwiftUI
+import CoreTransferable
 import FileVaultCore
 
 /// Short labels for the menu bar (v3.1.5, still used for accessibility text).
@@ -38,6 +39,7 @@ enum MenuLabels {
 struct MenuContentView: View {
     @EnvironmentObject var app: AppState
     @Environment(\.openWindow) private var openWindow
+    @State private var dropHover = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -65,10 +67,6 @@ struct MenuContentView: View {
                     .lineLimit(1)
             }
             Spacer(minLength: 6)
-            MenuIconButton(symbol: "rectangle.on.rectangle", help: "打开主面板（⇧⌘D）",
-                           key: "d") {
-                app.open("dashboard")
-            }
         }
     }
 
@@ -115,13 +113,22 @@ struct MenuContentView: View {
 
     @ViewBuilder
     private var foldersCard: some View {
+        Group {
         if app.roots.isEmpty {
             FVMenuCard {
-                Text("尚未添加文件夹")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 9)
+                // v4.2.30: the empty card was a dead label next to a status
+                // line claiming "0 个文件夹 · 正常" — it is now the action
+                // itself, plus the drop target the hint promises.
+                MenuActionRow(symbol: "plus.circle",
+                              title: "添加第一个文件夹…") {
+                    app.quickAddRequested = true
+                    app.open("dashboard")
+                }
+                Text("或把文件夹拖到这里")
+                    .font(.system(size: 9.5))
+                    .foregroundStyle(.tertiary)
+                    .padding(.horizontal, 8)
+                    .padding(.bottom, 5)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
         } else {
@@ -156,6 +163,34 @@ struct MenuContentView: View {
                 )
             }
         }
+        }
+        // v4.2.30: drag a folder onto the panel → the add sheet opens with
+        // the path pre-filled. README's 「把文件夹拖进来」becomes literal.
+        .dropDestination(for: URL.self) { urls, _ in
+            handleDrop(urls)
+        } isTargeted: { hovering in
+            dropHover = hovering
+        }
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .strokeBorder(dropHover ? Color.accentColor.opacity(0.7) : Color.clear,
+                              lineWidth: 1.5)
+                .padding(-3)
+        )
+    }
+
+    /// A dropped folder pre-fills the quick-add sheet. Already-protected
+    /// folders (and files, multi-selection) bounce back (v4.2.30).
+    private func handleDrop(_ urls: [URL]) -> Bool {
+        guard let url = urls.first, urls.count == 1 else { return false }
+        var isDir: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir),
+              isDir.boolValue else { return false }
+        guard !app.roots.contains(where: { $0.path == url.path }) else { return false }
+        app.quickAddPrefill = url.path
+        app.quickAddRequested = true
+        app.open("dashboard")
+        return true
     }
 
     private var rootsListHeight: CGFloat {
@@ -169,6 +204,13 @@ struct MenuContentView: View {
     private var actionsCard: some View {
         FVMenuCard {
             VStack(spacing: 2) {
+                // v4.2.30: the dashboard was an icon-only header button
+                // ("zero discoverability" — the code comment said so itself);
+                // it is now a labelled row and the header keeps no duplicate.
+                MenuActionRow(symbol: "rectangle.on.rectangle",
+                              title: "主面板…",
+                              key: "d", modifiers: [.command, .shift],
+                              hint: "⇧⌘D") { app.open("dashboard") }
                 // README promises 添加入口在「首启、菜单栏、主面板」三处 (v4.2.27
                 // 设计轮) — the menu keeps a permanent add row.
                 MenuActionRow(symbol: "plus.circle",
@@ -341,43 +383,6 @@ struct MenuActionRow: View {
         .buttonStyle(.plain)
         .modifier(OptionalShortcut(key: key, modifiers: modifiers))
         .onHover { hovering = $0 }
-    }
-}
-
-/// Small borderless icon button used in the panel header.
-struct MenuIconButton: View {
-    let symbol: String
-    let help: LocalizedStringKey
-    /// Optional keyboard shortcut: the dashboard entry is icon-only in the
-    /// menu (zero discoverability), and README documents ⇧⌘D — wire it here so
-    /// the promise is real (v4.2.27 design round).
-    let key: KeyEquivalent?
-    let action: () -> Void
-    @State private var hovering = false
-
-    init(symbol: String, help: LocalizedStringKey,
-         key: KeyEquivalent? = nil, action: @escaping () -> Void) {
-        self.symbol = symbol
-        self.help = help
-        self.key = key
-        self.action = action
-    }
-
-    var body: some View {
-        Button(action: action) {
-            Image(systemName: symbol)
-                .font(.system(size: 11, weight: .medium))
-                .foregroundStyle(.secondary)
-                .frame(width: 22, height: 22)
-                .background(
-                    RoundedRectangle(cornerRadius: 6, style: .continuous)
-                        .fill(Color.primary.opacity(hovering ? 0.08 : 0.0))
-                )
-        }
-        .buttonStyle(.plain)
-        .modifier(OptionalShortcut(key: key, modifiers: [.command, .shift]))
-        .onHover { hovering = $0 }
-        .help(help)
     }
 }
 

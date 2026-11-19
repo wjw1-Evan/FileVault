@@ -9,6 +9,10 @@ import FileVaultCore
 /// both views stay mounted so switching tabs keeps the selected folder/version.
 struct RecordsWindow: View {
     @EnvironmentObject var app: AppState
+    /// Cross-tab handoff (v4.2.30 audit round): the folder the recovery tab
+    /// asks the timeline to open. Owned here so both tabs stay plain views;
+    /// the tab switch itself still goes through app.recordsTab.
+    @StateObject private var handoff = RecordsHandoff()
 
     var body: some View {
         VStack(spacing: 0) {
@@ -29,11 +33,11 @@ struct RecordsWindow: View {
             FVHairline(leading: 0)
 
             ZStack {
-                RecoveryView()
+                RecoveryView(handoff: handoff)
                     .opacity(app.recordsTab == .recover ? 1 : 0)
                     .allowsHitTesting(app.recordsTab == .recover)
                     .accessibilityHidden(app.recordsTab != .recover)
-                HistoryView()
+                HistoryView(handoff: handoff)
                     .opacity(app.recordsTab == .history ? 1 : 0)
                     .allowsHitTesting(app.recordsTab == .history)
                     .accessibilityHidden(app.recordsTab != .history)
@@ -65,4 +69,13 @@ enum RecordsTab: String, CaseIterable, Identifiable {
         case .history: return "clock.arrow.circlepath"
         }
     }
+}
+
+/// Folder the recovery tab asked the history tab to show ("去历史时间线按提交
+/// 查找"). Consumed once when the history tab activates; later switches keep
+/// whatever the user picks there, matching the mounted-both-tabs behavior of
+/// RecordsWindow (v4.2.30 audit round).
+@MainActor
+final class RecordsHandoff: ObservableObject {
+    @Published var requestedHistoryRoot: String?
 }

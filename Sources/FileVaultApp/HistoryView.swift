@@ -1138,7 +1138,14 @@ struct HistoryView: View {
     @EnvironmentObject var app: AppState
     @Environment(\.openWindow) private var openWindow
     @StateObject private var model = HistoryModel()
+    /// Set by RecordsWindow: hands over the folder the recovery tab was
+    /// showing ("去历史时间线按提交查找"). Consumed once on activation.
+    var handoff: RecordsHandoff? = nil
     @State private var confirmRollback = false
+    /// File awaiting the inline restore confirmation (v4.2.30 audit round:
+    /// one-click 「恢复」 used to overwrite the current file with no chance
+    /// to back out; 「找回」 for deleted files stays one-click).
+    @State private var pendingFileRestore: String?
     @State private var showFileTimeline = false
     @State private var showCompare = false
     @State private var showRecovery = false
@@ -1161,6 +1168,11 @@ struct HistoryView: View {
     private var directoryRestoreBinding: Binding<Bool> {
         Binding(get: { model.pendingDirectoryRestore != nil },
                 set: { if !$0 { model.pendingDirectoryRestore = nil } })
+    }
+
+    private var fileRestoreBinding: Binding<Bool> {
+        Binding(get: { pendingFileRestore != nil },
+                set: { if !$0 { pendingFileRestore = nil } })
     }
 
     private var tagDeletionBinding: Binding<Bool> {
@@ -1194,6 +1206,15 @@ struct HistoryView: View {
             }
             model.setActive(true)
             model.bind(app)
+            // Cross-tab handoff from the recovery tab: show the folder the
+            // user was looking at, then keep hands off — later switches keep
+            // whatever is picked here (v4.2.30 audit round).
+            if let requested = handoff?.requestedHistoryRoot {
+                handoff?.requestedHistoryRoot = nil
+                if model.roots.contains(requested) {
+                    model.rootChanged(requested)
+                }
+            }
             model.refreshOnActivation()
             // Fallback poll: catches commits made outside FileVault (terminal,
             // a fetch/pull, another tool) which fire no app event. The HEAD
@@ -1222,13 +1243,30 @@ struct HistoryView: View {
             }
             Button("取消", role: .cancel) {}
         } message: {
-            Text("文件夹中受版本管理的内容会回到这个版本，其后的提交从当前分支移除。被忽略的文件、大文件和嵌套仓库保持原样。未提交的改动会先自动保存，回滚前的状态备份到隐藏 ref（refs/filevault/backup，可用 git 找回），不会永久丢失。")
+            // Lead with the actual target (subject + date + short hash) so the
+            // confirmation is actionable, and say where the pre-rollback backup
+            // can be found in plain words instead of a hidden-ref pointer
+            // (v4.2.30 audit round).
+            if let commit = selectedCommit {
+                Text(String(format: NSLocalizedString("将把整个文件夹回滚到「%@」（%@，%@）。",
+                                                       comment: "rollback confirm"),
+                            commit.subject, FVTime.absolute(commit.date), commit.shortHash)
+                     + "\n\n"
+                     + NSLocalizedString("这个版本之后的提交会从当前分支移除；被忽略的文件、大文件和嵌套仓库保持原样。未提交的改动会先自动保存；回滚前的样子已自动备份，之后可在「找回被回滚的版本…」里找回，不会永久丢失。",
+                                        comment: "rollback confirm"))
+            }
         }
         .confirmationDialog("恢复文件夹？", isPresented: directoryRestoreBinding, titleVisibility: .visible) {
             Button("恢复文件夹", role: .destructive) { model.confirmDirectoryRestore() }
             Button("取消", role: .cancel) { model.pendingDirectoryRestore = nil }
         } message: {
-            Text("选中的文件夹会回到这个版本：该版本之后新增的文件会被删除，被删的文件会恢复；其他文件夹不受影响。未提交的改动会先自动保存。")
+            // Name the folder being restored instead of "选中的文件夹"
+            // (v4.2.30 audit round).
+            if let dir = model.pendingDirectoryRestore {
+                Text(String(format: NSLocalizedString("将把「%@」这个文件夹恢复到选中版本：该版本之后新增的文件会被删除，被删的文件会恢复；其他文件夹不受影响。未提交的改动会先自动保存。",
+                                                       comment: "history directory restore"),
+                            dir))
+            }
         }
         .confirmationDialog("删除命名版本？", isPresented: tagDeletionBinding, titleVisibility: .visible) {
             if let tag = model.pendingTagDeletion {
@@ -1240,6 +1278,23 @@ struct HistoryView: View {
             Button("取消", role: .cancel) { model.pendingTagDeletion = nil }
         } message: {
             Text("同名版本标记会被永久移除（提交本身与文件不受影响，可重新命名）。")
+        }
+        .confirmationDialog("恢复确认", isPresented: fileRestoreBinding, titleVisibility: .visible) {
+            Button("恢复此版本") {
+                if let path = pendingFileRestore {
+                    model.restoreFile(path)
+                }
+                pendingFileRestore = nil
+            }
+            Button("取消", role: .cancel) { pendingFileRestore = nil }
+        } message: {
+            if let path = pendingFileRestore, let commit = selectedCommit {
+                Text(String(format: NSLocalizedString("将用 %@ 版本的内容覆盖「%@」。", comment: "recovery confirm"),
+                            commit.shortHash, path)
+                     + "\n\n"
+                     + NSLocalizedString("恢复前会先自动保存当前改动；恢复本身也会记成一个新版本，之后仍然可以再找回来。",
+                                        comment: "recovery confirm"))
+            }
         }
         .alert("命名此版本", isPresented: $showTagPrompt) {
             TextField("版本名（如：答辩前）", text: $tagName)
@@ -1293,7 +1348,7 @@ struct HistoryView: View {
                 Image(systemName: "clock.arrow.circlepath")
                     .font(.system(size: 15, weight: .semibold))
                     .foregroundStyle(.secondary)
-                Text("历史版本")
+                Text("历史时间线")
                     .font(.system(size: 15, weight: .semibold))
             } else {
                 folderMenu
@@ -1444,7 +1499,7 @@ struct HistoryView: View {
             } else if model.commits.isEmpty {
                 FVEmptyState(symbol: "clock.arrow.circlepath",
                              title: "还没有提交历史",
-                             message: "这个文件夹被保护后，每次改动都会自动留下一条记录。")
+                             message: "这个文件夹被保护后，每次改动都会自动留下一条记录。刚添加的文件夹在第一次自动保存后几秒内就会出现在这里；若长时间为空，请到设置确认该文件夹仍在保护列表中。")
                     .padding(.top, 24)
                 Spacer(minLength: 0)
             } else if model.searchMode == .content && model.contentSearching && sections.isEmpty {
@@ -1457,18 +1512,49 @@ struct HistoryView: View {
                 .padding(.top, 20)
                 Spacer(minLength: 0)
             } else if model.searchMode == .content && model.contentSearchError && sections.isEmpty {
-                FVEmptyState(symbol: "exclamationmark.triangle",
-                             title: "内容搜索失败",
-                             message: "仓库暂时读不到（可能正忙或磁盘不可用），稍后重试。")
-                    .padding(.top, 24)
+                VStack(spacing: 10) {
+                    FVEmptyState(symbol: "exclamationmark.triangle",
+                                 title: "内容搜索失败",
+                                 message: "仓库暂时读不到（可能正忙或磁盘不可用），稍后重试。")
+                        .padding(.top, 24)
+                    // Same retry pattern as the commit-history failure above.
+                    Button("重试") {
+                        model.searchTextChanged()
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                }
                 Spacer(minLength: 0)
             } else if sections.isEmpty {
-                FVEmptyState(symbol: "magnifyingglass",
-                             title: model.searchMode == .content ? "没有内容匹配的历史版本" : "没有匹配的提交",
-                             message: model.searchMode == .content
-                                 ? "内容搜索只匹配文件内容的变化；换个关键词试试。"
-                                 : "换个关键词试试，或者清空搜索框。")
-                    .padding(.top, 24)
+                VStack(spacing: 10) {
+                    FVEmptyState(symbol: "magnifyingglass",
+                                 title: model.searchMode == .content ? "没有内容匹配的历史版本" : "没有匹配的提交",
+                                 message: model.searchMode == .content
+                                     ? "内容搜索只匹配文件内容的变化；换个关键词试试。"
+                                     : "换个关键词试试，或者清空搜索框。")
+                        .padding(.top, 24)
+                    // Subject search filters the LOADED window only: when older
+                    // pages exist, offer to keep looking (the keyword stays put)
+                    // instead of implying the commit never existed (v4.2.30
+                    // audit round). Content search already spans the whole
+                    // history, so it gets no button.
+                    if model.searchMode != .content, model.canLoadMore {
+                        Button {
+                            model.loadMoreCommits()
+                        } label: {
+                            HStack(spacing: 6) {
+                                if model.loadingMore {
+                                    ProgressView().controlSize(.mini)
+                                }
+                                Text(model.loadingMore ? "正在加载…" : "在更早的提交里继续搜索")
+                            }
+                            .font(.system(size: 10.5))
+                            .foregroundStyle(Color.accentColor)
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(model.loadingMore)
+                    }
+                }
                 Spacer(minLength: 0)
             } else {
                 ScrollView {
@@ -1692,7 +1778,16 @@ struct HistoryView: View {
                                        selected: file.path == model.selectedFile,
                                        onSelect: { model.selectFile(file.path) },
                                        onOpen: { model.openFile(file.path) },
-                                       onRestore: { model.restoreFile(file.path) })
+                                       // 「找回」 (the commit deleted it) stays one-click;
+                                       // 「恢复」 overwrites the current file, so it
+                                       // confirms first (v4.2.30 audit round).
+                                       onRestore: {
+                                           if file.isDeleted {
+                                               model.restoreFile(file.path)
+                                           } else {
+                                               pendingFileRestore = file.path
+                                           }
+                                       })
                     }
                 }
                 .padding(.horizontal, 8)
@@ -1744,7 +1839,7 @@ struct HistoryView: View {
                                 onToggle: { model.toggleDirectory(row.node.path) },
                                 onSelect: { model.selectFile(row.node.path) },
                                 onOpen: { model.openFile(row.node.path) },
-                                onRestore: { model.restoreFile(row.node.path) },
+                                onRestore: { pendingFileRestore = row.node.path },
                                 onRestoreDirectory: { model.requestDirectoryRestore(row.node.path) })
                     }
                     if model.treeTruncated {
@@ -1790,14 +1885,14 @@ struct HistoryView: View {
                     set: { model.setPreviewMode($0) }
                 )) {
                     Text("内容").tag(PreviewMode.content)
-                    Text("差异").tag(PreviewMode.diff)
+                    Text("与上一版差异").tag(PreviewMode.diff)
                     Text("溯源").tag(PreviewMode.blame)
                 }
                 .pickerStyle(.segmented)
                 .labelsHidden()
                 .controlSize(.mini)
-                .frame(width: 152)
-                .help("切换文件内容、逐行差异与逐行来源")
+                .frame(width: 200)
+                .help("切换文件内容、与上一版的差异与逐行来源")
                 Spacer(minLength: 8)
                 if model.selectedFile != nil {
                     Button {
@@ -1912,7 +2007,10 @@ struct HistoryView: View {
             case .lfsPointer(let size):
                 previewNote(symbol: "externaldrive.badge.icloud",
                             title: "这个文件由 Git LFS 管理",
-                            detail: LocalizedStringKey(String(format: NSLocalizedString("%@ · 应用内只看到指针；可在终端用 git lfs pull 取回实际内容。",
+                            // Plain words instead of "指针" jargon: the real content
+                            // lives remotely; only its location is recorded here
+                            // (v4.2.30 audit round).
+                            detail: LocalizedStringKey(String(format: NSLocalizedString("实际内容存在远程存储里，这里只记录了它的位置（指针文件约 %@）；要取回真实内容，可在终端运行 git lfs pull。",
                                                                                 comment: "history preview"),
                                                               Self.sizeText(size))))
             case .diff(let diff):
@@ -2417,12 +2515,22 @@ private struct TreeRow: View {
             }
             Spacer(minLength: 4)
             if node.isDirectory, hovering {
+                // A text label, not a bare hover icon (v4.2.30 audit round): an
+                // unlabeled arrow reads as "open" at first glance. Matches the
+                // file-row 「恢复」 pill style.
                 Button(action: onRestoreDirectory) {
-                    Image(systemName: "arrow.uturn.backward")
-                        .font(.system(size: 9, weight: .semibold))
-                        .foregroundStyle(Color.accentColor)
+                    HStack(spacing: 3) {
+                        Image(systemName: "arrow.uturn.backward")
+                            .font(.system(size: 9, weight: .semibold))
+                        Text("恢复")
+                            .font(.system(size: 10, weight: .medium))
+                    }
+                    .foregroundStyle(Color.accentColor)
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 2)
+                    .background(Capsule().fill(Color.accentColor.opacity(0.12)))
                 }
-                .buttonStyle(.borderless)
+                .buttonStyle(.plain)
                 .help("恢复此文件夹到该版本")
             }
             if !node.isDirectory, let stat {

@@ -1,4 +1,5 @@
 import SwiftUI
+import CoreTransferable
 import FileVaultCore
 
 struct ActivityItem: Identifiable, Equatable {
@@ -187,8 +188,9 @@ final class DashboardModel: ObservableObject {
             overall = .setup
             if let reason = app.gitSetupError, !reason.isEmpty {
                 // Show the concrete reason (e.g. "所有 git 下载地址都失败了") instead of a dead end.
-                let firstLine = reason.split(separator: "\n").first.map(String.init) ?? reason
-                stateLine = firstLine.count > 40 ? String(firstLine.prefix(40)) + "…" : firstLine
+                // v4.2.30: no more mid-sentence truncation at 40 chars — the
+                // header wraps visually and tells the whole story.
+                stateLine = reason.split(separator: "\n").first.map(String.init) ?? reason
             } else {
                 stateLine = NSLocalizedString("Git 环境未就绪", comment: "dashboard state")
             }
@@ -197,8 +199,10 @@ final class DashboardModel: ObservableObject {
             // The pill already says 全部正常 — do not repeat it in the subtitle.
             stateLine = ""
         }
-        let units = String(format: NSLocalizedString("%d 个文件夹受守护", comment: "dashboard state"),
-                           rootCount)
+        let units = rootCount == 0
+            ? NSLocalizedString("尚未保护任何文件夹", comment: "dashboard state")
+            : String(format: NSLocalizedString("%d 个文件夹受守护", comment: "dashboard state"),
+                     rootCount)
         stateLine = stateLine.isEmpty
             ? units
             : String(format: NSLocalizedString("%@ · %@", comment: "dashboard state"), units, stateLine)
@@ -215,6 +219,7 @@ struct DashboardView: View {
     @Environment(\.openWindow) private var openWindow
     @StateObject private var model = DashboardModel()
     @State private var quickAddPresented = false
+    @State private var dropHover = false
 
     var body: some View {
         // v3.4.1: no ScrollView — the window is sized to the content, so the
@@ -235,8 +240,8 @@ struct DashboardView: View {
         .fvCanvas()
         .task { model.bind(app) }
         .onDisappear { model.unbind() }
-        .sheet(isPresented: $quickAddPresented) {
-            QuickAddSheet {
+        .sheet(isPresented: $quickAddPresented, onDismiss: { app.quickAddPrefill = nil }) {
+            QuickAddSheet(initialPath: app.quickAddPrefill) {
                 Task { await model.refresh() }
             }
             .environmentObject(app)
@@ -309,6 +314,15 @@ struct DashboardView: View {
     /// design round).
     @ViewBuilder
     private var syncTile: some View {
+        // v4.2.30: with zero folders the tile claimed "0 · 已同步 · 云端已最新"
+        // — a fresh install has nothing synced to anywhere.
+        if model.rootsEmpty {
+            FVStatTile(symbol: "internaldrive",
+                       tint: .secondary,
+                       value: "—",
+                       label: "暂无同步",
+                       caption: NSLocalizedString("添加文件夹并绑定远程后自动上云", comment: "dashboard tile"))
+        } else {
         let hasFailure = model.failedCount > 0
         let hasPending = model.pendingCount > 0
         let localOnly = model.noRemoteCount > 0
@@ -332,6 +346,7 @@ struct DashboardView: View {
                              ? NSLocalizedString("版本只保存在本机，绑定远程后自动上云", comment: "dashboard tile")
                              : NSLocalizedString("云端已最新", comment: "dashboard tile")))
         )
+        }
     }
 
     // MARK: Activity
@@ -421,11 +436,31 @@ struct DashboardView: View {
             FVSectionHeader(title: "受保护的文件夹")
             FVHairline(leading: 0)
             if model.rootsEmpty {
-                FVEmptyState(symbol: "folder.badge.plus",
-                             title: "还没有受保护的文件夹",
-                             message: "添加一个文件夹，里面的所有文件都会自动拥有版本历史。",
-                             actionTitle: "添加文件夹",
-                             action: { quickAddPresented = true })
+                VStack(spacing: 8) {
+                    FVEmptyState(symbol: "folder.badge.plus",
+                                 title: "还没有受保护的文件夹",
+                                 message: "把一个文件夹拖到这里（或点下方按钮），所有文件都会自动拥有版本历史。",
+                                 actionTitle: "添加文件夹",
+                                 action: { quickAddPresented = true })
+                    // v4.2.30: first-run honesty — while git is still being
+                    // prepared (or failed to install), the empty card says so
+                    // instead of looking broken.
+                    if !app.envReady {
+                        HStack(spacing: 5) {
+                            Image(systemName: app.isPreparingGit
+                                  ? "arrow.down.circle" : "exclamationmark.triangle")
+                                .font(.system(size: 10))
+                                .foregroundStyle(.tertiary)
+                            Text(app.isPreparingGit
+                                 ? app.statusLine
+                                 : (app.gitSetupError.flatMap { $0.isEmpty ? nil : $0 }
+                                    ?? NSLocalizedString("Git 环境未就绪", comment: "dashboard state")))
+                                .font(.system(size: 10))
+                                .foregroundStyle(.tertiary)
+                        }
+                        .padding(.bottom, 6)
+                    }
+                }
             } else {
                 VStack(spacing: 0) {
                     // Bounded list: the window fits its content, so cap the rows
@@ -474,6 +509,31 @@ struct DashboardView: View {
         }
         .frame(maxHeight: .infinity, alignment: .top)
         .fvCard()
+        // v4.2.30: the roots card is a drop target (empty or not).
+        .dropDestination(for: URL.self) { urls, _ in
+            handleDrop(urls)
+        } isTargeted: { hovering in
+            dropHover = hovering
+        }
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .strokeBorder(dropHover ? Color.accentColor.opacity(0.7) : Color.clear,
+                              lineWidth: 1.5)
+                .padding(-3)
+        )
+    }
+
+    /// A dropped folder pre-fills the add sheet (same flow as a menu-panel
+    /// drop). Already-protected folders and files bounce back (v4.2.30).
+    private func handleDrop(_ urls: [URL]) -> Bool {
+        guard let url = urls.first, urls.count == 1 else { return false }
+        var isDir: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir),
+              isDir.boolValue else { return false }
+        guard !model.rootRows.contains(where: { $0.path == url.path }) else { return false }
+        app.quickAddPrefill = url.path
+        quickAddPresented = true
+        return true
     }
 
     private func rootRow(_ row: RootRow) -> some View {
