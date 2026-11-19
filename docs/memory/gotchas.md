@@ -88,6 +88,19 @@
 - 证据：`RepoManager.resetRepo` / `forcePull` / `mergeSync` 三处备份 ref；`AuditV428Tests.testResetRepoBackupRefsAreUniqueWithinTheSameSecond`（断言 `<yyyyMMdd-HHmmss>-<4 hex>` 且不含 `(`）。
 - 规避：生成 ref / 路径后加断言或测试钉住格式；review 时看一眼 ref 名里有没有源码文本片段。
 
+### 假 git 脚本匹配参数必须全量扫描，不能看 `$1`（2026-11-19）
+
+- 结论：给 GitRunner 写假 git 夹具时，判断参数要用 `for a in "$@"` 全量扫描——GitRunner 对所有调用预置 `--literal-pathspecs -c …`，真正的子命令不在 `$1`，按 `$1` 匹配的假脚本永远打不中（先红过一轮才定位到）。
+- 原因：GitRunner.swift 的参数前置序列把用户子命令推到了第 N 个位置。
+- 证据：Tests/FileVaultTests/ConnectivityProbeContractTests、CredentialStoreProbeTests（全量扫描写法）；slow-git 包装器同款。
+- 影响：新增任何进程注入类测试（Connectivity/CredentialStore/GhRepoCreator 模式）先抄这两个文件的参数扫描姿势。
+
+### JS 生成 Swift 源码必须 String.raw 标签模板（2026-11-19）
+
+- 结论：用 JS 模板字面量生成 Swift 测试源码时必须 `String.raw` 标签，否则 `\n`、`\(` 被 JS 转义层吞掉，落盘的 Swift 语义悄悄变化。
+- 证据：complete-tests 轮两个测试文件先红一次后修正；落盘内容需逐一复核。
+- 影响：agent 写测试文件时的高频坑；写完必读落盘原文而不是内存里的字符串。
+
 ### --render-* 截图在无屏幕录制权限的 shell 下静默全空白（2026-11-19）
 
 - 结论：CGWindowListCreateImage 没有 TCC 屏幕录制权限时返回**非 nil 的空白图**，render 流程照样打印 "rendered: path"——不能凭退出码判断截图有效。
