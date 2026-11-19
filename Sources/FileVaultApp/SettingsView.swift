@@ -382,7 +382,15 @@ final class SettingsModel: ObservableObject {
 
     /// Build a privacy-conscious diagnostics zip users can attach to support mail.
     func exportDiagnostics() {
-        guard let svc = service, let app else { return }
+        guard let svc = service, let app else {
+            // v4.2.31: settings can be open before the service exists (login
+            // launch, --open-ui); the click used to be a silent no-op. The
+            // support line now says why it did nothing.
+            supportMessage = NSLocalizedString("Git 环境尚未就绪，请稍后重试（可在主面板查看原因）。",
+                                                comment: "settings status")
+            supportMessageIsError = true
+            return
+        }
         let panel = NSSavePanel()
         panel.nameFieldStringValue = String(format: NSLocalizedString("FileVault-诊断-%@.zip", comment: "diagnostics file name"), Self.dayStamp())
         panel.allowedContentTypes = [.zip]
@@ -415,14 +423,25 @@ final class SettingsModel: ObservableObject {
         let os = ProcessInfo.processInfo.operatingSystemVersion
         var osText = "macOS \(os.majorVersion).\(os.minorVersion)"
         if os.patchVersion > 0 { osText += ".\(os.patchVersion)" }
+        if let url = Self.supportMailURL(appVersion: app?.version ?? "0", osText: osText) {
+            NSWorkspace.shared.open(url)
+        }
+    }
+
+    /// Pure mailto builder so the contract is pinnable in tests (v4.2.31):
+    /// the subject carries the app + OS versions, and a URLComponents failure
+    /// falls back to a bare address instead of making the button a silent
+    /// no-op.
+    nonisolated static func supportMailURL(appVersion: String, osText: String) -> URL? {
         let subject = String(format: NSLocalizedString("FileVault 反馈（v%@ · %@）",
                                                         comment: "support mail subject"),
-                             app?.version ?? "0", osText)
+                             appVersion, osText)
         var components = URLComponents()
         components.scheme = "mailto"
         components.path = AppBrand.supportEmail
         components.queryItems = [URLQueryItem(name: "subject", value: subject)]
-        if let url = components.url { NSWorkspace.shared.open(url) }
+        if let url = components.url { return url }
+        return URL(string: "mailto:" + AppBrand.supportEmail)
     }
 
     /// v4.2.30 audit item 4: the card counts the excluded large files, this
@@ -632,16 +651,12 @@ final class SettingsModel: ObservableObject {
         case blocked(String)
     }
 
-    /// Lightweight pre-save validation (v4.2.30 audit item 9): an address that
-    /// is neither an https:// / git@ / file:// URL nor an absolute local path
-    /// ("github.com/user/repo") would configure a remote git cannot talk to;
-    /// block it and say what a complete address looks like.
-    static func looksIncompleteRemote(_ raw: String) -> Bool {
-        let url = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !url.isEmpty else { return false }
-        if url.hasPrefix("https://") || url.hasPrefix("git@") || url.hasPrefix("file://") { return false }
-        if url.hasPrefix("/") { return false }
-        return true
+    /// Lightweight pre-save validation (v4.2.30 audit item 9; v4.2.31 moved
+    /// the rule to Core and relaxed it — ssh://, http:// and scp-style
+    /// addresses are real git remotes and the first cut silently rejected
+    /// them). Still blocks the paste mistake it was made for: a bare host.
+    nonisolated static func looksIncompleteRemote(_ raw: String) -> Bool {
+        GitRemoteAddress.looksIncomplete(raw)
     }
 
     /// Shared save path: persist auth mode, configure + test + inline feedback (FR-06).
@@ -742,7 +757,7 @@ final class SettingsModel: ObservableObject {
                 // it again without wiping the user's typing (v4.2.26 M8/P3).
                 self.editedPaths.remove(id)
                 self.editedAuthModes.remove(id)
-                    self.editedAuthUsers.remove(id)
+                self.editedAuthUsers.remove(id)
                 // Invalidate fills that started before this save: their stale
                 // pre-save values must not land after the marks were cleared
                 // (v4.2.28). fillRepoDetails below starts a fresh pass.
@@ -811,6 +826,15 @@ final class SettingsModel: ObservableObject {
         // only some entries; these were missed) (v4.2.27).
         guard svc.isReady else {
             setMessage(id, NSLocalizedString("Git 环境尚未就绪，请稍后重试（可在主面板查看原因）。", comment: "settings status"))
+            return
+        }
+        // v4.2.31: a bare-host paste mistake is refused here too. 保存 blocks
+        // it, but 测试 used to run `git ls-remote` on the fragment anyway —
+        // git reads it as a LOCAL PATH, and the classified "无法访问" error
+        // misled more than it explained. Synchronous: no busy lock is taken.
+        if let idx = indexOf(id), Self.looksIncompleteRemote(rootCards[idx].repo.urlText) {
+            let msg = NSLocalizedString("远程地址看起来不完整（应以 https:// 或 git@ 开头）", comment: "settings status")
+            setMessage(id, msg, error: true)
             return
         }
         // v4.2.30 audit item 1: the button tests what is IN THE FIELD —
@@ -967,7 +991,14 @@ final class SettingsModel: ObservableObject {
     }
 
     func openGitignoreEditor(_ id: String) {
-        guard let svc = service, svc.isReady else { return }
+        guard let svc = service, svc.isReady else {
+            // v4.2.31: during the git-setup window the card still renders as
+            // available (health 「正在加载…」) and the 更多 menu is clickable;
+            // a silent no-op read as a broken button.
+            setMessage(id, NSLocalizedString("Git 环境尚未就绪，请稍后重试（可在主面板查看原因）。",
+                                            comment: "settings status"))
+            return
+        }
         let name = (id as NSString).lastPathComponent
         do {
             let draft = try svc.repoManager.readGitignore(path: id)
@@ -1008,7 +1039,10 @@ final class SettingsModel: ObservableObject {
     /// resets the dialog state and prechecks gh.
     func openCreateRepo(_ id: String) {
         createRepoTarget = id
-        createRepoName = ""
+        // v4.2.31: prefill with the folder name, same as the quick-add sheet's
+        // 「仓库名（默认用文件夹名）」— an invalid folder name (CJK, spaces)
+        // keeps the button disabled with the naming hint explaining why.
+        createRepoName = (id as NSString).lastPathComponent
         createRepoError = ""
         createRepoBusy = false
         // Precheck gh NOW: a missing CLI used to surface only after the user
@@ -1020,6 +1054,14 @@ final class SettingsModel: ObservableObject {
         let clean = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !clean.isEmpty, CreateRepoSheet.isValidRepoName(clean) else { return }
         guard !createRepoBusy else { return }
+        // v4.2.31: a save already in flight for this folder would leave the
+        // JUST-CREATED repo unbound (saveRepo blocks on the busy lock, and
+        // retrying then hits gh's duplicate-name error). Refuse before gh
+        // creates anything.
+        if busyRepos.contains(target) {
+            createRepoError = NSLocalizedString("正在处理上一个操作，请稍候…", comment: "settings status")
+            return
+        }
         createRepoBusy = true
         createRepoError = ""
         setMessage(target, String(format: NSLocalizedString("正在创建仓库 %@…", comment: "settings status"), clean))
@@ -1029,9 +1071,7 @@ final class SettingsModel: ObservableObject {
                 let url = try await GhRepoCreator().createPrivate(name: clean)
                 await MainActor.run {
                     self.createRepoBusy = false
-                    if let idx = self.indexOf(target) {
-                        self.rootCards[idx].repo.urlText = url
-                    }
+                    self.adoptCreatedRepoURL(url, target: target)
                     // v4.2.30 audit item 6c: the dialog stays open until the
                     // bind actually persisted; a failure shows inside it
                     // instead of flashing by and landing in the card's small
@@ -1054,6 +1094,17 @@ final class SettingsModel: ObservableObject {
                                                    error.localizedDescription), error: true)
                 }
             }
+        }
+    }
+
+    /// The URL gh just created is the user's NEW remote choice: mark it
+    /// typed (the same contract as `urlBinding`) so a background refill
+    /// cannot snap the field back to the previously stored remote — the
+    /// refill guard only respects `editedPaths` (v4.2.31).
+    func adoptCreatedRepoURL(_ url: String, target id: String) {
+        if let idx = indexOf(id) {
+            rootCards[idx].repo.urlText = url
+            editedPaths.insert(id)
         }
     }
 
@@ -1145,7 +1196,10 @@ struct SettingsView: View {
         .alert(item: $model.connectionAlert) { alert in
             // v4.2.30 audit item 2: the classified, readable reason is the
             // primary line; the condensed git output follows as the detail.
-            Alert(title: Text(alert.ok ? "连接成功" : "连接失败"),
+            // v4.2.31: a String ternary picks the verbatim Text initialiser,
+            // which kept the title Chinese in English builds even though both
+            // keys are translated. Per-branch literal Texts localize.
+            Alert(title: alert.ok ? Text("连接成功") : Text("连接失败"),
                   message: Text(alert.ok || alert.summary.isEmpty || alert.summary == alert.detail
                                 ? alert.detail
                                 : alert.summary + "\n" + alert.detail),
@@ -1445,7 +1499,9 @@ struct SettingsView: View {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .help(isCollapsed ? "展开文件夹" : "折叠文件夹")
+                // v4.2.31: the bare-literal ternary picked the verbatim
+                // overload; the fold tooltip stayed Chinese in English.
+                .help(isCollapsed ? LocalizedStringKey("展开文件夹") : LocalizedStringKey("折叠文件夹"))
                 Menu {
                     Button("在 Finder 中打开") { app.openPath(card.path) }
                     // Pausing an unavailable folder is meaningless: there is no
@@ -1453,12 +1509,17 @@ struct SettingsView: View {
                     if card.repo.available {
                         // Pause = edits generate no versions while paused: confirm
                         // first. Resume is safe and stays one-click (v4.2.27).
-                        Button(card.paused ? "恢复自动提交" : "暂停自动提交") {
+                        // v4.2.31: the String ternary picked the verbatim Button
+                        // initialiser (Chinese row in English builds) — the two
+                        // labels are now literal branches, like MenuActionRow.
+                        Button {
                             if card.paused {
                                 model.pauseRoot(card, to: false)
                             } else {
                                 pauseTarget = card
                             }
+                        } label: {
+                            if card.paused { Text("恢复自动提交") } else { Text("暂停自动提交") }
                         }
                     }
                     Divider()
@@ -1678,16 +1739,24 @@ struct GitignoreSheet: View {
 
     /// Append `rule` on its own line unless it is already present (a trimmed
     /// comparison so surrounding whitespace never fools the check).
-    private func insertRule(_ rule: String) {
+    ///
+    /// Pure static so the chip behaviour is pinnable in tests (v4.2.31):
+    /// a duplicate that slips through would silently promise protection
+    /// the file does not actually have twice over.
+    static func appendRule(_ rule: String, to draft: String) -> String {
         let existing = draft.components(separatedBy: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
-        guard !existing.contains(rule) else { return }
+        guard !existing.contains(rule) else { return draft }
         if draft.isEmpty {
-            draft = rule
+            return rule
         } else if draft.hasSuffix("\n") {
-            draft += rule
+            return draft + rule
         } else {
-            draft += "\n" + rule
+            return draft + "\n" + rule
         }
+    }
+
+    private func insertRule(_ rule: String) {
+        draft = Self.appendRule(rule, to: draft)
     }
 
     var body: some View {

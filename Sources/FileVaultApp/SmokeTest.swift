@@ -108,7 +108,9 @@ enum SmokeTest {
             }
             // 6. config persistence
             let cfg = service.configStore.load()
-            let rootResolved = try? URL(fileURLWithPath: root).resolvingSymlinksInPath().path
+            // URL(fileURLWithPath:) is infallible and resolvingSymlinksInPath()
+            // never throws — the old try? only silenced a phantom error (v4.2.31).
+            let rootResolved = URL(fileURLWithPath: root).resolvingSymlinksInPath().path
             check("config persisted", cfg.roots.contains { $0.path == rootResolved })
             if !ok { print("[SMOKE][debug] kept for inspection: \(tmp)") } else { try? fm.removeItem(atPath: tmp) }
         } catch {

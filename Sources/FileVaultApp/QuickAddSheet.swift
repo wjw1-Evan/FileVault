@@ -17,6 +17,24 @@ import FileVaultCore
 ///   creation lived in Settings → 更多, which the first-run user never saw.
 /// - Git-not-ready is honest: a running download shows its progress, a
 ///   permanent failure shows its reason. "请稍后重试" for a dead end is gone.
+/// Drag-and-drop validation for the add-folder flow (v4.2.31): the menu
+/// panel and the dashboard roots card share one rule set, and the logic is
+/// a pure function so the regression suite can pin it.
+enum QuickAddDrop {
+    /// The folder a drop should pre-fill the add sheet with, or nil when the
+    /// payload must bounce: not exactly one item, not a directory, or a
+    /// folder that is already protected.
+    static func folderPath(from urls: [URL],
+                           isProtected: (String) -> Bool) -> String? {
+        guard let url = urls.first, urls.count == 1 else { return nil }
+        var isDir: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir),
+              isDir.boolValue else { return nil }
+        guard !isProtected(url.path) else { return nil }
+        return url.path
+    }
+}
+
 struct QuickAddSheet: View {
     @EnvironmentObject var app: AppState
     @Environment(\.dismiss) private var dismiss
@@ -68,7 +86,11 @@ struct QuickAddSheet: View {
                 .truncationMode(.middle)
                 Spacer(minLength: 8)
                 Button("选择…") { chooseFolder() }
+                    // v4.2.31: a mid-add folder switch used to rebind the
+                    // remote onto the newly picked (possibly un-added) folder
+                    // — add() re-reads folderPath across its await points.
                     .controlSize(.small)
+                    .disabled(busy || ghBusy)
             }
             .padding(10)
             .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.04)))
@@ -129,9 +151,16 @@ struct QuickAddSheet: View {
                              ?? NSLocalizedString("Git 环境尚未就绪。", comment: "quick add"))
                             .font(.system(size: 11))
                             .foregroundStyle(.secondary)
-                        Button("查看详情") { app.open("dashboard") }
-                            .controlSize(.small)
-                            .buttonStyle(.link)
+                        // v4.2.31: this sheet is modal OVER the
+                        // dashboard — opening it changes nothing while the
+                        // sheet blocks the view. Dismiss first so the reason
+                        // actually becomes visible.
+                        Button("查看详情") {
+                            dismiss()
+                            app.open("dashboard")
+                        }
+                        .controlSize(.small)
+                        .buttonStyle(.link)
                     }
                 }
             }
@@ -146,7 +175,10 @@ struct QuickAddSheet: View {
             HStack {
                 Spacer()
                 Button("取消") { dismiss() }
-                    .disabled(busy)
+                    // v4.2.31: also blocked while a repo creation is in flight —
+                    // dismissing then would let the continuation call add() on a
+                    // dead sheet and run a second svc.addRoot for the folder.
+                    .disabled(busy || ghBusy)
                 Button { add() } label: {
                     if busy {
                         Text("添加中…")
@@ -157,16 +189,32 @@ struct QuickAddSheet: View {
                     }
                 }
                 .keyboardShortcut(.defaultAction)
-                .disabled(folderPath.isEmpty || busy || !app.envReady)
+                // v4.2.31: ghBusy included — clicking 添加 mid-creation used to
+                // add the folder local-only, then the creation callback ran
+                // add() AGAIN with the freshly bound remote (double add).
+                .disabled(folderPath.isEmpty || busy || ghBusy || !app.envReady)
             }
         }
         .padding(20)
         .frame(width: 500)
+        // v4.2.31: ESC dismisses a sheet even when its buttons are disabled —
+        // that reopened the double-add hole during a repo creation (the
+        // continuation would call add() on a dismissed sheet) and let a
+        // mid-flight add be abandoned visually while it kept running.
+        .interactiveDismissDisabled(busy || ghBusy)
         .onAppear {
             ghUnavailable = GhRepoCreator.defaultGhPath().isEmpty
             if folderPath.isEmpty, let path = initialPath {
                 adoptFolder(at: path)
             }
+        }
+        // v4.2.31: a folder dropped on the menu panel / dashboard while this
+        // sheet is ALREADY open must reach the open sheet. initialPath is
+        // consumed once in onAppear, so the drop used to bounce in (return
+        // true) while nothing visibly happened.
+        .onChange(of: app.quickAddPrefill) { _, newPath in
+            guard let newPath, !newPath.isEmpty, !busy, !ghBusy else { return }
+            adoptFolder(at: newPath)
         }
     }
 
@@ -177,6 +225,9 @@ struct QuickAddSheet: View {
         folderPath = path
         detectedRemote = false
         remoteURL = ""
+        // A stale failure message for the PREVIOUS folder must not sit over
+        // the freshly adopted one (v4.2.31).
+        errorText = nil
         if ghRepoName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             ghRepoName = (path as NSString).lastPathComponent
         }
@@ -233,6 +284,11 @@ struct QuickAddSheet: View {
         // A double click can deliver two actions before SwiftUI repaints the
         // button as disabled; never run two add/configure passes (v4.2.26).
         guard !busy else { return }
+        // v4.2.31: an add racing an in-flight repo creation would save the
+        // folder without the remote first and then save it AGAIN from the
+        // creation callback; the buttons disable during ghBusy, this guard
+        // covers every other entry path (Return key included).
+        guard !ghBusy else { return }
         guard let svc = app.service, svc.isReady else {
             // v4.2.30: "请稍后重试" was a dead end when the failure is permanent
             // (mirror ladder exhausted → needs Xcode CLT). The status line
@@ -241,23 +297,37 @@ struct QuickAddSheet: View {
                 ?? NSLocalizedString("Git 环境尚未就绪。", comment: "quick add")
             return
         }
+        // v4.2.31: same pre-flight check as the settings card — an obvious
+        // paste mistake (bare host) must not become a saved remote that git
+        // can never talk to; the error stays in the sheet to be corrected.
+        if GitRemoteAddress.looksIncomplete(remoteURL) {
+            errorText = NSLocalizedString("远程地址看起来不完整（应以 https:// 或 git@ 开头）",
+                                          comment: "settings status")
+            return
+        }
         busy = true
         errorText = nil
+        // v4.2.31: capture the target ONCE — the sheet stays alive across the
+        // awaits below, and a mid-flight 选择… used to be able to swap
+        // folderPath between the add and the configure/clear steps, binding
+        // the remote to the wrong (possibly un-added) folder.
+        let targetPath = folderPath
+        let targetRemote = remoteURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        let hadDetectedRemote = detectedRemote
         Task { @MainActor in
             do {
-                let trimmed = remoteURL.trimmingCharacters(in: .whitespacesAndNewlines)
                 // v4.2.26: bind the remote in the same step as the first commit.
                 // A brand-new repo then knows the remote's single-file ceiling
                 // before its initial version is written, so an oversized file is
                 // excluded instead of entering history forever. An already
                 // existing remote still goes through configureRemote below to
                 // fetch/merge.
-                try await svc.addRoot(path: folderPath,
-                                      remoteURL: trimmed.isEmpty ? nil : trimmed)
-                if !trimmed.isEmpty {
+                try await svc.addRoot(path: targetPath,
+                                      remoteURL: targetRemote.isEmpty ? nil : targetRemote)
+                if !targetRemote.isEmpty {
                     do {
-                        let change = try await svc.sync.configureRemote(repoPath: folderPath,
-                                                                        url: trimmed, autoPush: true)
+                        let change = try await svc.sync.configureRemote(repoPath: targetPath,
+                                                                        url: targetRemote, autoPush: true)
                         // setRemote reports a failed fetch through the result,
                         // not an error — surfacing it here keeps "看起来添加
                         // 成功但其实连不上" from surfacing only as a push
@@ -279,13 +349,13 @@ struct QuickAddSheet: View {
                             + error.localizedDescription
                         return
                     }
-                } else if detectedRemote {
+                } else if hadDetectedRemote {
                     // The field was PRE-FILLED with the folder's own origin and
                     // the user emptied it: 「留空 = 仅本地」 must hold. Without
                     // this, attachRoot re-enables auto-push for the existing
                     // remote and the folder silently keeps syncing to the
                     // cloud (v4.2.28).
-                    try await svc.sync.clearRemote(repoPath: folderPath)
+                    try await svc.sync.clearRemote(repoPath: targetPath)
                 }
                 await app.refresh()
                 onAdded?()

@@ -285,7 +285,11 @@ extension String {
         var i = 0
         while i < chars.count {
             let c = chars[i]
-            if c == "\\", i + 3 < chars.count,
+            // git only octal-escapes inside a C-quoted run (quote_c_style
+            // wraps the whole escaped path in double quotes). Requiring the
+            // quote state keeps a literal "\\350" in a hand-written commit
+            // subject from being decoded into replacement-character mojibake.
+            if c == "\\", i + 3 < chars.count, inQuotes,
                let b0 = chars[i + 1].octalValue,
                let b1 = chars[i + 2].octalValue,
                let b2 = chars[i + 3].octalValue {

@@ -283,6 +283,19 @@ final class GhRepoCreatorTests: XCTestCase {
         XCTAssertEqual(url, "https://github.com/testowner/my-notes.git")
         try? FileManager.default.removeItem(atPath: dir)
     }
+
+    /// A missing gh binary surfaces the readable installed-once error, not a
+    /// raw spawn failure — also covers the v4.2.31 bridge's throwing path.
+    func testMissingGhSurfacesReadableError() async {
+        do {
+            _ = try await GhRepoCreator().createPrivate(name: "notes", ghPath: "/nonexistent/gh")
+            XCTFail("a missing gh must throw")
+        } catch let e as GitCommandError {
+            XCTAssertTrue(e.stderr.contains("GitHub CLI"), "got: \(e.stderr)")
+        } catch {
+            XCTFail("unexpected error type: \(error)")
+        }
+    }
 }
 
 

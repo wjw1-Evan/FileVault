@@ -315,7 +315,10 @@ final class HistoryModel: ObservableObject {
                 self.contentHits = []
                 self.contentSearching = false
                 self.contentSearchError = true
-                self.statusText = NSLocalizedString("内容搜索失败", comment: "history status") + "：" + error.localizedDescription
+                // v4.2.31: format key — concatenating a full-width colon
+                // leaked Chinese punctuation into the English status line.
+                self.statusText = String(format: NSLocalizedString("内容搜索失败：%@", comment: "history status"),
+                                          error.localizedDescription)
             }
         }
     }
@@ -336,7 +339,8 @@ final class HistoryModel: ObservableObject {
                 // A failed read must not silently wipe the named-version list:
                 // the user would conclude their tags are gone (v4.2.28).
                 guard let self, self.selectedRepo == repo else { return }
-                self.statusText = NSLocalizedString("命名版本读取失败", comment: "history status") + "：" + error.localizedDescription
+                self.statusText = String(format: NSLocalizedString("命名版本读取失败：%@", comment: "history status"),
+                                          error.localizedDescription)
                 return
             }
             guard let self, self.selectedRepo == repo else { return }
@@ -521,6 +525,14 @@ final class HistoryModel: ObservableObject {
         loadGeneration += 1
         let generation = loadGeneration
         let preservedHash = preserveSelection ? selectedCommitHash : nil
+        // v4.2.31: a background refresh must reload the WHOLE loaded window.
+        // The fixed limit:100 collapsed pages the user had paged in — and
+        // when the row being read fell off the new first page, the preserve
+        // guard below failed and yanked the selection back to HEAD (while a
+        // restore confirmation was mid-flight, its target could silently
+        // change from the commit the user acted on). Fresh reloads (root
+        // switch, post-operation) intentionally reset to the first page.
+        let reloadLimit = preserveSelection ? max(100, commits.count) : 100
         // Background refreshes must not flash a loading status over the footer.
         if !preserveSelection {
             statusText = NSLocalizedString("正在加载提交历史…", comment: "history status")
@@ -535,11 +547,12 @@ final class HistoryModel: ObservableObject {
             // when nothing is loaded yet.
             let raw: [CommitInfo]
             do {
-                raw = try await svc.history.commits(repoPath: repo, limit: 100)
+                raw = try await svc.history.commits(repoPath: repo, limit: reloadLimit)
             } catch {
                 guard generation == self.loadGeneration else { return }
-                self.commitsError = NSLocalizedString("提交历史读取失败",
-                                                      comment: "history status") + "：" + error.localizedDescription
+                self.commitsError = String(format: NSLocalizedString("提交历史读取失败：%@",
+                                                                    comment: "history status"),
+                                          error.localizedDescription)
                 self.statusText = self.commitsError ?? ""
                 if self.commits.isEmpty {
                     self.files = []
@@ -570,7 +583,10 @@ final class HistoryModel: ObservableObject {
                 return
             }
             self.commits = list
-            self.canLoadMore = list.count >= 100
+            // Full page ⇒ older commits may exist; a short page means the
+            // window already reaches the beginning (the boundary follows the
+            // actual request size since v4.2.31, not the old fixed 100).
+            self.canLoadMore = list.count >= reloadLimit
             self.refreshTags()
             // New commits do not change the content of the commit the user is
             // reading: keep the selection, its file list and the preview intact.
@@ -616,8 +632,9 @@ final class HistoryModel: ObservableObject {
                 self.statusText = ""
             } catch {
                 guard generation == self.loadGeneration else { return }
-                self.statusText = NSLocalizedString("提交历史读取失败",
-                                                    comment: "history status") + "：" + error.localizedDescription
+                self.statusText = String(format: NSLocalizedString("提交历史读取失败：%@",
+                                                                    comment: "history status"),
+                                          error.localizedDescription)
             }
         }
     }
@@ -686,7 +703,9 @@ final class HistoryModel: ObservableObject {
                 self.selectFile(first.path)
             }
             if let readError {
-                self.statusText = NSLocalizedString("变更文件读取失败", comment: "history status") + "：" + readError
+                self.statusText = String(format: NSLocalizedString("变更文件读取失败：%@",
+                                                                    comment: "history status"),
+                                          readError)
             } else {
                 self.statusText = self.files.isEmpty
                     ? String(format: NSLocalizedString("「%@」没有文件变更", comment: "history status"), commit.subject)
@@ -1575,7 +1594,19 @@ struct HistoryView: View {
                         }
                     }
                     .padding(.bottom, 12)
-                    if model.canLoadMore, model.searchText.isEmpty {
+                    // v4.2.31: subject search filters the LOADED window. The
+                    // empty-result case got a continue button in v4.2.30, but
+                    // PARTIAL matches still dead-ended at the window edge with
+                    // this button hidden — now the list keeps paging while a
+                    // subject search runs (content search spans the whole
+                    // history and gets no pager; with zero subject matches
+                    // the empty state owns the affordance).
+                    let subjectSearchActive = model.searchMode != .content
+                        && !model.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    let contentSearchActive = model.searchMode == .content
+                        && !model.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    if model.canLoadMore, !contentSearchActive,
+                       !(subjectSearchActive && sections.isEmpty) {
                         // Older versions stay reachable in-app instead of
                         // "only the last 100 exist" (v4.2.27 design round).
                         Button {
@@ -1585,7 +1616,8 @@ struct HistoryView: View {
                                 if model.loadingMore {
                                     ProgressView().controlSize(.mini)
                                 }
-                                Text(model.loadingMore ? "正在加载…" : "加载更早的提交")
+                                Text(model.loadingMore ? "正在加载…"
+                                      : (subjectSearchActive ? "在更早的提交里继续搜索" : "加载更早的提交"))
                             }
                             .font(.system(size: 10.5))
                             .foregroundStyle(Color.accentColor)

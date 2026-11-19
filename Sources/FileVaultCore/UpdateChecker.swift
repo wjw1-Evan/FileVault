@@ -175,7 +175,10 @@ public struct HttpReleaseFetcher: ReleaseFetching {
             return n.hasSuffix(".zip") && !n.hasSuffix(".zip.old")
         }
         let ver = Self.version(fromTag: tag)
-        let matched = allZips.filter { (($0["name"] as? String)?.contains(ver) ?? false) }
+        let matched = allZips.filter { entry in
+            guard let n = entry["name"] as? String else { return false }
+            return Self.assetName(n, pinsVersion: ver)
+        }
         let asset: [String: Any]
         if matched.count == 1 {
             asset = matched[0]
@@ -202,6 +205,28 @@ public struct HttpReleaseFetcher: ReleaseFetching {
             assetSize: assetSize,
             assetURL: assetURL
         )
+    }
+
+    /// Whether an asset name carries the release's version as a whole token
+    /// (v4.2.31).
+    ///
+    /// A plain contains() matched prefix neighbours: a release looking for
+    /// "4.2.3" also matched "FileVault-4.2.31.zip" — in the stale-re-upload
+    /// scenario the version guard exists for (v4.2.27), that false match
+    /// turned "pick the right zip" into "ambiguous, refuse to update". The
+    /// version must not be flanked by digits on either side.
+    static func assetName(_ name: String, pinsVersion ver: String) -> Bool {
+        guard !ver.isEmpty else { return false }
+        var searchStart = name.startIndex
+        while let r = name.range(of: ver, range: searchStart..<name.endIndex) {
+            let boundedBefore = r.lowerBound == name.startIndex
+                || !name[name.index(before: r.lowerBound)].isNumber
+            let boundedAfter = r.upperBound == name.endIndex
+                || !name[r.upperBound].isNumber
+            if boundedBefore && boundedAfter { return true }
+            searchStart = r.upperBound
+        }
+        return false
     }
 
     /// "v1.2.3" -> "1.2.3"

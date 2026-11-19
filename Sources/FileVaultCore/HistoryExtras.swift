@@ -168,12 +168,18 @@ public extension HistoryService {
     // MARK: - Diffs
 
     /// Unified diff of one file inside a commit (vs its parent; root-safe).
+    ///
+    /// --diff-merges=first-parent: a plain git show prints the COMBINED
+    /// diff for merge commits, so a file the merge brought in from the other
+    /// branch (listed by changedFiles since v4.2.28) showed an empty "no
+    /// change" diff — the file list and its own diff disagreed.
     func diff(repoPath: String, hash: String, file: String,
               maxBytes: Int = 200_000) async throws -> FileDiff {
         try RepoManager.validateRepoRelativePath(file)
         try Self.requireHash(hash, error: HistoryError.commitNotFound(hash))
         let r = try await repoManager.runner.run(
-            ["show", "--format=", "--no-color", "--no-ext-diff", "--unified=3", hash, "--", file],
+            ["show", "--format=", "--no-color", "--no-ext-diff", "--unified=3",
+             "--diff-merges=first-parent", hash, "--", file],
             cwd: repoPath
         )
         guard r.succeeded else {

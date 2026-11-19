@@ -63,14 +63,10 @@ public final class CommitEngine: @unchecked Sendable {
             print("[FV_DEBUG] t=\(Int(Date().timeIntervalSince1970) % 1000) activity root=\(root) paths=\(paths.count)")
         }
         if !paths.isEmpty {
-            pendingLock.lock()
-            pendingPaths[root, default: []].formUnion(paths)
-            pendingLock.unlock()
+            pendingPathsUnion(root, paths)
             // Fresh edits start a new failure streak (so a persistent error is
             // reported once per burst instead of on every retry).
-            failureLock.lock()
-            failureCounts.removeValue(forKey: root)
-            failureLock.unlock()
+            clearFailureCount(root)
         }
         debouncer.touch(root)
     }
@@ -88,6 +84,57 @@ public final class CommitEngine: @unchecked Sendable {
         watchStartedAt.removeValue(forKey: root)
         pendingPaths.removeValue(forKey: root)
         pendingLock.unlock()
+        // The scheduled auto-commit retry gates on failureCounts, so a
+        // leftover count made FileVault commit a folder the user had just
+        // removed or relocated (both paths pass through here) up to a minute
+        // after the removal (v4.2.31).
+        clearFailureCount(root)
+    }
+
+    // MARK: - Synchronous lock sections (v4.2.31)
+    //
+    // The critical sections below never await, but calling NSLock directly
+    // from an async context is an error under the Swift 6 language mode;
+    // plain synchronous helpers keep the async callers warning-free. Same
+    // shape as AuthMonitor/RepoHealth in this round.
+
+    private func clearFailureCount(_ root: String) {
+        failureLock.lock(); failureCounts.removeValue(forKey: root); failureLock.unlock()
+    }
+
+    private func currentFailureCount(_ root: String) -> Int {
+        failureLock.lock(); defer { failureLock.unlock() }
+        return failureCounts[root] ?? 0
+    }
+
+    private func pendingPathsUnion(_ root: String, _ paths: [String]) {
+        pendingLock.lock()
+        pendingPaths[root, default: []].formUnion(paths)
+        pendingLock.unlock()
+    }
+
+    /// Enter the per-repo busy gate. Returns false (with a re-check mark
+    /// recorded) when a pipeline already owns the repo.
+    private func beginBusy(_ key: String) -> Bool {
+        inFlight.lock()
+        if busyKeys.contains(key) {
+            recheckKeys.insert(key)
+            inFlight.unlock()
+            return false
+        }
+        busyKeys.insert(key)
+        inFlight.unlock()
+        return true
+    }
+
+    /// Leave the busy gate; returns whether a re-check was requested while the
+    /// pipeline ran (the caller re-arms the debouncer then).
+    private func endBusy(_ key: String) -> Bool {
+        inFlight.lock()
+        busyKeys.remove(key)
+        let again = recheckKeys.remove(key) != nil
+        inFlight.unlock()
+        return again
     }
 
     /// Take (and clear) the changed paths reported for a root.
@@ -104,25 +151,12 @@ public final class CommitEngine: @unchecked Sendable {
 
     /// Debounce fired: run the commit pipeline for the repo at key (FR-04).
     public func commit(forKey key: String) {
-        inFlight.lock()
-        if busyKeys.contains(key) {
-            // Self-heal: signal a re-check instead of dropping the signal.
-            recheckKeys.insert(key)
-            inFlight.unlock()
-            return
-        }
-        busyKeys.insert(key)
-        inFlight.unlock()
+        guard beginBusy(key) else { return }
         Task.detached { [weak self] in
             guard let self else { return }
             await self.runCommitPipeline(repoPath: key)
-            self.inFlight.lock()
-            self.busyKeys.remove(key)
-            let again = self.recheckKeys.remove(key) != nil
-            self.inFlight.unlock()
-            if again {
+            if self.endBusy(key) {
                 self.commit(forKey: key)
-                return
             }
         }
     }
@@ -134,20 +168,9 @@ public final class CommitEngine: @unchecked Sendable {
     /// second add/commit concurrently with the debounced one: index.lock errors
     /// and fake "commit failed" notifications (v4.2.26).
     public func commitSerialized(repoPath: String) async {
-        inFlight.lock()
-        if busyKeys.contains(repoPath) {
-            recheckKeys.insert(repoPath)
-            inFlight.unlock()
-            return
-        }
-        busyKeys.insert(repoPath)
-        inFlight.unlock()
+        guard beginBusy(repoPath) else { return }
         await runCommitPipeline(repoPath: repoPath)
-        inFlight.lock()
-        let again = recheckKeys.remove(repoPath) != nil
-        busyKeys.remove(repoPath)
-        inFlight.unlock()
-        if again { commit(forKey: repoPath) }
+        if endBusy(repoPath) { commit(forKey: repoPath) }
     }
 
     /// The commit pipeline: pause check -> status -> large file exclude -> add -> commit.
@@ -214,9 +237,7 @@ public final class CommitEngine: @unchecked Sendable {
             let subjectEntries = visibleEntries.isEmpty ? committable : visibleEntries
             let hash = try await repoManager.commitAll(path: repoPath, message: message,
                                                        knownEntries: subjectEntries)
-            failureLock.lock()
-            failureCounts.removeValue(forKey: repoPath)
-            failureLock.unlock()
+            clearFailureCount(repoPath)
             if !hash.isEmpty {
                 onCommit?(repoPath, hash, Self.describe(entries: entries, excluded: excluded))
             }
@@ -259,10 +280,7 @@ public final class CommitEngine: @unchecked Sendable {
         Task.detached { [weak self] in
             try? await Task.sleep(nanoseconds: UInt64(max(delay, 0.05) * 1_000_000_000))
             guard let self else { return }
-            self.failureLock.lock()
-            let count = self.failureCounts[repoPath] ?? 0
-            self.failureLock.unlock()
-            guard count > 0 else { return }
+            guard self.currentFailureCount(repoPath) > 0 else { return }
             self.commit(forKey: repoPath)
         }
     }

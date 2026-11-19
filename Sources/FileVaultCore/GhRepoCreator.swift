@@ -31,7 +31,22 @@ public struct GhRepoCreator {
 
     /// Run one gh invocation with a bounded wait — an unresponsive network used
     /// to block the creation Task forever (v2.6.6 audit).
+    ///
+    /// The blocking semaphore wait no longer sits on a Swift cooperative-pool
+    /// thread (a Swift 6 error, and a real starvation hazard: the pool is
+    /// tiny and shared with every async job, v4.2.31). The whole run-and-wait
+    /// lives in a synchronous helper on the global dispatch queue, bridged
+    /// back with a continuation.
     private func runGh(_ ghPath: String, _ args: [String], timeout: TimeInterval) async throws -> GitResult {
+        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<GitResult, Error>) in
+            DispatchQueue.global(qos: .userInitiated).async {
+                cont.resume(with: Result { try Self.runGhBlocking(ghPath, args, timeout: timeout) })
+            }
+        }
+    }
+
+    private static func runGhBlocking(_ ghPath: String, _ args: [String],
+                                      timeout: TimeInterval) throws -> GitResult {
         guard !ghPath.isEmpty, ghPath != "/usr/bin/env",
               FileManager.default.isExecutableFile(atPath: ghPath) else {
             throw GitCommandError(command: args.joined(separator: " "), exitCode: -1,

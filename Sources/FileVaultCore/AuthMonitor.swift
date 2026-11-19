@@ -91,26 +91,22 @@ public final class AuthMonitor: @unchecked Sendable {
     ///
     /// v4.0: each managed root is one repo, so there is nothing to enumerate
     /// below it — the probe set is exactly the configured roots.
+    ///
+    /// The NSLock critical sections never await, but calling lock/unlock
+    /// directly from this async function tripped the "unavailable from
+    /// asynchronous contexts" Swift 6 rule; they live in plain synchronous
+    /// helpers instead (v4.2.31).
     public func checkAll(rootsProvider: @escaping @Sendable () -> [String]) async {
         for repo in rootsProvider() {
             let hasRemote = await repos.remoteURL(path: repo) != nil
             guard hasRemote else {
-                lock.lock(); alerted.remove(repo); lock.unlock()
+                forgetAlerted(repo)
                 continue
             }
             await AuthMonitor.ProbeLimiter.shared.enter()
             let conn = await sync.testConnectivity(repoPath: repo)
             await AuthMonitor.ProbeLimiter.shared.exit()
-            lock.lock()
-            let alreadyAlerted = alerted.contains(repo)
-            if !conn.ok {
-                if !alreadyAlerted {
-                    alerted.insert(repo)
-                }
-            } else {
-                alerted.remove(repo)
-            }
-            lock.unlock()
+            let alreadyAlerted = recordProbe(repo, ok: conn.ok)
             if !conn.ok && !alreadyAlerted {
                 let message = AuthClassifier.isAuthRelated(conn.detail)
                     ? String(format: NSLocalizedString("%@（%@）", comment: "auth guidance detail"),
@@ -120,6 +116,29 @@ public final class AuthMonitor: @unchecked Sendable {
                 onAuthIssue(repo, message)
             }
         }
+    }
+
+    /// Synchronous critical section: drop the alerted mark for a repo that
+    /// no longer has a remote (its next bind starts a fresh episode).
+    private func forgetAlerted(_ repo: String) {
+        lock.lock(); alerted.remove(repo); lock.unlock()
+    }
+
+    /// Synchronous critical section: record one probe outcome and return
+    /// whether the repo was already in a notified episode — the dedupe rule
+    /// lives next to the state it guards.
+    private func recordProbe(_ repo: String, ok: Bool) -> Bool {
+        lock.lock()
+        let alreadyAlerted = alerted.contains(repo)
+        if !ok {
+            if !alreadyAlerted {
+                alerted.insert(repo)
+            }
+        } else {
+            alerted.remove(repo)
+        }
+        lock.unlock()
+        return alreadyAlerted
     }
 
     /// Whether a repo is currently in a notified-failure episode.

@@ -19,6 +19,12 @@ public actor SyncManager {
     /// Repos with a manual push in flight; a commit arriving meanwhile is queued
     /// through `needsPushAgain` instead of starting a second `git push`.
     private var manualPushes: Set<String> = []
+    /// Repos whose remote binding/unbinding is being swapped right now. A
+    /// commit landing mid-swap used to reach enqueuePush, find no running
+    /// task and START a loop that pushed to the OLD remote while setRemote
+    /// was still reconfiguring (v4.2.31 — the generation claim only guards
+    /// the finishPushLoop restart door, not this direct-start door).
+    private var reconfiguringRepos: Set<String> = []
     /// Repos whose current push-failure episode already produced a notification.
     private var failureStreakNotified: Set<String> = []
     private let streakLock = NSLock()
@@ -79,6 +85,17 @@ public actor SyncManager {
         // A push loop for the OLD remote must not continue into the new URL.
         states[repoPath]?.task?.cancel()
         states[repoPath]?.task = nil
+        // Same slot claim as pushNow (v4.2.31): the cancelled loop's
+        // finishPushLoop must not be free to restart a loop (and push) while
+        // the setRemote fetch/merge below is still reconfiguring the repo.
+        pushGenerations[repoPath] = (pushGenerations[repoPath] ?? 0) + 1
+        // Hold the slot for the WHOLE swap: a commit landing mid-rebind must
+        // queue, not push to the remote being replaced (v4.2.31). The tail
+        // enqueue below starts the loop once the swap has landed; the defer
+        // covers the early-throw path (a failed setRemote must not leave the
+        // repo deferring pushes forever).
+        reconfiguringRepos.insert(repoPath)
+        defer { reconfiguringRepos.remove(repoPath) }
         let change = try await repoManager.setRemote(path: repoPath, url: url)
         await repoManager.setAutoPush(path: repoPath, enabled: autoPush)
         // The single-file ceiling only became known NOW for folders added
@@ -99,9 +116,16 @@ public actor SyncManager {
             await repoManager.clearRemoteSwitchPending(path: repoPath)
         }
         if autoPush {
+            // The swap has landed: THIS enqueue owns the slot now, so the
+            // needsPushAgain marks collected during the window are folded
+            // into the loop it starts (clearing first keeps finishPushLoop
+            // from scheduling a second, redundant restart afterwards).
+            states[repoPath]?.needsPushAgain = false
+            reconfiguringRepos.remove(repoPath)
             setState(repoPath, .pendingPush)
             await enqueuePush(repoPath: repoPath)
         } else {
+            reconfiguringRepos.remove(repoPath)
             await refreshStatus(repoPath: repoPath)
         }
         return change
@@ -109,6 +133,10 @@ public actor SyncManager {
 
     /// Remove remote config.
     public func clearRemote(repoPath: String) async throws {
+        // Same slot hold as a rebind: a commit landing while the old remote
+        // is being unbound must not start a farewell push to it (v4.2.31).
+        reconfiguringRepos.insert(repoPath)
+        defer { reconfiguringRepos.remove(repoPath) }
         try await repoManager.clearRemote(path: repoPath)
         setState(repoPath, .noRemote)
     }
@@ -163,6 +191,19 @@ public actor SyncManager {
         // A manual push owns the repo until it returns: queue this request
         // instead of racing it with a second `git push`.
         if manualPushes.contains(repoPath) {
+            if states[repoPath] == nil {
+                states[repoPath] = RepoSyncState(status: .pendingPush, task: nil,
+                                                 attempt: 0, needsPushAgain: true)
+            } else {
+                states[repoPath]?.needsPushAgain = true
+            }
+            return
+        }
+        // A remote swap in progress owns the repo: pushing mid-swap would
+        // target the OLD remote (this direct-start door was open even after
+        // the generation claim, v4.2.31). The swap's own tail enqueue starts
+        // the loop once the new remote has landed.
+        if reconfiguringRepos.contains(repoPath) {
             if states[repoPath] == nil {
                 states[repoPath] = RepoSyncState(status: .pendingPush, task: nil,
                                                  attempt: 0, needsPushAgain: true)
@@ -404,6 +445,14 @@ public actor SyncManager {
     public func pushNow(repoPath: String) async -> Bool {
         states[repoPath]?.task?.cancel()
         states[repoPath]?.task = nil
+        // Claim the push slot's generation (v4.2.31): a loop cancelled
+        // mid-flight still runs its `finishPushLoop`, and with the OLD
+        // generation it consumed `needsPushAgain` and restarted a new loop
+        // 300 ms later — while this manual push was still running, so two
+        // `git push` raced and the `manualPushes` guard below was silently
+        // bypassed. reset() achieves the same by clearing the generation map;
+        // here the manual push takes over the slot instead.
+        pushGenerations[repoPath] = (pushGenerations[repoPath] ?? 0) + 1
         // Hold the repo for the duration of the manual push so a commit that
         // lands meanwhile is queued (and pushed afterwards) instead of starting
         // a concurrent push loop.
@@ -534,18 +583,12 @@ public actor SyncManager {
     static func deterministicPushRejection(_ error: Error) -> String? {
         guard let e = error as? GitCommandError else { return nil }
         let text = e.stderr.lowercased()
-        if text.contains("protected branch") || text.contains("gh006") || text.contains("gh013")
-            || text.contains("branch protection") || text.contains("pre-receive hook declined")
-            || text.contains("remote rejected") || text.contains("refusing to allow") {
-            return NSLocalizedString("远程仓库拒绝了这次推送（分支保护或仓库规则）。请在托管平台调整分支保护/权限后再试。",
-                                     comment: "push rejected")
-        }
-        if text.contains("you are not allowed to push") || text.contains("read-only")
-            || text.contains("repository is archived") || text.contains("archived repository")
-            || text.contains("protected branch") && text.contains("cannot push") {
-            return NSLocalizedString("远程仓库不允许推送（只读、已归档或没有写权限）。请在托管平台取消只读/归档或授予写权限后再试。",
-                                     comment: "push rejected")
-        }
+        // Size-limit rejections are classified FIRST on purpose (v4.2.31):
+        // GitHub answers an oversized blob with the SAME summary line as
+        // branch protection ("! [remote rejected] … (pre-receive hook
+        // declined)"), so the old order reported a file-size problem as
+        // "adjust branch protection" and the size guidance below was
+        // unreachable for real GitHub output.
         if text.contains("file is too large") || text.contains("exceeds github's file size limit")
             || (text.contains("push was rejected") && (text.contains("mb") || text.contains("limit"))) {
             var message = NSLocalizedString("远程仓库因为文件过大拒绝了这次推送。新加入的超限文件会被自动排除；若历史提交里已包含超限文件，推送会被永久拒绝，需要整理提交历史（如重新开始版本历史）或更换远程后才能恢复同步。",
@@ -560,6 +603,18 @@ public actor SyncManager {
                                   shown, more)
             }
             return message
+        }
+        if text.contains("protected branch") || text.contains("gh006") || text.contains("gh013")
+            || text.contains("branch protection") || text.contains("pre-receive hook declined")
+            || text.contains("remote rejected") || text.contains("refusing to allow") {
+            return NSLocalizedString("远程仓库拒绝了这次推送（分支保护或仓库规则）。请在托管平台调整分支保护/权限后再试。",
+                                     comment: "push rejected")
+        }
+        if text.contains("you are not allowed to push") || text.contains("read-only")
+            || text.contains("repository is archived") || text.contains("archived repository")
+            || text.contains("protected branch") && text.contains("cannot push") {
+            return NSLocalizedString("远程仓库不允许推送（只读、已归档或没有写权限）。请在托管平台取消只读/归档或授予写权限后再试。",
+                                     comment: "push rejected")
         }
         return nil
     }

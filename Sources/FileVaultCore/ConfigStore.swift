@@ -13,11 +13,9 @@ public struct ManagedRoot: Codable, Equatable, Identifiable, Sendable {
     }
 
     public init(path: String, paused: Bool = false) {
-        var resolved = path
-        if let resolvedURL = try? URL(fileURLWithPath: path).resolvingSymlinksInPath() {
-            resolved = resolvedURL.path
-        }
-        self.path = resolved
+        // URL(fileURLWithPath:) is infallible and resolvingSymlinksInPath()
+        // never throws — the old try? bound unconditionally (v4.2.31).
+        self.path = URL(fileURLWithPath: path).resolvingSymlinksInPath().path
         self.paused = paused
     }
 }

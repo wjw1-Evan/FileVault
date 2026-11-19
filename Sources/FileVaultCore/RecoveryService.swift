@@ -459,10 +459,19 @@ public final class RecoveryService: Sendable {
                 continue
             }
             if token.hasPrefix("\u{1}") {
-                let parts = token.dropFirst().components(separatedBy: "\u{1}")
-                guard parts.count >= 4 else { continue }
+                // maxSplits: a subject may legally contain a literal \u{1} —
+                // git passes control bytes through %s (verified against real
+                // git 2.56, 2026-11-19: a subject created with 0x01 comes out
+                // byte-for-byte). Splitting on EVERY separator used to steal
+                // the first file's status into a phantom part, dropping that
+                // record entirely from the scan. Only the three structural
+                // separators are split; the subject keeps whatever it carries.
+                let parts = token.dropFirst().split(separator: "\u{1}", maxSplits: 3,
+                                                    omittingEmptySubsequences: false)
+                guard parts.count == 4 else { continue }
                 let lines = parts[3].components(separatedBy: "\n")
-                commit = (parts[0], parts[1], HistoryService.parseGitDate(parts[2]), lines.first ?? "")
+                commit = (String(parts[0]), String(parts[1]),
+                          HistoryService.parseGitDate(String(parts[2])), lines.first ?? "")
                 parsed.commitCount += 1
                 pendingStatus = lines.count > 1 ? lines[1] : nil
                 pendingOldPath = nil

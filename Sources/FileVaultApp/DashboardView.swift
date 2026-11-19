@@ -524,14 +524,13 @@ struct DashboardView: View {
     }
 
     /// A dropped folder pre-fills the add sheet (same flow as a menu-panel
-    /// drop). Already-protected folders and files bounce back (v4.2.30).
+    /// drop). Already-protected folders and files bounce back (v4.2.30; the
+    /// rule set moved into the shared, tested QuickAddDrop in v4.2.31).
     private func handleDrop(_ urls: [URL]) -> Bool {
-        guard let url = urls.first, urls.count == 1 else { return false }
-        var isDir: ObjCBool = false
-        guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir),
-              isDir.boolValue else { return false }
-        guard !model.rootRows.contains(where: { $0.path == url.path }) else { return false }
-        app.quickAddPrefill = url.path
+        guard let path = QuickAddDrop.folderPath(from: urls, isProtected: { candidate in
+            model.rootRows.contains { $0.path == candidate }
+        }) else { return false }
+        app.quickAddPrefill = path
         quickAddPresented = true
         return true
     }

@@ -877,5 +877,11 @@
 "遇到问题怎么求助？" = "How do I get help?";
 "需要先安装 GitHub CLI" = "GitHub CLI must be installed first";
 
+// v4.2.31 records window round (fix-records)
+"提交历史读取失败：%@" = "Failed to read commit history: %@";
+"内容搜索失败：%@" = "Content search failed: %@";
+"命名版本读取失败：%@" = "Failed to read named versions: %@";
+"变更文件读取失败：%@" = "Failed to read changed files: %@";
+
 
 

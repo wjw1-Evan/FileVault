@@ -261,6 +261,12 @@ public extension HistoryService {
         do {
             try process.run()
         } catch {
+            // The empty destination was created moments ago and git never
+            // wrote a byte: leaving it behind parked a 0-byte file with the
+            // user's chosen name next to a "导出失败" message. Every other
+            // failure branch below removes it; the spawn-failure path must
+            // too.
+            try? fm.removeItem(at: destination)
             throw HistoryError.exportFailed(file: file)
         }
         let errLock = NSLock()

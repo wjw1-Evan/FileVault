@@ -245,25 +245,59 @@ public final class FileVaultService: @unchecked Sendable {
             let root = resolved(cfgRoot.path)
             guard !attachedNow.contains(root),
                   FileManager.default.fileExists(atPath: root) else { continue }
+            // The config may have changed since this loop started (the root
+            // was removed from Settings mid-sweep): never re-attach what the
+            // user just unprotected (v4.2.31).
+            guard isStillConfigured(root) else { continue }
             do {
-                try await attachRoot(path: root, paused: pause.isPaused(root: root))
-                setAttachError(nil, for: root)
+                // Same announcement rule as startup and the self-heal loop
+                // below: a configured folder that lost its .git while it was
+                // unattached must not come back as a silently empty history
+                // (v4.2.31; the v4.2.8 invariant).
+                try await attachRoot(path: root, paused: pause.isPaused(root: root),
+                                     announceReinitialisation: true)
+                if isStillConfigured(root) {
+                    setAttachError(nil, for: root)
+                } else {
+                    // Removed while the attach was in flight: undo it, or the
+                    // sweep would leave a live watcher that keeps committing
+                    // (and pushing) an unprotected folder (v4.2.31).
+                    await removeRoot(path: root)
+                }
             } catch {
                 // Keep the reason so Settings can explain why the folder is
                 // listed but not protected right now (v4.2.26).
                 setAttachError(error.localizedDescription, for: root)
             }
         }
+        // Snapshot under the service lock: `watchers` is mutated by
+        // addRoot/removeRoot/relocateRoot on other threads, and an unlocked
+        // read here raced those writes (v4.2.31; the section lives in a
+        // plain function — NSLock is unavailable from async contexts under
+        // the Swift 6 language mode).
+        let watchersNow = watchersSnapshot()
         for root in rootsSnapshot() {
+            // The loop list is a snapshot and its body awaits: a root removed
+            // from Settings while an EARLIER iteration was committing must not
+            // be resurrected here — the stale watchersNow entry is stopped (so
+            // !isRunning restarts it) and the direct commit below would commit
+            // an unprotected folder (v4.2.31, second-loop counterpart of the
+            // guard above).
+            guard isStillConfigured(root) else { continue }
             // Self-heal watching: an external disk that disappears and comes
             // back, or a watch stream that stopped, must start watching again
             // without the user touching the folder (v4.2.7).
             if FileManager.default.fileExists(atPath: root) {
-                if let watcher = watchers[root] {
+                if let watcher = watchersNow[root] {
                     if !watcher.isRunning { startWatching(watcher, path: root) }
                 } else {
                     try? await attachRoot(path: root, paused: pause.isPaused(root: root),
                                           announceReinitialisation: true)
+                    // Removed while that attach was in flight: undo it, same
+                    // rule as the unattached-roots loop above (v4.2.31).
+                    if !isStillConfigured(root) {
+                        await removeRoot(path: root)
+                    }
                 }
             }
             if pause.isPaused(root: root) { continue }
@@ -278,6 +312,13 @@ public final class FileVaultService: @unchecked Sendable {
                 await sync.syncWithRemote(repoPath: root)
             }
         }
+    }
+
+    /// Whether a root is still present in the CURRENT config snapshot. A
+    /// sweep may have loaded a stale one; removals made while it runs must win
+    /// (v4.2.31).
+    func isStillConfigured(_ root: String) -> Bool {
+        configStore.load().roots.contains { resolved($0.path) == root }
     }
 
     private func remoteSyncDue(_ root: String) -> Bool {
@@ -306,8 +347,7 @@ public final class FileVaultService: @unchecked Sendable {
     /// instead of entering history and making every push fail (v4.2.26).
     public func addRoot(path: String, remoteURL: String? = nil) async throws {
         guard isReady else { throw FileVaultServiceError.environmentNotReady }
-        var p = path
-        if let r = try? URL(fileURLWithPath: path).resolvingSymlinksInPath() { p = r.path }
+        let p = resolved(path)
         guard FileManager.default.fileExists(atPath: p) else {
             throw FileVaultServiceError.rootMissing
         }
@@ -335,14 +375,18 @@ public final class FileVaultService: @unchecked Sendable {
     /// Stop watching and forget a root (repos on disk are left untouched).
     public func removeRoot(path: String) async {
         let p = resolved(path)
-        lock.lock()
-        watchers[p]?.stop()
-        watchers.removeValue(forKey: p)
-        roots.removeAll { $0 == p }
-        lock.unlock()
+        // Persist the removal FIRST, before the awaits below: a safety sweep
+        // running concurrently re-checks the config before re-attaching an
+        // unattached root, so a root whose removal is still mid-teardown must
+        // no longer be resurrectable (v4.2.31).
+        var cfg = configStore.load()
+        cfg.roots.removeAll { $0.path == p }
+        saveConfig(cfg)
+        detachWatcherUnderLock(p)
         commitEngine?.unregisterRoot(p)
         // Pending debounce fires for a forgotten folder would re-enqueue pushes
-        // for a removed repo or notify about it (v4.2.27).
+        // for a removed repo or notify about it (v4.2.27). unregisterRoot also
+        // drops any scheduled auto-commit retry for it (v4.2.31).
         debouncer?.cancel(key: p)
         repoManager?.releaseInstanceLock(path: p)
         // Forgetting a folder must forget its runtime state too: a leftover
@@ -353,9 +397,6 @@ public final class FileVaultService: @unchecked Sendable {
         setAttachError(nil, for: p)
         forgetRemoteSyncState(p)
         if let sync { await sync.reset(repoPath: p) }
-        var cfg = configStore.load()
-        cfg.roots.removeAll { $0.path == p }
-        saveConfig(cfg)
         fireStateChange()
     }
 
@@ -368,8 +409,7 @@ public final class FileVaultService: @unchecked Sendable {
     public func relocateRoot(from oldPath: String, to newPath: String) async throws {
         guard isReady else { throw FileVaultServiceError.environmentNotReady }
         let old = resolved(oldPath)
-        var new = newPath
-        if let r = try? URL(fileURLWithPath: newPath).resolvingSymlinksInPath() { new = r.path }
+        let new = resolved(newPath)
         guard FileManager.default.fileExists(atPath: new) else {
             throw FileVaultServiceError.rootMissing
         }
@@ -396,11 +436,7 @@ public final class FileVaultService: @unchecked Sendable {
 
         // Stop watching the old path first: its watcher would otherwise fire on
         // a folder that no longer exists.
-        lock.lock()
-        watchers[old]?.stop()
-        watchers.removeValue(forKey: old)
-        roots.removeAll { $0 == old }
-        lock.unlock()
+        detachWatcherUnderLock(old)
         commitEngine.unregisterRoot(old)
         debouncer.cancel(key: old)
         repoManager.releaseInstanceLock(path: old)
@@ -431,9 +467,7 @@ public final class FileVaultService: @unchecked Sendable {
     private func attachRoot(path: String, paused: Bool, remoteURL: String? = nil,
                             announceReinitialisation: Bool = false) async throws {
         let p = resolved(path)
-        lock.lock()
-        let alreadyAttached = watchers[p] != nil
-        lock.unlock()
+        let alreadyAttached = isWatchedUnderLock(p)
         if alreadyAttached {
             if paused { pause.setPaused(true, forRoot: p) }
             setAttachError(nil, for: p)
@@ -477,10 +511,7 @@ public final class FileVaultService: @unchecked Sendable {
             pause.setPaused(true, forRoot: p)
         }
         let w = WatcherEngine(rootPath: p, source: FSEventsChangeSource())
-        lock.lock()
-        watchers[p] = w
-        if !roots.contains(p) { roots.append(p) }
-        lock.unlock()
+        adoptWatcherUnderLock(w, root: p)
         commitEngine.registerRoot(p)
         setAttachError(nil, for: p)
         startWatching(w, path: p)
@@ -555,6 +586,38 @@ public final class FileVaultService: @unchecked Sendable {
         return roots
     }
 
+    // MARK: - Synchronous lock sections (v4.2.31)
+    //
+    // Short critical sections that never await; plain functions keep the
+    // async callers free of the "unavailable from asynchronous contexts"
+    // Swift 6 error (same pattern as AuthMonitor/CommitEngine/RepoManager
+    // in this round).
+
+    private func watchersSnapshot() -> [String: WatcherEngine] {
+        lock.lock(); defer { lock.unlock() }
+        return watchers
+    }
+
+    private func isWatchedUnderLock(_ p: String) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        return watchers[p] != nil
+    }
+
+    private func adoptWatcherUnderLock(_ w: WatcherEngine, root p: String) {
+        lock.lock()
+        watchers[p] = w
+        if !roots.contains(p) { roots.append(p) }
+        lock.unlock()
+    }
+
+    private func detachWatcherUnderLock(_ p: String) {
+        lock.lock()
+        watchers[p]?.stop()
+        watchers.removeValue(forKey: p)
+        roots.removeAll { $0 == p }
+        lock.unlock()
+    }
+
     // MARK: - State change observers (multicast, v2.6.5)
 
     /// Register an additional state-change observer. Returns a token for
@@ -590,9 +653,11 @@ public final class FileVaultService: @unchecked Sendable {
         return watchers[root]
     }
 
+    /// URL(fileURLWithPath:) is infallible and resolvingSymlinksInPath() is
+    /// non-throwing — the old `try?` bound nothing and always succeeded
+    /// (the compiler flagged the pointless effect marker, v4.2.31).
     func resolved(_ path: String) -> String {
-        if let r = try? URL(fileURLWithPath: path).resolvingSymlinksInPath() { return r.path }
-        return path
+        return URL(fileURLWithPath: path).resolvingSymlinksInPath().path
     }
 }
 

@@ -95,6 +95,35 @@
 - 证据：Sources/FileVaultApp/AppState.swift 的 captureAndExit；2026-11-19 实测四窗口全白，screencapture -x 同 shell 报 "could not create image from display"。
 - 影响：验证 UI 改动前先确认宿主终端有屏幕权限；无权限就改走测试断言 + diff 审查，别把空白 PNG 当成"窗口没内容"的 bug 排查。
 
+### 取代运行中的推送循环必须认领 pushGenerations 槽位（v4.2.31）
+
+- 结论：cancel 掉推送循环后必须递增 `pushGenerations[repo]`，否则旧循环的 finishPushLoop 仍“拥有”槽位：它会吞掉 `needsPushAgain` 并在 300ms 后重启新循环，与手动推送并发跑第二个 `git push`，绕过 manualPushes 护栏。
+- 原因：Task.cancel 打不断已在 git 子进程里的 await；finishPushLoop 只校验代际归属，不感知「被谁取代」。
+- 证据：`SyncManager.pushNow` / `configureRemote`（v4.2.31 递增代际）；`SyncPushGenerationTests`（未修复代码上实测变红）。
+- 影响：新增任何「打断/取代推送循环」的入口都要同样认领代际；`reset()` 用清空代际达到同效，勿只 cancel task。
+- 修正（2026-11-19）：认领代际只堵了 finishPushLoop 的重启门——**enqueuePush 在 task==nil 时会直接 startPushLoop**，换绑（configureRemote/clearRemote）期间一次自动提交照样把内容推到旧远程。修法是 `reconfiguringRepos` 槽位持有：enqueuePush 见持有即记 needsPushAgain 返回，configureRemote 尾部清标记后自己 enqueue（`SyncManager`，`SyncPushGenerationTests.testRebindHoldsPushSlotAgainstCommitsLandingMidSwap` 实测变红转绿）。教训：守卫「重启」的门类，先枚举所有「启动」的门。
+
+### sweep 会复活刚被移除的根：removeRoot 必须先落盘配置（v4.2.31）
+
+- 结论：removeRoot 要先把配置移除写盘再做运行时清理；sweepOnce 重挂前后都要重读配置确认根仍在列表，否则并发 sweep 会给已移除文件夹留下「僵尸 watcher」继续提交并推送。
+- 原因：sweep 的 config 快照在 removeRoot 的 await 期间过期；旧代码到函数尾部才 saveConfig，sweep 重挂只看旧快照。
+- 证据：`FileVaultService.removeRoot` / `sweepOnce`（v4.2.31 前置 saveConfig + 挂前/挂后配置校验）；`SweepRaceGuardTests.testSweepDoesNotResurrectRootRemovedMidAttach`。
+- 影响：绕过 removeRoot 直改 configStore 会造成 attached-但未配置 的不一致态，sweep 的挂后校验会 removeRoot 兜底清掉。
+- 修正（2026-11-19）：第一循环修了，**第二个自愈循环（watchers 快照 + commitSerialized）同样会复活**：快照先取、循环体有 await 挂起点，移除落在挂起点后，循环对已移除根 startWatching 复活僵尸 watcher 并提交其脏改动。修法：每轮迭代开头重验 `isStillConfigured`，else 分支 attach 后同样校验回滚（`FileVaultService.sweepOnce`，`SweepRaceGuardTests.testSweepSelfHealSkipsRootRemovedMidLoop` 用 2000 文件慢迭代造窗口实测变红转绿）。教训：sweep 里每个带 await 的循环都要当作「快照可能过期」处理，逐轮重验。
+
+### 注销根要连失败重试状态一起清（v4.2.31）
+
+- 结论：CommitEngine.unregisterRoot 必须清 failureCounts，否则已排定的自动提交重试（scheduleRetry 只看 failureCounts>0）会在用户移除/迁移文件夹后照常提交它。
+- 证据：`CommitEngine.unregisterRoot`（v4.2.31）；`CommitEngineRetryCleanupTests.testPendingRetryDiesWhenRootIsUnregistered`。
+- 影响：新增「忘记一个根」的路径都要走 unregisterRoot，不能只停 watcher。
+
+### GitHub 超限与分支保护的拒绝摘要行相同，分类先看大小（v4.2.31）
+
+- 结论：deterministicPushRejection 必须先匹配文件超限字样（exceeds GitHub's file size limit）再匹配 pre-receive hook declined / remote rejected。
+- 原因：GitHub 超限推送同样以 `! [remote rejected] … (pre-receive hook declined)` 结尾，旧顺序把超限报成「去调分支保护」，大小指引永远走不到。
+- 证据：`SyncManager.deterministicPushRejection`（v4.2.31 顺序调整）；`PushRejectionClassificationTests`（未修复代码上实测变红）。
+- 影响：新增拒绝分类时先问一句：真实远端 stderr 里哪些短语会互相 shadow，把最具体的放前面。
+
 ### MenuBarExtra 面板高度就是内容高度（v4.2.29）
 
 - 结论：菜单弹层面板即窗口本身——最后一行下方的任何额外 padding 都会渲染成一条空白带；分区表达用卡片，不要用横穿分隔条。

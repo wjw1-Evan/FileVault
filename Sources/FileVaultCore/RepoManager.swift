@@ -65,18 +65,27 @@ public final class RepoManager: @unchecked Sendable {
         return localOpsBusy.contains(path)
     }
 
+    /// Synchronous try-claim for the remote-op slot (v4.2.31): the lock
+    /// section never awaits, so it lives in a plain function — calling
+    /// NSLock directly from the async poll loop below is an error under the
+    /// Swift 6 language mode.
+    private func tryAcquireRemoteOp(_ path: String) -> Bool {
+        remoteOpLock.lock()
+        if !remoteOpsBusy.contains(path) {
+            remoteOpsBusy.insert(path)
+            remoteOpLock.unlock()
+            return true
+        }
+        remoteOpLock.unlock()
+        return false
+    }
+
     /// Wait for the folder's remote-operation slot (throws `busy` after 60 s,
     /// which only happens if a previous operation is genuinely stuck).
     func acquireRemoteOp(_ path: String) async throws {
         let deadline = Date().addingTimeInterval(60)
         while true {
-            remoteOpLock.lock()
-            if !remoteOpsBusy.contains(path) {
-                remoteOpsBusy.insert(path)
-                remoteOpLock.unlock()
-                return
-            }
-            remoteOpLock.unlock()
+            if tryAcquireRemoteOp(path) { return }
             if Date() > deadline { throw PullError.busy }
             try? await Task.sleep(nanoseconds: 50_000_000)
         }
