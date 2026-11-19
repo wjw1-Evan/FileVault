@@ -40,7 +40,7 @@ struct FileVaultApp: App {
         }
         .menuBarExtraStyle(.window)
 
-        Window("FileVault", id: "dashboard") {
+        Window("Pastward", id: "dashboard") {
             DashboardView()
                 .environmentObject(app)
         }
@@ -48,14 +48,14 @@ struct FileVaultApp: App {
         .windowResizability(.contentSize)
         .defaultSize(width: 820, height: 640)
 
-        Window("FileVault 设置", id: "settings") {
+        Window("Pastward 设置", id: "settings") {
             SettingsView()
                 .environmentObject(app)
         }
         .defaultSize(width: 780, height: 760)
 
         // v4.2.20: 历史版本 + 文件恢复 share one window with two tabs.
-        Window("FileVault 历史与恢复", id: "records") {
+        Window("Pastward 历史与恢复", id: "records") {
             RecordsWindow()
                 .environmentObject(app)
         }
@@ -63,7 +63,7 @@ struct FileVaultApp: App {
 
         #if DEBUG
         // Dev-only: lets --render-menu capture the panel as a PNG.
-        Window("FileVault 菜单", id: "menu-preview") {
+        Window("Pastward 菜单", id: "menu-preview") {
             MenuPreviewView()
                 .environmentObject(app)
         }
@@ -76,7 +76,7 @@ struct FileVaultApp: App {
         let args = CommandLine.arguments
         if args.contains("--help") {
             print("""
-            FileVault — Git-backed file history keeper in the macOS menu bar.
+            Pastward — Git-backed file history keeper in the macOS menu bar.
 
             USAGE: FileVaultApp [option]
 
@@ -112,14 +112,14 @@ struct FileVaultApp: App {
         // --render-dashboard to an open+capture request.
         // Titles are localised, so resolve them through the same table the
         // window scenes use (v3.4.0).
-        let recordsTitle = NSLocalizedString("FileVault 历史与恢复", comment: "window title")
-        var map = ["--render-settings": ("settings", NSLocalizedString("FileVault 设置", comment: "window title")),
+        let recordsTitle = NSLocalizedString("Pastward 历史与恢复", comment: "window title")
+        var map = ["--render-settings": ("settings", NSLocalizedString("Pastward 设置", comment: "window title")),
                    "--render-history": ("history", recordsTitle),
                    "--render-recovery": ("recovery", recordsTitle),
                    "--render-records": ("records", recordsTitle),
-                   "--render-dashboard": ("dashboard", "FileVault")]
+                   "--render-dashboard": ("dashboard", "Pastward")]
         #if DEBUG
-        map["--render-menu"] = ("menu-preview", "FileVault 菜单")
+        map["--render-menu"] = ("menu-preview", "Pastward 菜单")
         #endif
         for (flag, pair) in map {
             if let idx = args.firstIndex(of: flag), args.indices.contains(idx + 1) {

@@ -1,4 +1,4 @@
-/* FileVault — English localisation (zh-Hans literals are the keys). */
+/* Pastward — English localisation (zh-Hans literals are the keys). */
 
 /* 通用 */
 "设置" = "Settings";
@@ -32,7 +32,7 @@
 "立即推送" = "Push now";
 "暂停自动提交" = "Pause auto-commit";
 "恢复自动提交" = "Resume auto-commit";
-"退出 FileVault" = "Quit FileVault";
+"退出 Pastward" = "Quit Pastward";
 "去设置添加…" = "Add one in Settings…";
 "在 Finder 中打开" = "Reveal in Finder";
 
@@ -54,7 +54,7 @@
 "自动提交已暂停" = "Auto-commit is paused";
 
 /* 设置：许可/支持 */
-"FileVault 永久免费 · 无账号、无订阅、无遥测" = "FileVault is free forever · no account, no subscription, no telemetry";
+"Pastward 永久免费 · 无账号、无订阅、无遥测" = "Pastward is free forever · no account, no subscription, no telemetry";
 "导出诊断包" = "Export diagnostics";
 "导出诊断包…" = "Export diagnostics…";
 "脱敏报告（不含文件内容/远程地址/账号），便于反馈问题" = "Redacted report (no file contents, remotes or accounts) to help with bug reports";
@@ -157,8 +157,8 @@
 "%@：%@%@ 超过远程单文件上限，已自动排除、不会同步；需要备份请拆分文件或移出受保护文件夹" = "%@: %@%@ exceeds the remote single-file limit and was excluded, so it is not synced; split the file or move it out of the protected folder if you need a backup";
 "⚠️ 文件夹当前不可用（可能未挂载或被移动）" = "⚠️ This folder is currently unavailable (not mounted, or moved)";
 "受保护文件夹被重新初始化" = "A protected folder was re-initialised";
-"这个文件夹正被另一个 FileVault 实例管理" = "This folder is managed by another FileVault instance";
-"⚠️ 另一个 FileVault 实例正在管理（pid %d）" = "⚠️ Another FileVault instance is managing this folder (pid %d)";
+"这个文件夹正被另一个 Pastward 实例管理" = "This folder is managed by another Pastward instance";
+"⚠️ 另一个 Pastward 实例正在管理（pid %d）" = "⚠️ Another Pastward instance is managing this folder (pid %d)";
 "配置文件损坏，已从备份恢复" = "The configuration was corrupt and has been restored from a backup";
 "受保护文件夹列表已从 config.backup.json 恢复；请确认列表是否完整。" = "The protected-folder list was restored from config.backup.json; please check that it is complete.";
 "配置文件无法读取" = "The configuration could not be read";
@@ -235,7 +235,7 @@
 "Git 环境未就绪" = "Git is not ready";
 
 /* 历史窗口 */
-"FileVault 历史" = "FileVault History";
+"Pastward 历史" = "Pastward History";
 "选择一个提交，查看并恢复它包含的文件" = "Pick a commit to see and restore its files";
 "选择一个提交" = "Pick a commit";
 "选择一个提交以查看其包含的文件" = "Pick a commit to see the files it contains";
@@ -298,7 +298,7 @@
 "ghfast.top 加速" = "ghfast.top (accelerator)";
 "gh-proxy.com 加速" = "gh-proxy.com (accelerator)";
 "ghproxy.cfd 加速" = "ghproxy.cfd (accelerator)";
-"FileVault 自建镜像" = "FileVault mirror";
+"Pastward 自建镜像" = "Pastward mirror";
 "git 自动下载安装失败（已逐个尝试备用下载地址）。\n%@\n可以在「设置 → 诊断」导出诊断包，或手动安装 Xcode Command Line Tools 后重启应用。" = "Automatic git download failed (every backup address was tried).\n%@\nExport a diagnostics bundle from Settings → Diagnostics, or install Xcode Command Line Tools manually and relaunch.";
 "准备下载 git…" = "Preparing to download git…";
 "正在下载 git（%@）…" = "Downloading git via %@…";
@@ -318,7 +318,7 @@
 "本机凭证库不可用（请确认 git 安装完整）" = "The local credential store is unavailable (check that git is installed completely)";
 
 /* 诊断报告 */
-"FileVault 诊断报告" = "FileVault diagnostics report";
+"Pastward 诊断报告" = "Pastward diagnostics report";
 "本报告不含任何文件内容、远程地址或账号；路径已替换为 ~。" = "This report contains no file contents, remote URLs or accounts; home paths are replaced with ~.";
 "（无法序列化配置）" = "(could not serialize the config)";
 "（未加载配置）" = "(config not loaded)";
@@ -365,8 +365,8 @@
 "正在创建仓库 %@…" = "Creating repository %@…";
 "⚠️ 创建失败: %@" = "⚠️ Create failed: %@";
 "✓ 诊断包已保存到 %@" = "✓ Diagnostics saved to %@";
-"新版本连续 3 次未能正常启动，已自动恢复到 v%@" = "The new version failed to start 3 times, so FileVault restored v%@";
-"FileVault %@ 正在自动更新，完成后将自动重启。" = "FileVault %@ is updating automatically — the app restarts when done.";
+"新版本连续 3 次未能正常启动，已自动恢复到 v%@" = "The new version failed to start 3 times, so Pastward restored v%@";
+"Pastward %@ 正在自动更新，完成后将自动重启。" = "Pastward %@ is updating automatically — the app restarts when done.";
 
 "⚠️ %@" = "⚠️ %@";
 "「%@」没有文件变更" = "“%@” has no file changes";
@@ -375,11 +375,11 @@
 "Git 未就绪" = "Git not ready";
 "检查中…" = "Checking…";
 "正在检查更新…" = "Checking for updates…";
-"关于 FileVault" = "About FileVault";
+"关于 Pastward" = "About Pastward";
 "没有文件变更" = "No file changes";
 "还没有提交历史" = "No commit history yet";
-"FileVault 菜单" = "FileVault menu";
-"FileVault 设置" = "FileVault Settings";
+"Pastward 菜单" = "Pastward menu";
+"Pastward 设置" = "Pastward Settings";
 " · ⚠️ 超过 2GB" = " · ⚠️ over 2GB";
 "## 应用" = "## App";
 "## 配置（已脱敏）" = "## Config (redacted)";
@@ -425,7 +425,7 @@
 "添加文件夹" = "Add folder";
 "认证：%@" = "Authentication: %@";
 "历史与恢复…" = "History & Recovery…";
-"FileVault 历史与恢复" = "FileVault History & Recovery";
+"Pastward 历史与恢复" = "Pastward History & Recovery";
 "历史时间线" = "Timeline";
 "一个文件夹的所有版本：看时间线，或找回被删/改坏的文件" = "Every version of the folder: browse the timeline, or recover deleted/corrupted files.";
 "打开历史时间线" = "Open timeline";
@@ -472,13 +472,13 @@
 "在 Finder 中打开：%@" = "Reveal in Finder: %@";
 "在 Finder 中打开 %@" = "Reveal in Finder: %@";
 "移除 %@（仓库保留在磁盘）" = "Remove %@ (the repository stays on disk)";
-"FileVault-诊断-%@.zip" = "FileVault-Diagnostics-%@.zip";
+"Pastward-诊断-%@.zip" = "Pastward-Diagnostics-%@.zip";
 "受保护的文件夹" = "Protected folders";
 "还没有受保护的文件夹" = "No protected folders yet";
 "尚未添加文件夹" = "No folders yet";
 "还有 %d 个文件夹…" = "%d more folders…";
 "添加文件夹失败" = "Could not add the folder";
-"FileVault 只是不再守卫这个文件夹，已经生成的 .git 历史不会被删除。" = "FileVault simply stops protecting this folder; the .git history it already created is not deleted.";
+"Pastward 只是不再守卫这个文件夹，已经生成的 .git 历史不会被删除。" = "Pastward simply stops protecting this folder; the .git history it already created is not deleted.";
 "影响所有受保护的文件夹" = "Applies to all protected folders";
 "选择文件夹…" = "Choose folder…";
 "文件夹不存在或不可访问" = "The folder is missing or cannot be accessed";
@@ -596,7 +596,7 @@
 "恢复到此版本" = "Restore to this version";
 "当前分支会回到 %@（%@）。恢复前的状态仍会再备份一次。" = "The current branch returns to %@ (%@). The pre-restore state is backed up again.";
 "找回被回滚的版本" = "Recover a rolled-back version";
-"每次回滚前，FileVault 都会把当时的状态备份到隐藏 ref（refs/filevault/backup）。这里可以把它恢复回来。" = "Before every rollback FileVault saves the then-current state in a hidden ref (refs/filevault/backup). Restore it from here.";
+"每次回滚前，Pastward 都会把当时的状态备份到隐藏 ref（refs/filevault/backup）。这里可以把它恢复回来。" = "Before every rollback Pastward saves the then-current state in a hidden ref (refs/filevault/backup). Restore it from here.";
 "还没有可恢复的备份" = "No backups to restore";
 "执行过一次「回滚到该版本」之后，这里会出现回滚前的快照。" = "After one rollback, the pre-rollback snapshot appears here.";
 "共 %d 个备份" = "%d backups";
@@ -625,7 +625,7 @@
 "✓ 已找回 %@" = "✓ Recovered %@";
 
 /* v4.1 文件恢复窗口 */
-"FileVault 恢复" = "FileVault Recovery";
+"Pastward 恢复" = "Pastward Recovery";
 "文件恢复" = "File Recovery";
 "恢复文件" = "Recover files";
 "恢复文件…" = "Recover Files…";
@@ -782,7 +782,7 @@
 "✓ 已回滚到 %@，并已暂停此文件夹的自动同步（设置里可恢复）" = "Rolled back to %@ and paused auto-sync for this folder (resume it in Settings)";
 "问题提醒通知" = "Issue notifications";
 "提交/推送失败、大文件未备份等一次性提醒" = "One-time alerts: commit/push failures, unbacked large files, and similar issues";
-"⚠️ 另一个 FileVault 实例正在管理这个文件夹（pid %d）；退出那个实例后这里会自动接管" = "⚠️ Another FileVault instance is managing this folder (pid %d); quit that one and this instance takes over automatically";
+"⚠️ 另一个 Pastward 实例正在管理这个文件夹（pid %d）；退出那个实例后这里会自动接管" = "⚠️ Another Pastward instance is managing this folder (pid %d); quit that one and this instance takes over automatically";
 "留空 = 仅本地保存版本（暂不上云）。绑定 GitHub 私有仓库后会自动上云、换电脑不丢；之后在设置里随时能加。" = "Leave empty = local versions only (no cloud backup yet). A GitHub private repo syncs automatically and survives a new computer; you can add one later in Settings.";
 "自动同步：本地改动立即推送，每约 5 分钟检查远端" = "Auto-sync: local changes push immediately; remote checked every ~5 min";
 "绑定远程的文件夹：本地改动防抖提交后立即推送；此外每约 5 分钟检查一次远端，有新提交就自动拉取合并。" = "Folders with a remote: local changes are committed (debounced) and pushed immediately; the remote is also checked every ~5 minutes and new commits are pulled and merged automatically.";
@@ -837,11 +837,11 @@
 "去历史时间线按提交查找" = "Search commits in the Timeline";
 "切换到历史时间线标签，保留当前文件夹，按提交继续查找" = "Switch to the Timeline tab and keep searching commits with the same folder";
 "改名前的版本不能按当前文件名恢复；请到「文件恢复」按当时的文件名找回。" = "Versions from before a rename cannot be restored under the current file name; use File Recovery to bring them back under the name they had then.";
-"每次回滚前，FileVault 都会把回滚前的样子自动备份一份；之后想反悔，随时可以在这里把它恢复回来。（技术细节：备份保存在 refs/filevault/backup。）" = "Before every rollback, FileVault automatically backs up the pre-rollback state; if you change your mind, you can restore it here at any time. (Technical note: the backup lives in refs/filevault/backup.)";
+"每次回滚前，Pastward 都会把回滚前的样子自动备份一份；之后想反悔，随时可以在这里把它恢复回来。（技术细节：备份保存在 refs/filevault/backup。）" = "Before every rollback, Pastward automatically backs up the pre-rollback state; if you change your mind, you can restore it here at any time. (Technical note: the backup lives in refs/filevault/backup.)";
 // v4.2.30 settings audit (fix-settings)
 "%d 个大文件未备份" = "%d large file(s) not backed up";
-"FileVault 反馈（v%@ · %@）" = "FileVault feedback (v%@ · %@)";
-"FileVault 的自动保存始终开启：文件改动约 5 秒后自动生成一个新版本，无需任何操作。" = "FileVault's autosave is always on: changes become a new version about 5 seconds after you stop editing — no action needed.";
+"Pastward 反馈（v%@ · %@）" = "Pastward feedback (v%@ · %@)";
+"Pastward 的自动保存始终开启：文件改动约 5 秒后自动生成一个新版本，无需任何操作。" = "Pastward's autosave is always on: changes become a new version about 5 seconds after you stop editing — no action needed.";
 "iCloud / 云盘里的文件夹能用吗？" = "Can I use a folder inside iCloud / a cloud drive?";
 "⚠️ 仓库读取失败：%@" = "⚠️ Repository read failed: %@";
 "「暂停」期间会怎样？" = "What happens while a folder is paused?";

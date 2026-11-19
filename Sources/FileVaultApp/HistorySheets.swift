@@ -553,7 +553,7 @@ struct RecoverySheet: View {
                 Button("关闭") { dismiss() }
                     .controlSize(.small)
             }
-            Text("每次回滚前，FileVault 都会把回滚前的样子自动备份一份；之后想反悔，随时可以在这里把它恢复回来。（技术细节：备份保存在 refs/filevault/backup。）")
+            Text("每次回滚前，Pastward 都会把回滚前的样子自动备份一份；之后想反悔，随时可以在这里把它恢复回来。（技术细节：备份保存在 refs/filevault/backup。）")
                 .font(.system(size: 10.5))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)

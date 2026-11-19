@@ -4,7 +4,7 @@
 # 用法: ./scripts/make_app.sh <版本> [构建号]
 #
 # 环境变量（可选）:
-#   PRODUCT_NAME      应用名（默认 FileVault；改名时与 AppBrand.swift 一起改）
+#   PRODUCT_NAME      应用名（默认 Pastward（原 FileVault）；改名时与 AppBrand.swift 一起改）
 #   BUNDLE_ID         CFBundleIdentifier（默认 com.filevault.FileVault）
 #   CODESIGN_IDENTITY Developer ID 证书名，例如 "Developer ID Application: Your Name (TEAMID)"；
 #                     未设置时回退 ad-hoc 签名（仅本地验证，对外分发不可用）
@@ -14,7 +14,7 @@ cd "$(dirname "$0")/.."
 
 APP_VERSION="${1:?用法: ./scripts/make_app.sh <版本> [构建号]}"
 BUILD_NUMBER="${2:-$APP_VERSION}"
-PRODUCT_NAME="${PRODUCT_NAME:-FileVault}"
+PRODUCT_NAME="${PRODUCT_NAME:-Pastward}"
 BUNDLE_ID="${BUNDLE_ID:-com.filevault.FileVault}"
 BINARY="FileVaultApp"
 APP="build/${PRODUCT_NAME}.app"

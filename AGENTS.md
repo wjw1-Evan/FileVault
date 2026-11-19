@@ -1,10 +1,10 @@
-# AGENTS.md — FileVault 工作区指引
+# AGENTS.md — Pastward 工作区指引
 
 面向在本仓库工作的 AI 智能体。人类贡献者请看 [README.md](README.md)。
 
 ## 项目速览
 
-- 产品：FileVault，macOS 菜单栏常驻的 Git 自动版本管理工具（当前 v4.2.27）。
+- 产品：Pastward（v4.2.31 前叫 FileVault），macOS 菜单栏常驻的 Git 自动版本管理工具（当前 v4.2.31）。面向用户一律用新名；模块名 FileVaultCore/FileVaultApp、bundle id、配置目录与 refs/filevault/backup 是**刻意保留**的机器标识，不要顺手改。
 - 技术栈：Swift 6（工具链 6.0，源码按 `swiftLanguageMode(.v5)` 编译）、SwiftUI、macOS 14+。
 - 目录：
   - `Sources/FileVaultCore/` — 纯逻辑（Git、同步、恢复、更新、配置），不依赖 UI。

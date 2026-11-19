@@ -59,7 +59,7 @@ struct MenuContentView: View {
         HStack(spacing: 10) {
             FVIconBadge(symbol: "clock.arrow.circlepath", size: 30)
             VStack(alignment: .leading, spacing: 1) {
-                Text("FileVault")
+                Text("Pastward")
                     .font(.system(size: 13, weight: .semibold))
                 Text(app.statusLine)
                     .font(.system(size: 10))
@@ -242,11 +242,11 @@ struct MenuContentView: View {
                 }
                 .disabled(app.isUpdating)
                 MenuActionRow(symbol: "info.circle",
-                              title: "关于 FileVault",
+                              title: "关于 Pastward",
                               hint: app.version.isEmpty ? nil : "v\(app.version)",
                               compact: true) { app.showAbout() }
                 MenuActionRow(symbol: "power",
-                              title: "退出 FileVault",
+                              title: "退出 Pastward",
                               key: "q", modifiers: [.command],
                               hint: "⌘Q",
                               compact: true) { app.quit() }

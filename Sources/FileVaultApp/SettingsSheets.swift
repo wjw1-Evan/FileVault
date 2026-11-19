@@ -113,7 +113,7 @@ enum FAQContent {
         FAQItem(question: NSLocalizedString("误删或改坏了文件怎么找回？", comment: "faq"),
                 answer: NSLocalizedString("打开菜单栏「历史与恢复…」→「文件恢复」标签，已删除的文件会自动列出，选中后一键找回。", comment: "faq")),
         FAQItem(question: NSLocalizedString("为什么没有「保存」按钮？", comment: "faq"),
-                answer: NSLocalizedString("FileVault 的自动保存始终开启：文件改动约 5 秒后自动生成一个新版本，无需任何操作。", comment: "faq")),
+                answer: NSLocalizedString("Pastward 的自动保存始终开启：文件改动约 5 秒后自动生成一个新版本，无需任何操作。", comment: "faq")),
         FAQItem(question: NSLocalizedString("提示「大文件未同步」是什么意思？", comment: "faq"),
                 answer: NSLocalizedString("超过云端单文件上限（如 GitHub 100 MB）的文件不会上传云端，但本地版本一直保留；建议压缩或拆分后重新放入。", comment: "faq")),
         FAQItem(question: NSLocalizedString("iCloud / 云盘里的文件夹能用吗？", comment: "faq"),

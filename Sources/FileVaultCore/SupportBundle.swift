@@ -19,7 +19,7 @@ public enum SupportBundle {
         let os = ProcessInfo.processInfo.operatingSystemVersionString
         let arch = ProcessInfo.processInfo.machineHardwareName ?? "unknown"
         var lines: [String] = []
-        lines.append(NSLocalizedString("FileVault 诊断报告", comment: "diagnostics report"))
+        lines.append(NSLocalizedString("Pastward 诊断报告", comment: "diagnostics report"))
         lines.append(String(format: NSLocalizedString("生成时间: %@", comment: "diagnostics report"),
                             ISO8601DateFormatter().string(from: now)))
         lines.append("")

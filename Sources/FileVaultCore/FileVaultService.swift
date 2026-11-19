@@ -680,7 +680,7 @@ public enum FileVaultServiceError: LocalizedError {
         case .rootAlreadyManaged:
             return NSLocalizedString("这个文件夹已经在受保护列表里了", comment: "service error")
         case .managedByAnotherInstance:
-            return NSLocalizedString("这个文件夹正被另一个 FileVault 实例管理", comment: "service error")
+            return NSLocalizedString("这个文件夹正被另一个 Pastward 实例管理", comment: "service error")
         case .rootOverlaps(let other):
             return String(format: NSLocalizedString("这个文件夹与已受保护的「%@」重叠：不能嵌套保护，请只保留外层或里层其中一个",
                                                     comment: "service error"), other)

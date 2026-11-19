@@ -294,7 +294,7 @@ final class SettingsModel: ObservableObject {
                 }
                 if let foreignInstancePID {
                     self.rootCards[idx].repo.health = String(
-                        format: NSLocalizedString("⚠️ 另一个 FileVault 实例正在管理这个文件夹（pid %d）；退出那个实例后这里会自动接管",
+                        format: NSLocalizedString("⚠️ 另一个 Pastward 实例正在管理这个文件夹（pid %d）；退出那个实例后这里会自动接管",
                                                   comment: "repo health"), foreignInstancePID)
                 } else if let provider = CloudFolderAdvice.provider(for: id) {
                     self.rootCards[idx].repo.health = healthInfo.summary + String(
@@ -392,7 +392,7 @@ final class SettingsModel: ObservableObject {
             return
         }
         let panel = NSSavePanel()
-        panel.nameFieldStringValue = String(format: NSLocalizedString("FileVault-诊断-%@.zip", comment: "diagnostics file name"), Self.dayStamp())
+        panel.nameFieldStringValue = String(format: NSLocalizedString("Pastward-诊断-%@.zip", comment: "diagnostics file name"), Self.dayStamp())
         panel.allowedContentTypes = [.zip]
         guard panel.runModal() == .OK, let dest = panel.url else { return }
         let report = SupportBundle.report(appVersion: app.version,
@@ -433,7 +433,7 @@ final class SettingsModel: ObservableObject {
     /// falls back to a bare address instead of making the button a silent
     /// no-op.
     nonisolated static func supportMailURL(appVersion: String, osText: String) -> URL? {
-        let subject = String(format: NSLocalizedString("FileVault 反馈（v%@ · %@）",
+        let subject = String(format: NSLocalizedString("Pastward 反馈（v%@ · %@）",
                                                         comment: "support mail subject"),
                              appVersion, osText)
         var components = URLComponents()
@@ -1251,7 +1251,7 @@ struct SettingsView: View {
             }
             Button("取消", role: .cancel) { removeTarget = nil }
         } message: {
-            Text("FileVault 只是不再守卫这个文件夹，已经生成的 .git 历史不会被删除。")
+            Text("Pastward 只是不再守卫这个文件夹，已经生成的 .git 历史不会被删除。")
         }
         .confirmationDialog("暂停自动提交？", isPresented: Binding(
             get: { pauseTarget != nil },
@@ -1410,7 +1410,7 @@ struct SettingsView: View {
         VStack(spacing: 0) {
             // Version already shown once in the 通用 card.
             FVSectionHeader(title: "关于与支持",
-                            subtitle: "FileVault 永久免费 · 无账号、无订阅、无遥测")
+                            subtitle: "Pastward 永久免费 · 无账号、无订阅、无遥测")
             FVHairline(leading: 0)
             settingRow(title: "导出诊断包",
                        detail: "脱敏报告（不含文件内容/远程地址/账号），便于反馈问题") {

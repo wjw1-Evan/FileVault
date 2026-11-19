@@ -474,7 +474,7 @@ final class AppState: ObservableObject {
 
     func showAbout() {
         NSApp.orderFrontStandardAboutPanel(options: [
-            .applicationName: "FileVault",
+            .applicationName: AppBrand.productName,
             .applicationVersion: version,
         ])
         NSApp.activate(ignoringOtherApps: true)
@@ -557,7 +557,7 @@ final class AppState: ObservableObject {
             lastNotifiedUpdateVersion = offer.version
             notificationService.notifyFailure(
                 NSLocalizedString("发现新版本", comment: "update notification"),
-                String(format: NSLocalizedString("FileVault %@ 正在自动更新，完成后将自动重启。",
+                String(format: NSLocalizedString("Pastward %@ 正在自动更新，完成后将自动重启。",
                                                  comment: "update notification"), offer.version))
         }
         await installUpdate(offer: offer)

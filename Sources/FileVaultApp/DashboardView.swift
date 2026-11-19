@@ -267,7 +267,7 @@ struct DashboardView: View {
         HStack(alignment: .center, spacing: 14) {
             FVIconBadge(symbol: "clock.arrow.circlepath", size: 46)
             VStack(alignment: .leading, spacing: 3) {
-                Text("FileVault")
+                Text("Pastward")
                     .font(FVTheme.titleFont)
                     .tracking(-0.4)
                 Text("文件时光机 · \(model.stateLine)")

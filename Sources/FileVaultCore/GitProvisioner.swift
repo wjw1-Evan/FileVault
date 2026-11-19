@@ -134,7 +134,7 @@ public extension GitMirror {
         // Project-owned mirror: the same payload re-published on FileVault's own
         // releases, so a dead third-party accelerator never leaves users stuck.
         GitMirror(id: "filevault",
-                  name: NSLocalizedString("FileVault 自建镜像", comment: "git mirror name"),
+                  name: NSLocalizedString("Pastward 自建镜像", comment: "git mirror name"),
                   template: "https://github.com/wjw1-Evan/FileVault/releases/download/git-{version}/{asset}"),
     ]
 }

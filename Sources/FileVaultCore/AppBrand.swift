@@ -2,12 +2,21 @@ import Foundation
 
 /// Central product/brand metadata.
 ///
-/// Everything user-facing that a rename or rebrand would touch lives here:
-/// the trademark/App Store review risk of the current name "FileVault"
-/// (it collides with macOS's disk-encryption feature) is documented in
-/// docs/04 and docs/06 — when the rename happens, this is the file to edit.
+/// Everything user-facing that a rename or rebrand would touch lives here.
+/// v4.2.31: the product was renamed FileVault → PASTWARD — the old name
+/// collided with macOS's built-in disk-encryption feature (search confusion
+/// + review risk, see docs/04/docs/06). "Pastward" (modeled on
+/// backward/afterward) is unique in the software space (verified by a web
+/// sweep: no product/App Store/GitHub collisions), and matches the product's
+/// one job: take files back to the past.
+///
+/// Machine identifiers intentionally keep the ORIGINAL spelling so existing
+/// installs update and migrate transparently (docs/06 §5): bundle id
+/// com.filevault.FileVault (UpdateGuard pins it), the config directory
+/// ~/Library/Application Support/FileVault, the git backup ref
+/// refs/filevault/backup, and the FileVaultApp executable/module names.
 public enum AppBrand {
-    public static let productName = "FileVault"
+    public static let productName = "Pastward"
     public static let bundleIdentifier = "com.filevault.FileVault"
     public static let minimumMacOS = "14.0"
 
