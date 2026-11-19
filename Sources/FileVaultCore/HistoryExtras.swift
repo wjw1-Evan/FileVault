@@ -469,6 +469,14 @@ public extension HistoryService {
     func restoreDirectory(repoPath: String, directory: String, to hash: String) async throws -> String {
         let dir = directory.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         guard !dir.isEmpty else { throw HistoryError.invalidPath(directory) }
+        // A literal ".git" (or a path inside it) must never be "restored":
+        // the version has no such folder, so the branch below would DELETE
+        // the repository itself. The UI only passes real tree paths, but the
+        // guard makes the invariant explicit instead of relying on callers
+        // (v4.2.32).
+        guard dir != ".git", !dir.hasPrefix(".git/") else {
+            throw HistoryError.invalidPath(directory)
+        }
         try RepoManager.validateRepoRelativePath(dir)
         try Self.requireHash(hash, error: HistoryError.commitNotFound(hash))
         // restoreFile/resetRepo verify the object exists; restoreDirectory was
@@ -631,12 +639,24 @@ public extension HistoryService {
         return FileDiff(text: text, isBinary: binary, truncated: truncated, added: added, removed: removed)
     }
 
+    /// Shared parsers: parseGitDate used to build one ISO8601DateFormatter
+    /// AND one DateFormatter per record — 3,000 commits measured ≈397 ms of
+    /// pure formatter construction in the recovery window's scan (v4.2.32).
+    /// ISO8601DateFormatter is thread-safe; the fallback DateFormatter is
+    /// guarded by its own lock because DateFormatter is not.
+    private static let isoFormatter = ISO8601DateFormatter()
+    private static let fallbackFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = "yyyy-MM-dd HH:mm:ss Z"
+        return f
+    }()
+    private static let fallbackLock = NSLock()
+
     static func parseGitDate(_ raw: String) -> Date? {
-        let iso = ISO8601DateFormatter()
-        if let d = iso.date(from: raw) { return d }
-        let fallback = DateFormatter()
-        fallback.locale = Locale(identifier: "en_US_POSIX")
-        fallback.dateFormat = "yyyy-MM-dd HH:mm:ss Z"
-        return fallback.date(from: raw)
+        if let d = isoFormatter.date(from: raw) { return d }
+        fallbackLock.lock()
+        defer { fallbackLock.unlock() }
+        return fallbackFormatter.date(from: raw)
     }
 }

@@ -143,3 +143,29 @@
 - 原因：v3.2 的 quitRow 在行自身 6pt 底边距外又叠 4pt，面板底部收出 ~10pt 空白带，用户两次指出「无用的横条」；320pt 宽的弹层里 hairline 分隔条也显得零碎。
 - 证据：空白带修复 d2b39b6、卡片化重设计 de53b8f（MenuContentView.swift 的 FVMenuCard）；开发渲染像素实测：字形底 y=1074 / 面板底 y=1077（2x）。
 - 规避：改菜单布局时保持四边 12pt 对称外边距；新增分区用 FVMenuCard 包裹；最后一行永远不加额外 bottom padding，也不要重新引入 panelDivider。
+
+### 子进程管道必须在等待前并发读（v4.2.32）
+
+- 结论：`waitUntilExit()` 之后再 `readDataToEndOfFile()` 的写法，在子进程输出超过 64 KB 管道缓冲时会死锁到超时；GitRunner/GitProvisioner 早已并发读，GhRepoCreator 与 SelfUpdater 是漏网的两个（v4.2.32 已改）。
+- 原因：pipe 缓冲写满后子进程阻塞在 write，父进程阻塞在 wait，互等。
+- 证据：`Sources/FileVaultCore/GhRepoCreator.swift`（reader 在 spawn 前启动、超时阶梯 terminate→SIGKILL→关写端）、`SelfUpdater.replace`（DispatchGroup drain）；`GhRepoCreatorPipeTests`（假 gh 双流各 200 KB）、`SelfUpdaterEdgeCasesTests`。
+- 影响：新增任何 Process+Pipe 的代码先问一句「输出会不会超 64 KB」，会就照这两个文件并发读。
+
+### DispatchSourceTimer.cancel 拦不住已入队的事件处理器（v4.2.32）
+
+- 结论：cancel 只阻止尚未派发的触发；GCD 已派发到队列的 handler 仍会跑。防抖器里旧 handler 会误清新调度的 firstTouch 锚点并提前提交，需用「代际令牌」在 handler 内校验归属。
+- 证据：`Sources/FileVaultCore/Debouncer.swift` 的 `timerTokens`；`DebouncerStaleHandlerTests`。
+- 影响：任何「取消后重建」的定时器/任务都要考虑已派发事件，不能只靠 cancel。
+
+### URL.resolvingSymlinksInPath 不展开 /tmp 这类系统别名（v4.2.32）
+
+- 结论：macOS 上 `/tmp` → `/private/tmp` 的展开不在 `URL.resolvingSymlinksInPath()` 的解析范围内（实测原样返回），只解析用户自建符号链接。
+- 原因：系统卷级别名（firmlink/自动挂载）不算 symlink。
+- 证据：`PauseLegacyPathTests`（用用户 symlink 构造「未解析路径」的真实场景）；close-sync 2026-11-19 实验。
+- 影响：写「路径规范化/去重」逻辑时不要假设它能把 /tmp 与 /private/tmp 归一；测试里构造「未解析路径」要用用户 symlink。
+
+### git reset 后的旧提交不是 dangling（reflog 仍可达）（v4.2.32）
+
+- 结论：`git reset --hard` 后 `git fsck` 不报 dangling——被丢弃的提交仍在 reflog 里算可达；要构造真正的悬空对象须用 `git hash-object -w`（无引用写入）或先 `reflog expire`。
+- 证据：`Tests/FileVaultTests/FsckReportContractTests.testDanglingObjectsAreCountedWhileStillOk`（reset 版本 danglingCount=0，hash-object 版本 >0）。
+- 影响：写 fsck/gc 相关测试时直接照此构造，别再试 reset。

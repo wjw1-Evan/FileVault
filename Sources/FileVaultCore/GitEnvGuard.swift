@@ -141,6 +141,10 @@ public final class GitEnvGuard: @unchecked Sendable {
     public var onStatusChange: (@Sendable (Status) -> Void)?
     /// Mirror download progress: stage, fraction, mirror name.
     public var onInstallProgress: GitProvisionProgress?
+    /// Test seam for strategy 3 (v4.2.32): when non-nil, invoked instead of
+    /// the real xcode-select --install, which opens a modal ~1.5 GB system
+    /// dialog and must never run in a test.
+    public var xcodeCLTTrigger: (@Sendable () -> Void)?
     private let lock = NSLock()
 
     public init(locator: GitLocator = SystemGitLocator(),
@@ -250,13 +254,17 @@ public extension GitEnvGuard {
         // Strategy 3: trigger the official Xcode CLT installer (system dialog, ~1.5 GB).
         if allowXcodeCLTFallback {
             lastStrategy = .xcodeCLT
-            let clt = Process()
-            clt.executableURL = URL(fileURLWithPath: "/usr/bin/xcode-select")
-            clt.arguments = ["--install"]
-            clt.standardOutput = FileHandle.nullDevice
-            clt.standardError = FileHandle.nullDevice
-            try? clt.run()
-            clt.waitUntilExit()
+            if let xcodeCLTTrigger {
+                xcodeCLTTrigger()
+            } else {
+                let clt = Process()
+                clt.executableURL = URL(fileURLWithPath: "/usr/bin/xcode-select")
+                clt.arguments = ["--install"]
+                clt.standardOutput = FileHandle.nullDevice
+                clt.standardError = FileHandle.nullDevice
+                try? clt.run()
+                clt.waitUntilExit()
+            }
         }
 
         if let path = locator.locate() {

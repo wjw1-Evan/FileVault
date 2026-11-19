@@ -81,6 +81,9 @@ public enum SupportBundle {
                               destination: URL,
                               now: Date = Date()) throws -> URL {
         let fm = FileManager.default
+        // Piggyback the orphan sweep on every export: a killed process used
+        // to leave its staging dir behind until /tmp's 3-day purge (v4.2.32).
+        sweepOrphanStagingDirs(in: fm.temporaryDirectory)
         let staging = fm.temporaryDirectory
             .appendingPathComponent("fv-diagnostics-\(UUID().uuidString.prefix(8))", isDirectory: true)
         try fm.createDirectory(at: staging, withIntermediateDirectories: true)
@@ -133,6 +136,25 @@ public enum SupportBundle {
         case exportFailed
         public var errorDescription: String? {
             NSLocalizedString("诊断包生成失败，请检查目标位置是否可写", comment: "diagnostics error")
+        }
+    }
+
+    /// Remove `fv-diagnostics-*` staging directories orphaned by a killed
+    /// process (power loss / force quit mid-export): each holds a redacted
+    /// report copy in /tmp. The 3-day /tmp purge covers them eventually;
+    /// this sweep keeps even a crash-looping exporter from accumulating
+    /// copies (same pattern as SelfUpdater.sweepOrphanStagingDirs,
+    /// v4.2.32).
+    public static func sweepOrphanStagingDirs(in parent: URL, olderThan: TimeInterval = 86_400,
+                                              now: Date = Date()) {
+        let fm = FileManager.default
+        let entries = (try? fm.contentsOfDirectory(atPath: parent.path)) ?? []
+        for name in entries where name.hasPrefix("fv-diagnostics-") {
+            let full = parent.appendingPathComponent(name)
+            let attrs = try? fm.attributesOfItem(atPath: full.path)
+            let mtime = (attrs?[.modificationDate] as? Date) ?? now
+            guard now.timeIntervalSince(mtime) > olderThan else { continue }
+            try? fm.removeItem(atPath: full.path)
         }
     }
 

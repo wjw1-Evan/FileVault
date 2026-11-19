@@ -50,13 +50,34 @@ public enum SelfUpdater {
             try? fm.removeItem(at: tmpExtract)
             throw UpdateError.extractFailed(error.localizedDescription)
         }
+        // Drain stderr on a background queue for the WHOLE run (GitRunner's
+        // pattern): reading only after waitUntilExit deadlocks if the child
+        // ever writes more than the 64 KB pipe buffer while we are not
+        // reading. ditto stops at its first error in practice (verified
+        // against corrupt/truncated/conflict archives: 40–146 bytes of
+        // stderr), so this is defense in depth, not an observed fix
+        // (v4.2.32).
+        let errLock = NSLock()
+        var errData = Data()
+        let drain = DispatchQueue.global()
+        let drainDone = DispatchGroup()
+        drainDone.enter()
+        drain.async {
+            let d = errPipe.fileHandleForReading.readDataToEndOfFile()
+            errLock.lock(); errData = d; errLock.unlock()
+            drainDone.leave()
+        }
         unzip.waitUntilExit()
+        drainDone.wait()
         // A failed extraction is not a download failure: surfacing it as one
         // told users to retry the network when the real cause was a corrupt
         // archive or a full disk (v4.2.26).
         guard unzip.terminationStatus == 0 else {
             try? fm.removeItem(at: tmpExtract)
-            let detail = String(data: errPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
+            errLock.lock()
+            let captured = errData
+            errLock.unlock()
+            let detail = String(data: captured, encoding: .utf8)?
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             let reason = (detail?.isEmpty == false) ? (detail! + " ") : ""
             throw UpdateError.extractFailed(reason + "ditto exited with status \(unzip.terminationStatus) while extracting \(newZipURL.lastPathComponent)")
@@ -86,26 +107,11 @@ public enum SelfUpdater {
         }
         // 3. Rotate: current -> .old, new -> current, relaunch, cleanup.
         let oldURL = parent.appendingPathComponent(bundleURL.lastPathComponent + ".old")
-        try? fm.removeItem(at: oldURL)
-        // Fail loudly if the running bundle cannot be moved aside (read-only
-        // volume, sandbox, missing permission): the old code ignored the error
-        // and then failed with a generic "download failed".
         do {
-            try fm.moveItem(at: bundleURL, to: oldURL)
+            try Self.rotateBundle(current: bundleURL, old: oldURL, newApp: newApp)
         } catch {
             try? fm.removeItem(at: tmpExtract)
-            throw UpdateError.installFailed(error.localizedDescription)
-        }
-        do {
-            _ = try fm.moveItem(at: newApp, to: bundleURL)
-        } catch {
-            // Roll back on failure. Moving the new package into place is an
-            // install failure (permissions, read-only volume), not a download
-            // failure; the old generic message sent users to retry the
-            // network (v4.2.26).
-            _ = try? fm.moveItem(at: oldURL, to: bundleURL)
-            try? fm.removeItem(at: tmpExtract)
-            throw UpdateError.installFailed(error.localizedDescription)
+            throw error
         }
         try? fm.removeItem(at: tmpExtract)
         if relaunch {
@@ -132,6 +138,36 @@ public enum SelfUpdater {
         }
     }
 
+
+    /// Rotation step with rollback (v4.2.32): current → .old, new → current;
+    /// a failed move-in restores the old bundle in place. Extracted with an
+    /// injectable `move` because the mid-rotation state cannot be forced from
+    /// the filesystem — the first move VACATES the destination, so a pre-
+    /// occupied target never reaches the second move.
+    static func rotateBundle(current: URL, old: URL, newApp: URL,
+                             move: (URL, URL) throws -> Void = {
+                                 try FileManager.default.moveItem(at: $0, to: $1)
+                             }) throws {
+        try? FileManager.default.removeItem(at: old)
+        // Fail loudly if the running bundle cannot be moved aside (read-only
+        // volume, sandbox, missing permission): the old code ignored the error
+        // and then failed with a generic "download failure".
+        do {
+            try move(current, old)
+        } catch {
+            throw UpdateError.installFailed(error.localizedDescription)
+        }
+        do {
+            try move(newApp, current)
+        } catch {
+            // Roll back on failure. Moving the new package into place is an
+            // install failure (permissions, read-only volume), not a download
+            // failure; the old generic message sent users to retry the
+            // network (v4.2.26).
+            _ = try? FileManager.default.moveItem(at: old, to: current)
+            throw UpdateError.installFailed(error.localizedDescription)
+        }
+    }
     /// Quote a path for shell embedding (relaunch helper runs via /bin/sh).
     public static func shellQuoted(_ path: String) -> String {
         "'" + path.replacingOccurrences(of: "'", with: "'\\''") + "'"

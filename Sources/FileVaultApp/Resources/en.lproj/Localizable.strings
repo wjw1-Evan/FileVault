@@ -113,7 +113,6 @@
 "如果远程用的是别的分支名（现有：%@），可在终端执行 git branch --set-upstream-to=%@/<分支>；否则应用会自动重试推送，也可在终端执行 git push -u %@ %@。" = "If the remote uses a different branch name (it has: %@), run git branch --set-upstream-to=%@/<branch> in Terminal; otherwise the app retries the push automatically, or run git push -u %@ %@.";
 "仓库正被另一个 Git 操作占用（锁文件）" = "The repository is locked by another Git operation (lock file)";
 "等几秒后重试；若一直失败，确认没有其他 Git 工具在操作这个文件夹后，可在终端删除 .git/index.lock 再重试。" = "Try again in a few seconds; if it keeps failing, make sure no other Git tool is using this folder, then delete .git/index.lock in Terminal and retry.";
-"操作超时（网络较慢或仓库较大，已等待 120 秒）" = "The operation timed out (slow network or a large repository; waited 120 seconds)";
 "远程仓库拒绝了这次推送（分支保护或仓库规则）。请在托管平台调整分支保护/权限后再试。" = "The remote refused this push (branch protection or repository rules). Adjust the branch protection/permissions on the hosting platform and try again.";
 "远程仓库因为文件过大拒绝了这次推送。新加入的超限文件会被自动排除；若历史提交里已包含超限文件，推送会被永久拒绝，需要整理提交历史（如重新开始版本历史）或更换远程后才能恢复同步。" = "The remote refused this push because a file is too large. Newly added oversized files are excluded automatically; if an oversized file is already in history, pushes are refused permanently until the history is cleaned up (e.g. start a fresh version history) or the remote is changed.";
 "推送超时（网络较慢或仓库较大），稍后会自动重试" = "Push timed out (slow network or a large repository); it will retry automatically";
@@ -876,6 +875,14 @@
 "远程认证方式怎么选？" = "Which remote authentication should I pick?";
 "遇到问题怎么求助？" = "How do I get help?";
 "需要先安装 GitHub CLI" = "GitHub CLI must be installed first";
+// v4.2.32 closure round
+"应用正在启动，请稍后重试。" = "The app is still starting — try again in a moment.";
+"查看刚恢复的文件" = "Show the recovered file";
+"在 Finder 中查看刚恢复的文件" = "Reveal the file you just recovered in Finder";
+"请勿手动删除 .git 文件夹（会丢掉全部历史）。请在下方「关于与支持」导出诊断包，发给支持邮箱。" = "Do NOT delete the .git folder manually (that erases all history). Export a diagnostics bundle below and email it to support.";
+"悬空对象是 Git 历史正常运转产生的冗余，不影响使用；每周自动 gc 会回收它们。" = "Dangling objects are redundant leftovers of Git's normal history churn — harmless, and the weekly gc reclaims them.";
+"操作超时（网络较慢或仓库较大，已等待 %d 秒）" = "The operation timed out (slow network or a large repository, waited %d seconds)";
+
 
 // v4.2.31 records window round (fix-records)
 "提交历史读取失败：%@" = "Failed to read commit history: %@";

@@ -102,6 +102,20 @@ public enum UpdateError: Error, LocalizedError, Equatable {
     }
 }
 
+
+/// Byte transport for release metadata (injected in tests, v4.2.32).
+public protocol ReleaseTransport: Sendable {
+    func data(for request: URLRequest) async throws -> (Data, URLResponse)
+}
+
+/// Production transport: plain URLSession (no auth, public API).
+public struct URLSessionReleaseTransport: ReleaseTransport {
+    public init() {}
+    public func data(for request: URLRequest) async throws -> (Data, URLResponse) {
+        try await URLSession.shared.data(for: request)
+    }
+}
+
 /// Source of release metadata (injectable for tests).
 public protocol ReleaseFetching: Sendable {
     func latest() async throws -> ReleaseInfo
@@ -115,8 +129,14 @@ public protocol ReleaseFetching: Sendable {
 /// without an authenticated Homebrew gh).
 public struct HttpReleaseFetcher: ReleaseFetching {
     public let repo: String
-    public init(repo: String = "wjw1-Evan/FileVault") {
+    /// Transport seam (v4.2.32): tests inject canned responses so the retry
+    /// ladder, rate-limit short-circuit and non-2xx mapping are testable
+    /// without hitting the network.
+    public let transport: ReleaseTransport
+    public init(repo: String = "wjw1-Evan/FileVault",
+                transport: ReleaseTransport = URLSessionReleaseTransport()) {
         self.repo = repo
+        self.transport = transport
     }
 
     public func latest() async throws -> ReleaseInfo {
@@ -147,7 +167,7 @@ public struct HttpReleaseFetcher: ReleaseFetching {
         var req = URLRequest(url: url, timeoutInterval: 15)
         req.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
         req.setValue("FileVaultApp", forHTTPHeaderField: "User-Agent") // GitHub API requires a UA
-        let (data, resp) = try await URLSession.shared.data(for: req)
+        let (data, resp) = try await transport.data(for: req)
         guard let http = resp as? HTTPURLResponse else { throw UpdateError.noRelease }
         if http.statusCode == 403 || http.statusCode == 429 {
             // Shared-IP rate limiting is not "no release": retrying burns the

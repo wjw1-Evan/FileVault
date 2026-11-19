@@ -10,6 +10,11 @@ public final class Debouncer: @unchecked Sendable {
     private let lock = NSLock()
     private var timers: [String: DispatchSourceTimer] = [:]
     private var firstTouch: [String: Date] = [:]
+    /// Identity of the currently armed schedule per key. Cancelling a
+    /// DispatchSourceTimer does not stop an event handler GCD has ALREADY
+    /// queued; the stale handler must therefore check it still owns the slot
+    /// before clearing state (v4.2.32).
+    private var timerTokens: [String: UUID] = [:]
 
     public init(quietInterval: TimeInterval, maxWait: TimeInterval, onFired: @escaping @Sendable (String) -> Void) {
         self.quietInterval = quietInterval
@@ -46,12 +51,23 @@ public final class Debouncer: @unchecked Sendable {
             return
         }
         timers[key]?.cancel()
+        let token = UUID()
+        timerTokens[key] = token
         let t = DispatchSource.makeTimerSource(queue: DispatchQueue.global())
         t.schedule(deadline: .now() + min(currentQuietInterval, remaining))
         t.setEventHandler { [weak self] in
             guard let self else { return }
             self.lock.lock()
+            // Stale-handler guard (v4.2.32): a newer touch already cancelled
+            // this timer and armed its own. Clearing state here would wipe
+            // the NEW schedule's firstTouch anchor (restarting the maxWait
+            // window mid-stream) and fire a premature commit.
+            guard self.timerTokens[key] == token else {
+                self.lock.unlock()
+                return
+            }
             self.timers[key] = nil
+            self.timerTokens[key] = nil
             self.firstTouch[key] = nil
             self.lock.unlock()
             if ProcessInfo.processInfo.environment["FV_DEBUG"] != nil {
@@ -77,6 +93,7 @@ public final class Debouncer: @unchecked Sendable {
     private func fireNowLocked(key: String) {
         timers[key]?.cancel()
         timers[key] = nil
+        timerTokens[key] = nil
         firstTouch[key] = nil
         onFired(key)
     }
@@ -86,6 +103,7 @@ public final class Debouncer: @unchecked Sendable {
         lock.lock(); defer { lock.unlock() }
         for t in timers.values { t.cancel() }
         timers.removeAll()
+        timerTokens.removeAll()
         firstTouch.removeAll()
     }
 
@@ -96,6 +114,7 @@ public final class Debouncer: @unchecked Sendable {
         lock.lock(); defer { lock.unlock() }
         timers[key]?.cancel()
         timers[key] = nil
+        timerTokens[key] = nil
         firstTouch[key] = nil
     }
 }

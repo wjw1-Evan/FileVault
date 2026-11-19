@@ -1,6 +1,8 @@
 import Foundation
 
-/// Streams the update asset with byte-level progress (FR-20 v1.2.2).
+/// Downloads the update asset with progress and an overall time budget
+/// (FR-20 v1.2.2; v4.2.32 moved from per-byte AsyncBytes iteration — which
+/// measured ≈195 KB/s — to URLSession.download at full line speed).
 /// v2.6.4: direct HTTPS download of the public release asset — no `gh` CLI,
 /// no token, no Homebrew paths. Works on any Mac with just FileVault installed.
 public enum UpdateDownloader {
@@ -41,7 +43,20 @@ public enum UpdateDownloader {
         return rank(candidate) >= rank(current) ? candidate : current
     }
 
-    /// One download attempt: stream `browser_download_url` to a temp file.
+    /// Overall budget for one download attempt. A stalled-but-open
+    /// connection never tripped the 60 s request timeout (which is idle-
+    /// based), so a trickling mirror held the update flow hostage forever
+    /// (v4.2.32). Injectable for tests.
+    public static var downloadTimeLimit: TimeInterval = 600
+
+    /// One download attempt: `browser_download_url` via URLSession.download
+    /// with progress polled from task.progress and an overall time budget.
+    ///
+    /// v4.2.32: this used to iterate `AsyncBytes` BYTE BY BYTE — measured
+    /// 20 MB ≈ 103 s of pure per-byte await overhead (≈195 KB/s), so a 22 MB
+    /// release took minutes on a fast line. URLSession.download streams
+    /// internally at full speed; progress comes from the task's Progress
+    /// (unit count 100 = percent).
     private static func downloadOnce(info: ReleaseInfo,
                                      progress: ((Double, Int64, Int64) -> Void)?) async throws -> URL {
         guard !info.assetURL.isEmpty, let url = URL(string: info.assetURL) else {
@@ -49,21 +64,6 @@ public enum UpdateDownloader {
         }
         var req = URLRequest(url: url, timeoutInterval: 60)
         req.setValue("FileVaultApp", forHTTPHeaderField: "User-Agent")
-        let bytes: URLSession.AsyncBytes
-        let response: URLResponse
-        do {
-            (bytes, response) = try await URLSession.shared.bytes(for: req)
-        } catch {
-            // Preserve the transport diagnosis (offline, DNS, proxy, TLS, …)
-            // instead of collapsing it into the generic .downloadFailed.
-            throw Self.transportError(error)
-        }
-        // Only HTTP responses carry a failure status; non-HTTP schemes (file://,
-        // used by tests and offline mirrors) with no transport error are fine.
-        if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
-            throw UpdateError.httpStatus(http.statusCode)
-        }
-        let total = info.assetSize > 0 ? info.assetSize : response.expectedContentLength
         // The asset name comes from the GitHub API: never let it add path
         // components, and use a fresh file per attempt so a smaller re-upload
         // can never leave tail bytes from an earlier download (sha mismatch
@@ -73,59 +73,113 @@ public enum UpdateDownloader {
         let dest = FileManager.default.temporaryDirectory
             .appendingPathComponent("fv-update-\(UUID().uuidString.prefix(8))-\(name)")
         try? FileManager.default.removeItem(at: dest)
-        guard FileManager.default.createFile(atPath: dest.path, contents: nil) else {
-            throw UpdateError.downloadFailed
+
+        let deadline = Date().addingTimeInterval(max(1, downloadTimeLimit))
+        // One task for both progress polling and completion: the handler-
+        // based downloadTask still exposes .progress (unit count 100).
+        // DownloadBridge turns the one-shot completion handler into an
+        // awaitable continuation (v4.2.32).
+        let bridge = DownloadBridge()
+        let task = URLSession.shared.downloadTask(with: req) { url, resp, error in
+            bridge.complete(url: url, response: resp, error: error)
         }
-        let handle: FileHandle
+        let monitor = Task {
+            var lastFraction = 0.0
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 250_000_000)
+                let p = task.progress
+                let fraction = p.totalUnitCount > 0
+                    ? Double(p.completedUnitCount) / Double(p.totalUnitCount)
+                    : 0
+                if fraction - lastFraction >= 0.01 {
+                    lastFraction = fraction
+                    let total = info.assetSize > 0 ? info.assetSize : 0
+                    progress?(min(fraction, 0.999), Int64(fraction * Double(max(total, 0))), total)
+                }
+                if Date() > deadline { task.cancel(); return }
+            }
+        }
+        defer { monitor.cancel() }
         do {
-            handle = try FileHandle(forWritingTo: dest)
-        } catch {
-            try? FileManager.default.removeItem(at: dest)
-            throw UpdateError.downloadTransport(error.localizedDescription)
-        }
-        // Any throw below — including a size mismatch or a mid-stream transport
-        // error — must remove the partial file: retries used to leave one
-        // half-written ~22 MB zip per attempt in /tmp forever (v4.2.26).
-        var completed = false
-        defer {
-            try? handle.close()
-            if !completed {
+            let (fileURL, response) = try await bridge.waitForCompletion(task: task)
+            // Only HTTP responses carry a failure status; non-HTTP schemes (file://,
+            // used by tests and offline mirrors) with no transport error are fine.
+            if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+                try? FileManager.default.removeItem(at: fileURL)
+                throw UpdateError.httpStatus(http.statusCode)
+            }
+            let attrs = try? FileManager.default.attributesOfItem(atPath: fileURL.path)
+            let received = (attrs?[.size] as? NSNumber)?.int64Value ?? 0
+            let expected = info.assetSize > 0
+                ? info.assetSize
+                : response.expectedContentLength
+            if expected > 0, received != expected {
+                try? FileManager.default.removeItem(at: fileURL)
+                throw UpdateError.downloadFailed
+            }
+            // Move into the fresh per-attempt path (a same-name collision
+            // would fail the move; remove first as before).
+            if FileManager.default.fileExists(atPath: dest.path) {
                 try? FileManager.default.removeItem(at: dest)
             }
-        }
-        try handle.truncate(atOffset: 0)
-        var buffer = Data()
-        var received: Int64 = 0
-        var lastReported = 0.0
-        do {
-            for try await byte in bytes {
-                buffer.append(byte)
-                if buffer.count >= 64 * 1024 {
-                    try handle.write(contentsOf: buffer)
-                    received += Int64(buffer.count)
-                    buffer.removeAll(keepingCapacity: true)
-                    if total > 0 {
-                        let fraction = Double(received) / Double(total)
-                        if fraction - lastReported >= 0.01 {
-                            lastReported = fraction
-                            progress?(fraction, received, total)
-                        }
-                    }
-                }
+            do {
+                try FileManager.default.moveItem(at: fileURL, to: dest)
+            } catch {
+                try? FileManager.default.removeItem(at: fileURL)
+                throw UpdateError.downloadTransport(error.localizedDescription)
             }
-            if !buffer.isEmpty {
-                try handle.write(contentsOf: buffer)
-                received += Int64(buffer.count)
-            }
+            let total = info.assetSize > 0 ? info.assetSize : received
+            progress?(1.0, received, total)
+            return dest
         } catch {
+            task.cancel()
             throw Self.transportError(error)
         }
-        if total > 0, received != total {
-            throw UpdateError.downloadFailed
+    }
+
+    /// Bridges a one-shot URLSession completion handler into an awaitable
+    /// continuation. Kept as a class so the handler closure and the waiter
+    /// share the resume state (v4.2.32).
+    private final class DownloadBridge: @unchecked Sendable {
+        private let lock = NSLock()
+        private var continuation: CheckedContinuation<(URL, URLResponse), Error>?
+        private var result: Result<(URL, URLResponse), Error>?
+
+        func complete(url: URL?, response: URLResponse?, error: Error?) {
+            lock.lock()
+            // Cancellation arrives as an error through the same handler.
+            let r: Result<(URL, URLResponse), Error>
+            if let error {
+                r = .failure(error)
+            } else if let url, let response {
+                r = .success((url, response))
+            } else {
+                r = .failure(UpdateError.downloadFailed)
+            }
+            if let cont = continuation {
+                continuation = nil
+                lock.unlock()
+                cont.resume(with: r)
+            } else {
+                result = r
+                lock.unlock()
+            }
         }
-        progress?(1.0, received, total)
-        completed = true
-        return dest
+
+        func waitForCompletion(task: URLSessionTask) async throws -> (URL, URLResponse) {
+            task.resume()
+            return try await withCheckedThrowingContinuation { cont in
+                lock.lock()
+                if let r = result {
+                    result = nil
+                    lock.unlock()
+                    cont.resume(with: r)
+                } else {
+                    continuation = cont
+                    lock.unlock()
+                }
+            }
+        }
     }
 
     /// Map a thrown error to the most readable download error.

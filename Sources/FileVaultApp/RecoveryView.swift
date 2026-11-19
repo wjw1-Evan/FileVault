@@ -62,6 +62,12 @@ final class RecoveryModel: ObservableObject {
     @Published var workingDiffError: String?
     @Published var detailMode: VersionDetailMode = .content
     @Published var busy = false
+    /// Path the last successful restore brought back (nil once its reveal
+    /// CTA is used or the folder switches). The footer reveals THIS file
+    /// while the ✓ line is up — the list selection moves on after a
+    /// restore, so the plain reveal button would show a different file
+    /// (closure audit v4.2.32).
+    @Published var restoredPathForReveal: String?
     @Published var statusText = NSLocalizedString("选择一个文件，查看它的历史版本",
                                                   comment: "recovery status")
 
@@ -238,6 +244,7 @@ final class RecoveryModel: ObservableObject {
             roots = latest
             if selectedRoot == nil || !latest.contains(selectedRoot!) {
                 selectedRoot = latest.first
+                restoredPathForReveal = nil
                 statusText = Self.idleStatusText
             }
             reload(preserveSelection: false)
@@ -252,6 +259,7 @@ final class RecoveryModel: ObservableObject {
         roots = svc.rootsSnapshot()
         if selectedRoot == nil || !roots.contains(selectedRoot!) {
             selectedRoot = roots.first
+            restoredPathForReveal = nil
             statusText = Self.idleStatusText
         }
         reload(preserveSelection: false)
@@ -260,6 +268,9 @@ final class RecoveryModel: ObservableObject {
     func rootChanged(_ newRoot: String) {
         guard newRoot != selectedRoot else { return }
         selectedRoot = newRoot
+        // A folder switch invalidates the pending success CTA: its relative
+        // path belongs to the PREVIOUS folder (closure audit v4.2.32).
+        restoredPathForReveal = nil
         // Switching folders must not keep the previous folder's ✓ / ⚠️ result;
         // results stay only while the same folder is selected (v4.2.26).
         statusText = Self.idleStatusText
@@ -345,6 +356,10 @@ final class RecoveryModel: ObservableObject {
         versionsGeneration += 1
         previewGeneration += 1
         diffGeneration += 1
+        // NOTE: a pending restoredPathForReveal is NOT dropped here — the
+        // post-restore reload itself lands in clearSelection (empty scope
+        // list) and would erase the success CTA it just set. Only FOLDER
+        // switches invalidate it (closure audit v4.2.32).
         selectedPath = nil
         versions = []
         selectedVersionHash = nil
@@ -506,7 +521,14 @@ final class RecoveryModel: ObservableObject {
 
     /// Restore the selected file to the selected version.
     func restore() {
-        guard !busy, let svc = app?.service, let root = selectedRoot,
+        guard !busy else { return }
+        // Startup window (a login-restored records window can exist before
+        // AppState built the service): answer, don't vanish (v4.2.32).
+        guard let svc = app?.service else {
+            statusText = NSLocalizedString("应用正在启动，请稍后重试。", comment: "recovery status")
+            return
+        }
+        guard let root = selectedRoot,
               let path = selectedPath, let version = selectedVersion,
               version.exists else { return }
         busy = true
@@ -529,6 +551,9 @@ final class RecoveryModel: ObservableObject {
                     // listeners so the history tab refreshes immediately (v4.2.26).
                     svc.notifyStateChanged()
                 }
+                // Keep the restored path for the footer's success CTA (see
+                // restoredPathForReveal; closure audit v4.2.32).
+                self.restoredPathForReveal = path
                 self.busy = false
                 // The restored file usually leaves the current scope: move the
                 // selection to the next one instead of showing a file that is
@@ -588,6 +613,21 @@ final class RecoveryModel: ObservableObject {
         }
         let target = fm.fileExists(atPath: parent) ? parent : root
         NSWorkspace.shared.open(URL(fileURLWithPath: target))
+    }
+
+    /// Success CTA for the footer: reveal the file the last restore brought
+    /// back (falls back to the folder when the file is gone again)
+    /// (closure audit v4.2.32).
+    func revealRestoredFile() {
+        guard let root = selectedRoot, let path = restoredPathForReveal else { return }
+        restoredPathForReveal = nil
+        let fm = FileManager.default
+        let full = (root as NSString).appendingPathComponent(path)
+        if fm.fileExists(atPath: full) {
+            NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: full)])
+        } else {
+            NSWorkspace.shared.open(URL(fileURLWithPath: root))
+        }
     }
 }
 
@@ -1328,32 +1368,55 @@ struct RecoveryView: View {
 
     private var footer: some View {
         HStack(alignment: .top, spacing: 8) {
+            // The product's core value moment deserves more than a dim
+            // 11pt line: success gets the accent color and weight (v4.2.32).
+            let restored = model.statusText.hasPrefix("✓")
             Image(systemName: statusSymbol)
                 .font(.system(size: 10))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(restored ? Color.green : Color.secondary)
                 .padding(.top, 1)
             // Failure text carries the remedy ("请先把它改名或移走…"); it must
             // wrap instead of being cut to one line (v4.2.26).
             Text(model.statusText)
-                .font(.system(size: 11))
-                .foregroundStyle(.secondary)
+                .font(.system(size: 11, weight: restored ? .medium : .regular))
+                .foregroundStyle(restored ? Color.green : Color.secondary)
                 .lineLimit(3)
                 .fixedSize(horizontal: false, vertical: true)
                 .help(model.statusText)
             Spacer(minLength: 8)
-            Button {
-                model.revealInFinder()
-            } label: {
-                HStack(spacing: 4) {
-                    Image(systemName: "folder")
-                        .font(.system(size: 9))
-                    Text("在 Finder 中显示")
-                        .font(.system(size: 11))
+            if model.restoredPathForReveal != nil {
+                // Right after a restore the list selection moves on; the
+                // plain reveal button would show a DIFFERENT file. Point the
+                // user at the one that just came back (closure audit v4.2.32).
+                Button {
+                    model.revealRestoredFile()
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "folder.fill")
+                            .font(.system(size: 9))
+                        Text("查看刚恢复的文件")
+                            .font(.system(size: 11, weight: .medium))
+                    }
                 }
+                .controlSize(.small)
+                .buttonStyle(.bordered)
+                .tint(.green)
+                .help("在 Finder 中查看刚恢复的文件")
+            } else {
+                Button {
+                    model.revealInFinder()
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "folder")
+                            .font(.system(size: 9))
+                        Text("在 Finder 中显示")
+                            .font(.system(size: 11))
+                    }
+                }
+                .controlSize(.small)
+                .disabled(model.selectedPath == nil)
+                .help("在 Finder 中显示这个文件")
             }
-            .controlSize(.small)
-            .disabled(model.selectedPath == nil)
-            .help("在 Finder 中显示这个文件")
             Button {
                 confirmRestore = true
             } label: {

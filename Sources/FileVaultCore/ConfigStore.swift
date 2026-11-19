@@ -166,6 +166,7 @@ public final class ConfigStore: @unchecked Sendable {
     public func save(_ config: AppConfig) -> Bool {
         lock.lock(); defer { lock.unlock() }
         cache = config
+        lastSaveIssue = nil
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true,
                                                  attributes: [.posixPermissions: 0o700])
         // Do NOT chmod an EXISTING directory: a deliberately read-only config dir
@@ -178,7 +179,15 @@ public final class ConfigStore: @unchecked Sendable {
         if FileManager.default.fileExists(atPath: primary.path) {
             if let old = try? Data(contentsOf: primary),
                (try? JSONDecoder().decode(AppConfig.self, from: old)) != nil {
-                try? old.write(to: backup, options: .atomic)
+                // v4.2.32: a failed backup write used to be silent — the next
+                // corrupt primary then had NO good copy to recover from, and
+                // nothing anywhere said so. Record it; the save still proceeds
+                // (the primary is replaced with the new good config either way).
+                do {
+                    try old.write(to: backup, options: .atomic)
+                } catch {
+                    lastSaveIssue = .backupWriteFailed
+                }
                 // The backup holds every protected-folder path too: without the
                 // chmod it stayed 0644 while the primary was 0600 (v4.2.27).
                 try? FileManager.default.setAttributes([.posixPermissions: 0o600],
@@ -205,9 +214,26 @@ public final class ConfigStore: @unchecked Sendable {
 
     static let backupFileName = "config.backup.json"
 
+    /// Why the last save was degraded (survives until the next successful
+    /// save so Settings can surface it, v4.2.32).
+    public enum SaveIssue: String, Sendable, Equatable {
+        /// The pre-save backup of the previous config could not be written;
+        /// the primary file is still current (the save itself succeeded).
+        case backupWriteFailed
+    }
+    public private(set) var lastSaveIssue: SaveIssue?
+
     private static func stamp() -> String {
+        // en_US_POSIX digits: an ar/falocale system formats digits as
+        // ٢٠٢٦… producing a filename that no shell/regex round-trips
+        // (same class of bug as RepoManager.backupStamp, fixed there in
+        // v4.2.25) (v4.2.32).
         let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
         f.dateFormat = "yyyyMMdd-HHmmss"
         return f.string(from: Date())
     }
+
+    /// Test probe for the locale contract (v4.2.32).
+    static func stampForTests() -> String { stamp() }
 }

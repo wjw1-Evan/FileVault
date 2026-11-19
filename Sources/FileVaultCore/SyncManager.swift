@@ -43,8 +43,8 @@ public actor SyncManager {
 
     public init(repoManager: RepoManager, backoffSchedule: [TimeInterval] = [1, 2, 4, 8, 16, 32, 64, 128, 256, 300],
                 maxAttempts: Int = 6,
-                pushTimeout: TimeInterval = RepoManager.networkTimeout,
-                longPushTimeout: TimeInterval = RepoManager.networkTimeout * 5) {
+                pushTimeout: TimeInterval = RepoManager.defaultNetworkTimeout,
+                longPushTimeout: TimeInterval = RepoManager.defaultNetworkTimeout * 5) {
         self.repoManager = repoManager
         self.backoffSchedule = backoffSchedule
         self.maxAttempts = maxAttempts

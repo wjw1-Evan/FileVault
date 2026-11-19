@@ -529,7 +529,11 @@ public final class FileVaultService: @unchecked Sendable {
     public func setRootPaused(_ p: Bool, root: String) async {
         pause.setPaused(p, forRoot: resolved(root))
         var cfg = configStore.load()
-        if let idx = cfg.roots.firstIndex(where: { $0.path == resolved(root) }) {
+        // Compare RESOLVED paths (v4.2.32): a legacy config can still carry the
+        // pre-resolving stored form (the ManagedRoot decoder keeps the disk
+        // string verbatim), and the runtime key is always resolved — an exact
+        // match silently dropped the flag, so a pause never survived a restart.
+        if let idx = cfg.roots.firstIndex(where: { resolved($0.path) == resolved(root) }) {
             cfg.roots[idx].paused = p
             saveConfig(cfg)
         }

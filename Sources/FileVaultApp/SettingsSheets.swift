@@ -19,9 +19,10 @@ struct CreateRepoSheet: View {
 
     /// Mirrors GhRepoCreator's naming rule so the button can grey out BEFORE
     /// the first create attempt fails (v4.2.30 audit item 6a).
+    /// Delegates to the Core rule (v4.2.32): one definition for both the
+    /// dialog's enablement check and gh's own pre-flight.
     static func isValidRepoName(_ raw: String) -> Bool {
-        let safe = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        return !safe.isEmpty && safe.range(of: "^[A-Za-z0-9._-]+$", options: .regularExpression) != nil
+        GhRepoCreator.isValidRepoName(raw)
     }
 
     private var trimmed: String { name.trimmingCharacters(in: .whitespacesAndNewlines) }

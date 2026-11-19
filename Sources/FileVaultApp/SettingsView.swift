@@ -180,6 +180,12 @@ final class SettingsModel: ObservableObject {
 
     private var service: FileVaultService? { app?.service }
 
+    /// Startup window: the settings window can exist before AppState built
+    /// the service (login launch, --open-ui). Any click that needs the
+    /// service must answer, never be a silent no-op (closure audit v4.2.32).
+    private static let startingUpMessage = NSLocalizedString("应用正在启动，请稍后重试。",
+                                                              comment: "settings status")
+
     // MARK: - Load / rebuild
 
     func reload() {
@@ -447,7 +453,15 @@ final class SettingsModel: ObservableObject {
     /// v4.2.30 audit item 4: the card counts the excluded large files, this
     /// sheet names them with sizes.
     func openLargeFiles(_ id: String) {
-        guard let svc = service, svc.isReady else { return }
+        guard let svc = service else {
+            setMessage(id, Self.startingUpMessage)
+            return
+        }
+        guard svc.isReady else {
+            setMessage(id, NSLocalizedString("Git 环境尚未就绪，请稍后重试（可在主面板查看原因）。",
+                                              comment: "settings status"))
+            return
+        }
         let repoName = (id as NSString).lastPathComponent
         Task { [weak self] in
             let rules = svc.repoManager.excludedLargeFiles(path: id)
@@ -537,7 +551,10 @@ final class SettingsModel: ObservableObject {
     // MARK: - Root cards
 
     func pauseRoot(_ card: RootCard, to paused: Bool) {
-        guard let svc = service else { return }
+        guard let svc = service else {
+            setMessage(card.id, Self.startingUpMessage)
+            return
+        }
         Task { [weak self] in
             await svc.setRootPaused(paused, root: card.path)
             await MainActor.run { self?.reload() }
@@ -545,7 +562,12 @@ final class SettingsModel: ObservableObject {
     }
 
     func removeRoot(_ card: RootCard) {
-        guard let svc = service else { return }
+        guard let svc = service else {
+            // The confirm dialog already ran; vanishing here would read as
+            // "removal done" while the folder stays (closure audit v4.2.32).
+            setMessage(card.id, Self.startingUpMessage)
+            return
+        }
         Task { [weak self] in
             await svc.removeRoot(path: card.path)
             await MainActor.run {
@@ -560,7 +582,13 @@ final class SettingsModel: ObservableObject {
     }
 
     func addRoot(at url: URL) {
-        guard let svc = service else { return }
+        guard let svc = service else {
+            Task { [weak self] in
+                await self?.alert(NSLocalizedString("添加文件夹失败", comment: "settings alert"),
+                                  Self.startingUpMessage)
+            }
+            return
+        }
         Task { @MainActor [weak self] in
             guard let self else { return }
             do {
@@ -820,7 +848,10 @@ final class SettingsModel: ObservableObject {
     }
 
     func testConnection(_ id: String) {
-        guard let svc = service else { return }
+        guard let svc = service else {
+            setMessage(id, Self.startingUpMessage)
+            return
+        }
         // git not ready yet: repoManager/sync are implicit unwraps until
         // start() finishes — these repo actions used to trap (v4.2.26 fixed
         // only some entries; these were missed) (v4.2.27).
@@ -859,7 +890,10 @@ final class SettingsModel: ObservableObject {
 
     /// v4.0.5: read-only repository integrity check (git fsck --full).
     func checkIntegrity(_ id: String) {
-        guard let svc = service else { return }
+        guard let svc = service else {
+            setMessage(id, Self.startingUpMessage)
+            return
+        }
         // git not ready yet: repoManager/sync are implicit unwraps until
         // start() finishes — these repo actions used to trap (v4.2.26 fixed
         // only some entries; these were missed) (v4.2.27).
@@ -872,9 +906,22 @@ final class SettingsModel: ObservableObject {
             do {
                 let report = try await svc.history.fsck(repoPath: id)
                 await MainActor.run {
-                    self?.setMessage(id, report.summary, error: !report.ok)
+                    // Hover note for the healthy case: the summary's "N 个
+                    // 悬空对象" reads like a problem without one (closure
+                    // audit v4.2.32).
+                    self?.setMessage(id, report.summary, error: !report.ok,
+                                     help: report.ok
+                                        ? NSLocalizedString("悬空对象是 Git 历史正常运转产生的冗余，不影响使用；每周自动 gc 会回收它们。",
+                                                            comment: "settings status")
+                                        : "")
                     if !report.ok {
+                        // A bare issue list is a dead end for a non-technical
+                        // user: name the next step AND the one thing they
+                        // must not do (closure audit v4.2.32).
                         let detail = report.issues.prefix(6).joined(separator: "\n")
+                            + "\n\n"
+                            + NSLocalizedString("请勿手动删除 .git 文件夹（会丢掉全部历史）。请在下方「关于与支持」导出诊断包，发给支持邮箱。",
+                                                comment: "settings alert")
                         Task { await self?.alert(NSLocalizedString("仓库检查发现问题", comment: "settings alert"),
                                                  detail) }
                     }
@@ -891,7 +938,12 @@ final class SettingsModel: ObservableObject {
     /// v4.2.5: re-point a managed folder after it was moved/renamed (or an
     /// external disk mounted elsewhere) without losing history or config.
     func relocateRoot(_ id: String) {
-        guard let svc = service else { return }
+        guard let svc = service else {
+            // Without this the menu click does nothing at all — the panel
+            // does not even open (closure audit v4.2.32).
+            setMessage(id, Self.startingUpMessage)
+            return
+        }
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
@@ -920,7 +972,10 @@ final class SettingsModel: ObservableObject {
 
     /// v4.2.1: several remotes exist — pick which one the automatic sync uses.
     func setUpstreamRemote(_ id: String, remote: String) {
-        guard let svc = service else { return }
+        guard let svc = service else {
+            setMessage(id, Self.startingUpMessage)
+            return
+        }
         // git not ready yet: repoManager/sync are implicit unwraps until
         // start() finishes — these repo actions used to trap (v4.2.26 fixed
         // only some entries; these were missed) (v4.2.27).
@@ -949,7 +1004,10 @@ final class SettingsModel: ObservableObject {
     /// v4.1.8: a crash or force-quit can leave a half-applied rebase/merge that
     /// blocks auto-commits and pulls. Offer a one-click cleanup.
     func repairInterruptedOperation(_ id: String) {
-        guard let svc = service else { return }
+        guard let svc = service else {
+            setMessage(id, Self.startingUpMessage)
+            return
+        }
         // git not ready yet: repoManager/sync are implicit unwraps until
         // start() finishes — these repo actions used to trap (v4.2.26 fixed
         // only some entries; these were missed) (v4.2.27).

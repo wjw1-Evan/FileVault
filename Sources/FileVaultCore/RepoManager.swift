@@ -107,15 +107,25 @@ public final class RepoManager: @unchecked Sendable {
     /// Network git commands (fetch/pull/push) get a much longer budget than
     /// local ones: a big folder on a slow link routinely exceeds the 30 s
     /// default, and a timeout would be reported as a failure (v4.1.7).
-    public static let networkTimeout: TimeInterval = 120
+    public static let defaultNetworkTimeout: TimeInterval = 120
+
+    /// The network budget this instance uses. Injectable so tests exercise
+    /// the timeout path with a fast fake git instead of waiting two real
+    /// minutes; production always keeps the default (v4.2.32).
+    public var networkTimeout: TimeInterval = RepoManager.defaultNetworkTimeout
 
     /// Run a network git command; a timeout becomes a readable network error.
-    private func runNetwork(_ args: [String], cwd: String) async throws -> GitResult {
+    /// Internal (not private) so the timeout contract is directly testable.
+    func runNetwork(_ args: [String], cwd: String) async throws -> GitResult {
         do {
-            return try await runner.run(args, cwd: cwd, timeout: Self.networkTimeout)
+            return try await runner.run(args, cwd: cwd, timeout: networkTimeout)
         } catch let error as GitCommandError where error.exitCode == -9 {
+            // The budget is interpolated: an injected (or future) timeout
+            // must not claim the caller waited a hard-coded 120 seconds.
             throw PullError.networkFailed(
-                detail: NSLocalizedString("操作超时（网络较慢或仓库较大，已等待 120 秒）", comment: "pull error"))
+                detail: String(format: NSLocalizedString("操作超时（网络较慢或仓库较大，已等待 %d 秒）",
+                                                         comment: "pull error"),
+                              Int(networkTimeout)))
         }
     }
 
@@ -615,7 +625,7 @@ public final class RepoManager: @unchecked Sendable {
 
         // Read the new remote (an empty repo fetches fine and has no refs).
         let fetch = try? await runner.run(["fetch", "--prune", remote], cwd: path,
-                                          timeout: Self.networkTimeout)
+                                          timeout: networkTimeout)
         let info = await remoteBranchInfo(path: path, remote: remote)
         var needsDecision = false
         if info.exists {
@@ -700,7 +710,7 @@ public final class RepoManager: @unchecked Sendable {
 
     /// Branch names available on a remote (fetches first, best effort).
     private func remoteBranchNames(path: String, remote: String) async -> [String] {
-        _ = try? await runner.run(["fetch", "--prune", remote], cwd: path, timeout: Self.networkTimeout)
+        _ = try? await runner.run(["fetch", "--prune", remote], cwd: path, timeout: networkTimeout)
         guard let r = try? await runner.run(["for-each-ref", "--format=%(refname:short)",
                                              "refs/remotes/" + remote + "/"], cwd: path),
               r.succeeded else { return [] }

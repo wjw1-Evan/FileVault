@@ -180,16 +180,20 @@ struct FileHistorySheet: View {
     }
 
     private var footer: some View {
-        HStack(alignment: .top, spacing: 8) {
+        // v4.2.32: a successful restore is the moment the sheet exists for —
+        // it used to land as a grey 10.5pt line identical to any other status.
+        let succeeded = status?.hasPrefix("✓") == true
+        return HStack(alignment: .top, spacing: 8) {
             Image(systemName: status?.hasPrefix("⚠️") == true
-                  ? "exclamationmark.triangle" : "info.circle")
+                  ? "exclamationmark.triangle"
+                  : (succeeded ? "checkmark.circle.fill" : "info.circle"))
                 .font(.system(size: 10))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(succeeded ? Color.green : Color.secondary)
                 .padding(.top, 1)
             Text(status ?? String(format: NSLocalizedString("共 %d 个版本", comment: "file history"),
                                   commits.count))
-                .font(.system(size: 10.5))
-                .foregroundStyle(.secondary)
+                .font(.system(size: 10.5, weight: succeeded ? .medium : .regular))
+                .foregroundStyle(succeeded ? Color.green : Color.secondary)
                 .lineLimit(3)
                 .fixedSize(horizontal: false, vertical: true)
                 .help(status ?? "")
@@ -647,14 +651,15 @@ struct RecoverySheet: View {
     }
 
     private var footer: some View {
-        HStack(alignment: .top, spacing: 8) {
+        let succeeded = status?.hasPrefix("✓") == true
+        return HStack(alignment: .top, spacing: 8) {
             Image(systemName: footerSymbol)
                 .font(.system(size: 10))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(succeeded ? Color.green : Color.secondary)
                 .padding(.top, 1)
             Text(footerText)
-                .font(.system(size: 10.5))
-                .foregroundStyle(.secondary)
+                .font(.system(size: 10.5, weight: succeeded ? .medium : .regular))
+                .foregroundStyle(succeeded ? Color.green : Color.secondary)
                 .lineLimit(3)
                 .fixedSize(horizontal: false, vertical: true)
                 .help(footerText)
@@ -668,6 +673,8 @@ struct RecoverySheet: View {
         if loadError != nil || status?.hasPrefix("⚠️") == true {
             return "exclamationmark.triangle"
         }
+        // v4.2.32: same success emphasis as the main windows.
+        if status?.hasPrefix("✓") == true { return "checkmark.circle.fill" }
         return "info.circle"
     }
 

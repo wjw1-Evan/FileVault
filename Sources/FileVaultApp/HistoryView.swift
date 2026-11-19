@@ -2183,15 +2183,19 @@ struct HistoryView: View {
 
     private func footer(commit: CommitInfo?) -> some View {
         HStack(alignment: .top, spacing: 8) {
+            // Same success emphasis as the recovery tab's footer: the ✓
+            // moments (已回滚 / 已导出 / 已恢复文件夹) are this window's value
+            // moments and get the accent color (closure audit v4.2.32).
+            let success = footerText.hasPrefix("✓")
             Image(systemName: statusSymbol)
                 .font(.system(size: 10))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(success ? Color.green : Color.secondary)
                 .padding(.top, 1)
             // Failure text carries the remedy; wrap it instead of cutting it to
             // one line so the suggested next step stays visible (v4.2.26).
             Text(footerText)
-                .font(.system(size: 11))
-                .foregroundStyle(.secondary)
+                .font(.system(size: 11, weight: success ? .medium : .regular))
+                .foregroundStyle(success ? Color.green : Color.secondary)
                 .lineLimit(3)
                 .fixedSize(horizontal: false, vertical: true)
                 .help(footerText)
