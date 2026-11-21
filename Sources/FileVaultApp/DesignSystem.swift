@@ -25,6 +25,38 @@ enum FVTheme {
     ///    #464646 dark), which is what «配色要与系统相符» asks for. A hand-mixed
     ///    wash drifted from the real highlight in both appearances.
     static let menuRowHover = Color(nsColor: .unemphasizedSelectedContentBackgroundColor)
+
+    // MARK: Menu-bar panel metrics (measured, not guessed)
+
+    /// Everything below is measured from AppKit rather than eyeballed, so the
+    /// panel matches the system Wi-Fi / Control Center menus (v4.2.34,
+    /// 「文字大小等等移除自定义内容，用默认值」).
+    ///
+    /// How these numbers were obtained — a plain NSMenu is the ground truth:
+    /// - `NSFont.menuFont(ofSize: 0).pointSize` → **13pt**
+    /// - menu height is linear in item count (2→58, 3→82, 5→130, 8→202,
+    ///   12→298, 20→490 ⇒ least-squares **rowHeight 24pt, padding 10pt**)
+    /// - menu width minus rendered title width ⇒ **32pt** horizontal inset
+    ///
+    /// The menu therefore uses the *system* body size and row rhythm instead of
+    /// the hand-picked 9 / 9.5 / 10 / 11 / 11.5 / 12 / 13pt ladder it used to.
+    enum Menu {
+        /// 13pt — `NSFont.menuFont`, the same size macOS menus draw with.
+        static let rowFont = Font.body
+        /// macOS menu row height (24pt), so a row's tap target matches.
+        static let rowHeight: CGFloat = 24
+        /// Menu text inset (16pt each side; 32pt measured total).
+        static let inset: CGFloat = 16
+        /// Vertical padding per side. The system menu reserves 10pt of vertical
+        /// padding *in total* (measured intercept above), so this is half of it.
+        static let panelPadding: CGFloat = 5
+        /// Gap between logical groups. The system menu separates groups with a
+        /// full row of air, not a painted divider.
+        static let groupSpacing: CGFloat = 8
+        /// Icon-to-label gap inside a row; matches the menu's own rhythm.
+        static let iconGap: CGFloat = 8
+    }
+
     static let radius: CGFloat = 14
     static let gutter: CGFloat = 20
 

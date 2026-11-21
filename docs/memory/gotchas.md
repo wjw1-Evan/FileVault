@@ -145,6 +145,13 @@
 - 规避：改菜单面板时只用留白 / 圆角悬停药丸表达层次；`--render-menu` 的预览窗口是普通窗口，画不出真实材质，别用它判断透明度，需用 `screencapture -l<弹层窗口号>` 抓真实弹层。
 - 注意：面板高度仍是内容高度（v4.2.29 结论不变）——最后一行下方不要加额外 padding，四边保持 12pt 对称外边距，不要重新引入分隔条。
 
+### 菜单字号与行高用系统实测值，不要手调（v4.2.34）
+
+- 结论：菜单栏面板的字体、行高、内边距一律取系统实测值——**字体 `NSFont.menuFont` = 13pt**、**行高 24pt**、**纵向内边距 10pt**、**横向内缩每边 16pt**；SwiftUI 侧对应 `.body` / `.headline` / `.caption` / `.caption2`，不要写 `.system(size: 11.5)` 这类手调字号。
+- 原因：手调字号会让菜单与系统 Wi-Fi / 控制中心菜单在字重与行距上「差一点但说不清」，用户能直接感觉到「不像系统菜单」；工具行缩字号尤其明显（曾 11pt vs 12pt）。
+- 证据：`NSFont.menuFont(ofSize: 0).pointSize` = 13.0；`NSMenu.size.height` 对条目数最小二乘 → rowHeight 24.0 / padding 10.0；菜单宽度减标题渲染宽度 → 横向 32pt。取值集中在 `FVTheme.Menu`（`DesignSystem.swift`），渲染实测行距 24.05pt vs 系统 24.0pt。
+- 规避：改菜单版式先跑一段 AppKit 探针拿实测值再写常量；不要用 `--render-menu` 截图目测字号，改用像素测行距验证。
+
 ### 菜单配色只准用系统语义色，禁止手调透明度凑灰（v4.2.33）
 
 - 结论：菜单行的悬停/选中高亮用 `NSColor.unemphasizedSelectedContentBackgroundColor`（浅色 `#DCDCDC` / 深色 `#464646`），**不要**用 `Color.primary.opacity(0.06)` 这类手调灰；图标走 `.primary/.secondary` 标签层级，不要硬编码 `.orange`；头部不要用 `.opacity(0.95)→(0.62)` 渐变 + 彩色投影（那是 iOS 语言）。

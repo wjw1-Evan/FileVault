@@ -47,21 +47,22 @@ struct MenuContentView: View {
     @State private var dropHover = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: FVTheme.Menu.groupSpacing) {
             header
             statusBanner
             foldersCard
             actionsCard
             footerCard
         }
-        .padding(12)
+        .padding(.horizontal, FVTheme.Menu.inset)
+        .padding(.vertical, FVTheme.Menu.panelPadding)
         .frame(width: 320)
     }
 
     // MARK: Header
 
     private var header: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: FVTheme.Menu.iconGap) {
             // v4.2.33: flat accent glyph instead of `FVIconBadge`.
             //
             // The badge's iOS-style gradient (0.95 → 0.62) plus a coloured
@@ -73,14 +74,18 @@ struct MenuContentView: View {
             // surfaces (「配色要与系统相符」).
             FVMenuHeaderGlyph(symbol: "clock.arrow.circlepath")
             VStack(alignment: .leading, spacing: 1) {
+                // System text styles, not hand-picked sizes: .headline is 13pt
+                // semibold and .caption 10pt on macOS — exactly the menu body
+                // size, and they keep tracking Dynamic Type / accessibility
+                // scaling (v4.2.34).
                 Text("Pastward")
-                    .font(.system(size: 13, weight: .semibold))
+                    .font(.headline)
                 Text(app.statusLine)
-                    .font(.system(size: 10))
+                    .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
-            Spacer(minLength: 6)
+            Spacer(minLength: FVTheme.Menu.groupSpacing)
         }
     }
 
@@ -89,11 +94,11 @@ struct MenuContentView: View {
     @ViewBuilder
     private var statusBanner: some View {
         if let activity = app.updateActivity {
-            HStack(spacing: 7) {
+            HStack(spacing: FVTheme.Menu.iconGap) {
                 ProgressView()
                     .controlSize(.mini)
                 Text(activity.menuText)
-                    .font(.system(size: 10))
+                    .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
                 Spacer(minLength: 0)
@@ -112,11 +117,11 @@ struct MenuContentView: View {
     }
 
     private func noticeText(_ text: LocalizedStringKey) -> some View {
-        HStack(spacing: 6) {
+        HStack(spacing: FVTheme.Menu.iconGap) {
             Image(systemName: "arrow.down.circle")
-                .font(.system(size: 9))
+                .font(.caption2)
             Text(text)
-                .font(.system(size: 10))
+                .font(.caption)
                 .lineLimit(2)
             Spacer(minLength: 0)
         }
@@ -139,16 +144,15 @@ struct MenuContentView: View {
                     app.open("dashboard")
                 }
                 Text("或把文件夹拖到这里")
-                    .font(.system(size: 9.5))
+                    .font(.caption2)
                     .foregroundStyle(.tertiary)
-                    .padding(.horizontal, 8)
-                    .padding(.bottom, 5)
+                    .padding(.horizontal, FVTheme.Menu.inset)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
         } else {
             FVMenuCard {
                 ScrollView {
-                    VStack(spacing: 2) {
+                    VStack(spacing: 0) {
                         ForEach(app.roots) { root in
                             // An unavailable folder has nothing to open in
                             // Finder (NSWorkspace.open just fails silently) — route
@@ -162,7 +166,6 @@ struct MenuContentView: View {
                             }
                         }
                     }
-                    .padding(.vertical, 1)
                 }
                 // Deterministic height: a bare ScrollView in a popover has no
                 // intrinsic height and can collapse or balloon.
@@ -207,16 +210,18 @@ struct MenuContentView: View {
     }
 
     private var rootsListHeight: CGFloat {
-        // One row per protected folder (v4.0): row ≈ 30pt (6pt insets × 2 +
-        // 11.5pt text) + 2pt gaps + the card's own insets.
-        min(CGFloat(app.roots.count) * 30 + 8, 232)
+        // Derived from the measured system row height instead of the old
+        // hand-tuned "≈30pt row + 8pt" estimate (v4.2.34): the ScrollView must
+        // have a deterministic height in a popover, but that height should
+        // still be an exact multiple of the row rhythm the rows actually use.
+        min(CGFloat(app.roots.count) * FVTheme.Menu.rowHeight, FVTheme.Menu.rowHeight * 8)
     }
 
     // MARK: Actions card
 
     private var actionsCard: some View {
         FVMenuCard {
-            VStack(spacing: 2) {
+            VStack(spacing: 0) {
                 // v4.2.30: the dashboard was an icon-only header button
                 // ("zero discoverability" — the code comment said so itself);
                 // it is now a labelled row and the header keeps no duplicate.
@@ -248,7 +253,7 @@ struct MenuContentView: View {
     /// actions, and quit stays last with its shortcut visible.
     private var footerCard: some View {
         FVMenuCard {
-            VStack(spacing: 2) {
+            VStack(spacing: 0) {
                 MenuActionRow(symbol: "arrow.triangle.2.circlepath",
                               title: app.isUpdating ? "正在检查更新…" : "检查更新",
                               compact: true) {
@@ -286,11 +291,11 @@ private struct FVMenuCard<Content: View>: View {
     @ViewBuilder let content: Content
 
     var body: some View {
-        // Vertical padding only — the air that used to sit above/below each
-        // card plate, kept so sections still read as groups without a fill.
+        // No padding of our own: the panel's inset and the group spacing already
+        // give every section the system's rhythm (v4.2.34). Extra padding here
+        // was one of the hand-tuned values that made the menu drift from the
+        // system's own metrics.
         content
-            .padding(.horizontal, 4)
-            .padding(.vertical, 3)
     }
 }
 
@@ -303,17 +308,19 @@ private struct FVMenuCard<Content: View>: View {
 /// part of macOS instead of a small iOS card (「配色要与系统相符」).
 private struct FVMenuHeaderGlyph: View {
     let symbol: String
-    var size: CGFloat = 26
 
     var body: some View {
-        RoundedRectangle(cornerRadius: size * 0.28, style: .continuous)
+        // Sized from the system row rhythm (24pt) rather than a standalone
+        // hand-picked size, and drawn with the system's own icon font so it
+        // scales with the text next to it (v4.2.34).
+        RoundedRectangle(cornerRadius: 6, style: .continuous)
             .fill(Color.accentColor)
             .overlay(
                 Image(systemName: symbol)
-                    .font(.system(size: size * 0.52, weight: .semibold))
+                    .font(.body)
                     .foregroundStyle(.white)
             )
-            .frame(width: size, height: size)
+            .frame(width: FVTheme.Menu.rowHeight, height: FVTheme.Menu.rowHeight)
             .accessibilityHidden(true)
     }
 }
@@ -335,31 +342,33 @@ struct RootMenuRow: View {
             ? Color.orange
             : (root.paused ? Color.secondary : meta.tint)
         Button(action: action) {
-            HStack(spacing: 8) {
+            HStack(spacing: FVTheme.Menu.iconGap) {
                 // Template glyph, not a hand-picked tint: system menus draw
                 // their leading glyphs through the label hierarchy so the
                 // panel follows the user's appearance — an orange folder was
                 // the one colour in the menu that came from nowhere in the
                 // system palette (v4.2.33, 「配色要与系统相符」).
                 Image(systemName: "folder.fill")
-                    .font(.system(size: 10))
+                    .font(.caption)
                     .foregroundStyle(.secondary)
                 Text(root.name)
-                    .font(.system(size: 11.5))
+                    .font(FVTheme.Menu.rowFont)
                     .lineLimit(1)
                 Spacer(minLength: 4)
                 Circle()
                     .fill(tint)
                     .frame(width: 6, height: 6)
                 Text(label)
-                    .font(.system(size: 9))
+                    .font(.caption2)
                     .foregroundStyle(.tertiary)
             }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 6)
+            .padding(.horizontal, FVTheme.Menu.inset / 2)
+            .frame(height: FVTheme.Menu.rowHeight)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                // Square corners: the system's menu highlight is a full-width
+                // rectangle, not a rounded pill (v4.2.34).
+                Rectangle()
                     .fill(hovering ? FVTheme.menuRowHover : Color.clear)
             )
             .contentShape(Rectangle())
@@ -399,26 +408,31 @@ struct MenuActionRow: View {
 
     var body: some View {
         Button(action: action) {
-            HStack(spacing: 9) {
+            HStack(spacing: FVTheme.Menu.iconGap) {
                 Image(systemName: symbol)
-                    .font(.system(size: compact ? 10 : 11))
+                    .font(.caption)
                     .foregroundStyle(.secondary)
                     .frame(width: 16)
+                // One size for every row: macOS menus don't shrink their utility
+                // items, they just dim them (v4.2.34 — the old compact ladder
+                // drew 检查更新/关于/退出 at 11pt against 12pt rows).
                 Text(title)
-                    .font(.system(size: compact ? 11 : 12))
+                    .font(FVTheme.Menu.rowFont)
                     .foregroundStyle(compact ? Color.secondary : Color.primary)
                 Spacer(minLength: 6)
                 if let hint {
                     Text(hint)
-                        .font(.system(size: 9.5))
+                        .font(.caption2)
                         .foregroundStyle(.tertiary)
                 }
             }
-            .padding(.horizontal, 8)
-            .padding(.vertical, compact ? 5 : 6)
+            .padding(.horizontal, FVTheme.Menu.inset / 2)
+            .frame(height: FVTheme.Menu.rowHeight)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                // Full-width square highlight, exactly like the system menu's
+                // own selection (v4.2.34).
+                Rectangle()
                     .fill(hovering ? FVTheme.menuRowHover : Color.clear)
             )
             .contentShape(Rectangle())
