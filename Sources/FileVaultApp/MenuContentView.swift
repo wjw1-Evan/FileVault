@@ -28,14 +28,19 @@ enum MenuLabels {
     static let more = "更多"
 }
 
-/// Menu bar panel (v4.2.29 redesign): status header, then floating section
-/// cards — protected folders, primary actions, and a quiet utility+quit group.
+/// Menu bar panel: status header, protected folders, primary actions, and a
+/// quiet utility+quit group.
 ///
-/// The v3.2 panel chopped sections apart with hairline dividers and closed on
-/// a padded strip under the last row; both read as stray bars. The redesign
-/// groups rows into inset cards on the panel canvas (the same surface language
-/// as the windows' fvCard) so no decorative strips are needed anywhere, and
-/// the frame padding is symmetric (12pt) so no edge shows a leftover band.
+/// v4.2.29 replaced the v3.2 hairline-divider strips (which read as stray bars)
+/// with inset cards, so no decorative chrome was needed anywhere.
+///
+/// v4.2.33 removes the last of that chrome — the card plates themselves. The
+/// popover draws the system's vibrant menu material; an opaque FVTheme.card
+/// fill (pure white in light mode) on top of it was the 「白色背景」 users saw,
+/// and it made the panel read as three boxes instead of a menu. Sections are
+/// now separated by spacing only and the panel is one continuous surface,
+/// matching current macOS menus; frame padding stays symmetric (12pt) so no
+/// edge shows a leftover band.
 struct MenuContentView: View {
     @EnvironmentObject var app: AppState
     @Environment(\.openWindow) private var openWindow
@@ -57,7 +62,16 @@ struct MenuContentView: View {
 
     private var header: some View {
         HStack(spacing: 10) {
-            FVIconBadge(symbol: "clock.arrow.circlepath", size: 30)
+            // v4.2.33: flat accent glyph instead of `FVIconBadge`.
+            //
+            // The badge's iOS-style gradient (0.95 → 0.62) plus a coloured
+            // shadow is the most saturated thing in the panel and does not
+            // exist in macOS's menu language — menu-bar panels tint a single
+            // accent surface or use a template glyph. The menu therefore draws
+            // the mark flat on the same accent the system uses for selection;
+            // the windows keep the gradient badge for the larger, branded
+            // surfaces (「配色要与系统相符」).
+            FVMenuHeaderGlyph(symbol: "clock.arrow.circlepath")
             VStack(alignment: .leading, spacing: 1) {
                 Text("Pastward")
                     .font(.system(size: 13, weight: .semibold))
@@ -255,27 +269,52 @@ struct MenuContentView: View {
     }
 }
 
-/// Inset group card (v4.2.29 menu redesign): a section floats as a rounded
-/// card on the panel canvas instead of being chopped apart by hairline strips.
-/// Same surface pairing as the windows' fvCard (FVTheme.card + hairline
-/// stroke), scaled down for a 320pt popover.
+/// Section group (v4.2.29 menu redesign, re-surfaced in v4.2.33).
+///
+/// The v4.2.29 pass floated each section as an opaque card so the panel would
+/// have the same card language as the windows. Inside the menu-bar popover that
+/// backfired: the popover already draws the system's vibrant menu material, so
+/// `FVTheme.card` (pure white in light mode) painted three white slabs on top
+/// of it — the menu looked like boxes glued onto the system surface instead of
+/// a macOS menu.
+///
+/// v4.2.33 therefore drops the plate (and its hairline) entirely: the panel is
+/// ONE continuous menu surface, sections are separated by spacing alone, and the
+/// only painted chrome is the per-row hover pill — the grouping the redesign
+/// wanted without any background of our own.
 private struct FVMenuCard<Content: View>: View {
     @ViewBuilder let content: Content
 
     var body: some View {
+        // Vertical padding only — the air that used to sit above/below each
+        // card plate, kept so sections still read as groups without a fill.
         content
             .padding(.horizontal, 4)
             .padding(.vertical, 3)
-            .background(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(FVTheme.card)
-            )
+    }
+}
+
+/// Flat menu-bar header mark (v4.2.33).
+///
+/// A menu-bar panel is a system surface: its chrome should come from the system
+/// palette (accent colour, label colours), not from an app-specific gradient
+/// with a coloured shadow. This renders the same SF Symbol as the windows'
+/// `FVIconBadge` but flat, on the user's accent colour, so the panel reads as
+/// part of macOS instead of a small iOS card (「配色要与系统相符」).
+private struct FVMenuHeaderGlyph: View {
+    let symbol: String
+    var size: CGFloat = 26
+
+    var body: some View {
+        RoundedRectangle(cornerRadius: size * 0.28, style: .continuous)
+            .fill(Color.accentColor)
             .overlay(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .strokeBorder(FVTheme.cardStroke, lineWidth: 1)
+                Image(systemName: symbol)
+                    .font(.system(size: size * 0.52, weight: .semibold))
+                    .foregroundStyle(.white)
             )
-            // Edge rows' hover washes must not bleed past the card corners.
-            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .frame(width: size, height: size)
+            .accessibilityHidden(true)
     }
 }
 
@@ -297,9 +336,14 @@ struct RootMenuRow: View {
             : (root.paused ? Color.secondary : meta.tint)
         Button(action: action) {
             HStack(spacing: 8) {
+                // Template glyph, not a hand-picked tint: system menus draw
+                // their leading glyphs through the label hierarchy so the
+                // panel follows the user's appearance — an orange folder was
+                // the one colour in the menu that came from nowhere in the
+                // system palette (v4.2.33, 「配色要与系统相符」).
                 Image(systemName: "folder.fill")
                     .font(.system(size: 10))
-                    .foregroundStyle(.orange.opacity(0.9))
+                    .foregroundStyle(.secondary)
                 Text(root.name)
                     .font(.system(size: 11.5))
                     .lineLimit(1)
@@ -316,7 +360,7 @@ struct RootMenuRow: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(
                 RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .fill(hovering ? Color.primary.opacity(0.06) : Color.clear)
+                    .fill(hovering ? FVTheme.menuRowHover : Color.clear)
             )
             .contentShape(Rectangle())
         }
@@ -375,7 +419,7 @@ struct MenuActionRow: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(
                 RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .fill(hovering ? Color.primary.opacity(0.06) : Color.clear)
+                    .fill(hovering ? FVTheme.menuRowHover : Color.clear)
             )
             .contentShape(Rectangle())
         }
@@ -402,6 +446,13 @@ struct OptionalShortcut: ViewModifier {
 #if DEBUG
 /// Dev-only frame that renders the menu panel outside the menu bar so the
 /// render-menu diagnostic can capture it as a PNG.
+///
+/// v4.2.33: the panel no longer paints any surface of its own (see the group
+/// comment above), so this window-background stand-in is a fair approximation
+/// of the popover material for layout checks — there is no card fill left that
+/// it could hide. It is NOT a colour-accurate frame: translucency only exists
+/// in the real MenuBarExtra window, so verify materials with
+/// `screencapture -l<panel window number>`, not with this render.
 struct MenuPreviewView: View {
     @EnvironmentObject var app: AppState
 

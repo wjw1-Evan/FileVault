@@ -11,6 +11,20 @@ enum FVTheme {
     static let card = Color(nsColor: .controlBackgroundColor)
     static let hairline = Color.primary.opacity(0.075)
     static let cardStroke = Color.primary.opacity(0.07)
+    /// Row highlight inside the menu-bar popover (v4.2.33).
+    ///
+    /// Two rules, both learned the hard way:
+    ///
+    /// 1. The popover already draws the system's vibrant menu material, so any
+    ///    opaque fill (`card` is pure white in light mode) sat on it as a slab
+    ///    — that is what «菜单有白色背景» meant. Rows paint only the system's
+    ///    own highlight colour and let the material show through.
+    /// 2. The highlight must be a *system semantic* colour, not a hand-mixed
+    ///    `primary.opacity(…)≈grey`: macOS menus and inactive list selections
+    ///    use `unemphasizedSelectedContentBackgroundColor` (#DCDCDC light /
+    ///    #464646 dark), which is what «配色要与系统相符» asks for. A hand-mixed
+    ///    wash drifted from the real highlight in both appearances.
+    static let menuRowHover = Color(nsColor: .unemphasizedSelectedContentBackgroundColor)
     static let radius: CGFloat = 14
     static let gutter: CGFloat = 20
 

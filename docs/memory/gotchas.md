@@ -137,12 +137,20 @@
 - 证据：`SyncManager.deterministicPushRejection`（v4.2.31 顺序调整）；`PushRejectionClassificationTests`（未修复代码上实测变红）。
 - 影响：新增拒绝分类时先问一句：真实远端 stderr 里哪些短语会互相 shadow，把最具体的放前面。
 
-### MenuBarExtra 面板高度就是内容高度（v4.2.29）
+### MenuBarExtra 弹层已自带材质，面板不要再画不透明底色（v4.2.33）
 
-- 结论：菜单弹层面板即窗口本身——最后一行下方的任何额外 padding 都会渲染成一条空白带；分区表达用卡片，不要用横穿分隔条。
-- 原因：v3.2 的 quitRow 在行自身 6pt 底边距外又叠 4pt，面板底部收出 ~10pt 空白带，用户两次指出「无用的横条」；320pt 宽的弹层里 hairline 分隔条也显得零碎。
-- 证据：空白带修复 d2b39b6、卡片化重设计 de53b8f（MenuContentView.swift 的 FVMenuCard）；开发渲染像素实测：字形底 y=1074 / 面板底 y=1077（2x）。
-- 规避：改菜单布局时保持四边 12pt 对称外边距；新增分区用 FVMenuCard 包裹；最后一行永远不加额外 bottom padding，也不要重新引入 panelDivider。
+- 结论：菜单弹层窗口背景就是系统半透明菜单材质；面板里任何不透明填充（`FVTheme.card`/`windowBackgroundColor`，浅色下都接近纯白）都会渲染成贴在系统表面的白方块。
+- 原因：v4.2.29 为「与窗口统一设计语言」给每个分区套了不透明卡片底板，结果用户报「菜单有白色背景」；v4.2.33 移除了底板与描边，分区只靠留白分隔。
+- 证据：真实弹层截图对比 `/tmp` 实测（浅色像素 255,255,255 → 239,238,237 即材质色）；`MenuContentView.swift` 的 FVMenuCard；提交 de53b8f 引入、本次移除。
+- 规避：改菜单面板时只用留白 / 圆角悬停药丸表达层次；`--render-menu` 的预览窗口是普通窗口，画不出真实材质，别用它判断透明度，需用 `screencapture -l<弹层窗口号>` 抓真实弹层。
+- 注意：面板高度仍是内容高度（v4.2.29 结论不变）——最后一行下方不要加额外 padding，四边保持 12pt 对称外边距，不要重新引入分隔条。
+
+### 菜单配色只准用系统语义色，禁止手调透明度凑灰（v4.2.33）
+
+- 结论：菜单行的悬停/选中高亮用 `NSColor.unemphasizedSelectedContentBackgroundColor`（浅色 `#DCDCDC` / 深色 `#464646`），**不要**用 `Color.primary.opacity(0.06)` 这类手调灰；图标走 `.primary/.secondary` 标签层级，不要硬编码 `.orange`；头部不要用 `.opacity(0.95)→(0.62)` 渐变 + 彩色投影（那是 iOS 语言）。
+- 原因：手调透明度只近似系统高亮，两种外观下都会偏色；菜单是系统表面，配色应继承系统语义色，用户才会觉得「与系统相符」。
+- 证据：`Sources/FileVaultApp/DesignSystem.swift` 的 `menuRowHover`；实测取值 light `#DCDCDC` / dark `#464646`；SwiftUI `.green/.orange/.red/.blue` 经逐字节核对与 `systemGreen/Orange/Red/Blue` 完全相同（可放心用）。
+- 影响：任何新增菜单/面板行都复用 `FVTheme.menuRowHover`；不要在菜单里引入新的品牌色或渐变。
 
 ### 子进程管道必须在等待前并发读（v4.2.32）
 
